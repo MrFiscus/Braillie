@@ -1,38 +1,44 @@
-"""Printable poke-through braille sheet (A4). Run: python make_sheet.py
+"""Printable poke-through braille sheets (A4). Run: python make_sheet.py [alphabet words numbers lookalikes]
 
-Writes sheet/poke_template.png (print at 100%, poke from this side) and sheet/face_preview.png (a simulation of
-the finished face, for checking). Quiz code gets matching cells from sheet_cells().
+Every sheet comes in two versions that share one layout, so the tutor treats them the same:
+  sheet/poke_<name>.png              WITH corner markers (you stick four printed markers on the front)
+  sheet/nomarkers/poke_<name>.png    WITHOUT markers (the camera finds the paper's own four edges: run the tutor with --paper)
+plus face_<name>.png simulations of the finished face, for checking. sheet/print/ collects the four to print for a demo.
+Quiz code gets the matching cells from sheet_cells(name); see sheets.py.
 """
 from __future__ import annotations
 
 import struct
+import sys
+import textwrap
 import zlib
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from detect import Cell, cells_from_layout
+from detect import Cell
 from make_markers import SHEET_MARKER_MM as MARKER_MM
+import page
 from page import ARUCO_DICT, MARKER_POS_MM, PAGE_H_MM, PAGE_W_MM
+from sheets import DOT_MM, DOT_R_MM, SHEET_NAMES, SPECS, get_sheet
 
 OUT = Path("sheet")
 DPI = 300
 MM = DPI / 25.4  # pixels per mm
-A4_MM = (210.0, 297.0)
-ORIGIN = ((A4_MM[0] - PAGE_W_MM) / 2, (A4_MM[1] - PAGE_H_MM) / 2)  # paper position of marker 0's centre
+A4_MM = page.A4_MM
+ORIGIN = page.SHEET_ORIGIN_MM  # paper position of marker 0's centre (and of page-mm (0, 0))
+PRINT_PACK = ("alphabet", "words")  # the two designs collected into sheet/print/, each with and without markers
 
-ROWS = ["abcdefgh", "ijklmnop", "qrstuvwx", "yz"]
-DOT_MM = 6.0  # spacing between dots in a cell (real braille is 2.5, this is big on purpose)
-DOT_R_MM = 1.6  # drawn dot radius
-PITCH_X, PITCH_Y = 19.0, 45.0  # cell centre to cell centre
+_ALPHABET_SPEC = SPECS["alphabet"]
+ROWS = list(_ALPHABET_SPEC.rows)  # the alphabet sheet's layout, kept under these names for older code
+PITCH_X, PITCH_Y, Y0 = _ALPHABET_SPEC.pitch_x, _ALPHABET_SPEC.pitch_y, _ALPHABET_SPEC.y0
 X0 = (PAGE_W_MM - (max(map(len, ROWS)) - 1) * PITCH_X) / 2  # centre of the top-left cell, page mm
-Y0 = 50.0
 
 
-def sheet_cells() -> list[Cell]:
-    """The sheet's cells in page mm, same structure as scan_page; use this if the detector isn't reliable."""
-    return cells_from_layout(ROWS, X0, Y0, PITCH_X, PITCH_Y, cell_w=DOT_MM + 2 * DOT_R_MM, cell_h=2 * DOT_MM + 2 * DOT_R_MM)
+def sheet_cells(name: str = "alphabet") -> list[Cell]:
+    """A sheet's cells in page mm, same structure as scan_page; use this if the detector isn't reliable."""
+    return get_sheet(name).cells
 
 
 def dot_points(cell: Cell) -> list[tuple[float, float]]:
@@ -58,20 +64,26 @@ def _canvas() -> np.ndarray:
     return np.full((int(A4_MM[1] * MM), int(A4_MM[0] * MM)), 255, np.uint8)
 
 
-def render_poke_template() -> np.ndarray:
-    """Mirrored guide: black dot = poke here. Letters are left readable for the person poking."""
+def render_poke_template(name: str = "alphabet", markers: bool = True) -> np.ndarray:
+    """Mirrored guide: black dot = poke here. Labels are left readable for the person poking.
+
+    markers=False leaves out the marker pin-pricks and instructions: the camera uses the paper's own edges instead."""
+    sheet = get_sheet(name)
     img = _canvas()
+    _text(img, f"{sheet.spec.title}   (sheet: {name}, {'with' if markers else 'NO'} markers)", (int(58 * MM), int(22 * MM)), 1.0, 2)
+    for i, line in enumerate(textwrap.wrap(sheet.spec.note, 78)[:4]):
+        _text(img, line, (int(58 * MM), int((29 + 5 * i) * MM)), 0.55, 1)
     _text(img, "POKE SIDE. Print at 100% (no scaling). Place on foam, poke each black dot with a blunt stylus,",
           (int(12 * MM), int(58 * MM)), 0.7, 1)
-    _text(img, "then FLIP THE SHEET OVER: raised dots on the back now read correctly, markers go on the front.",
-          (int(12 * MM), int(65 * MM)), 0.7, 1)
-    for c in sheet_cells():
+    _text(img, "then FLIP THE SHEET OVER: raised dots on the back now read correctly, markers go on the front."
+          if markers else "then FLIP THE SHEET OVER: the raised dots now read correctly. Use it on a plain DARK surface, "
+          "all four paper edges in view.", (int(12 * MM), int(65 * MM)), 0.7 if markers else 0.6, 1)
+    for c in sheet.cells:
         for x, y in dot_points(c):
             cv2.circle(img, _px(x, y, True), int(DOT_R_MM * MM), 0, -1, cv2.LINE_AA)
-        letter = ROWS[c["row"]][c["col"]]  # cells_from_layout keeps col = position in the string
-        _text(img, f"{letter.upper()}: {''.join(map(str, sorted(c['dots'])))}",
-              _px(c["x"], c["y"] + 2 * DOT_MM + 2, True), 0.8, 2, center=True)
-    for i, (mx, my) in MARKER_POS_MM.items():  # pin-prick crosses at the corners of each marker sticker
+        _text(img, f"{sheet.symbol(c).short}: {''.join(map(str, sorted(c['dots'])))}",
+              _px(c["x"], c["y"] + 2 * DOT_MM + 2, True), 0.8 if len(sheet.symbol(c).short) == 1 else 0.6, 2, center=True)
+    for i, (mx, my) in (MARKER_POS_MM.items() if markers else ()):  # pin-prick crosses at the corners of each marker sticker
         for sx in (-1, 1):
             for sy in (-1, 1):
                 x, y = _px(mx + sx * MARKER_MM / 2, my + sy * MARKER_MM / 2, True)
@@ -86,17 +98,27 @@ def render_poke_template() -> np.ndarray:
     return img
 
 
-def render_face_preview() -> np.ndarray:
-    """Simulated finished sheet seen from the camera: markers at the corners, dots as dark discs."""
+def render_face_preview(name: str = "alphabet", markers: bool = True) -> np.ndarray:
+    """Simulated finished sheet seen from the camera: markers at the corners (if any), dots as dark discs."""
     img = _canvas()
     d = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
     m = int(MARKER_MM * MM)
-    for i, (mx, my) in MARKER_POS_MM.items():
+    for i, (mx, my) in (MARKER_POS_MM.items() if markers else ()):
         cx, cy = _px(mx, my, False)
         img[cy - m // 2 : cy - m // 2 + m, cx - m // 2 : cx - m // 2 + m] = cv2.aruco.generateImageMarker(d, i, m)
-    for c in sheet_cells():
+    for c in sheet_cells(name):
         for x, y in dot_points(c):
             cv2.circle(img, _px(x, y, False), int(DOT_R_MM * MM), 60, -1, cv2.LINE_AA)
+    return img
+
+
+def render_flat_test(name: str = "alphabet", markers: bool = True) -> np.ndarray:
+    """A print-and-use test sheet: the cells as solid black dots the right way round, so the camera side can be checked
+    without poking anything. Not tactile - it is for testing the reader, not for a learner to feel."""
+    img = render_face_preview(name, markers)
+    img[(img > 30) & (img < 200)] = 0  # the preview draws dots in grey; print them solid black
+    _text(img, f"{get_sheet(name).spec.title} - FLAT TEST SHEET (not tactile; print at 100%)",
+          (int(20 * MM), int(20 * MM)), 0.8, 2)
     return img
 
 
@@ -110,12 +132,24 @@ def save_png(path: Path, img: np.ndarray) -> None:
 
 
 def main() -> None:
-    OUT.mkdir(exist_ok=True)
-    save_png(OUT / "poke_template.png", render_poke_template())
-    save_png(OUT / "face_preview.png", render_face_preview())
-    n = len(sheet_cells())
-    print(f"wrote {OUT}/poke_template.png and {OUT}/face_preview.png ({n} cells). Print markers with make_markers.py.")
-    print(f"cells_from_layout({ROWS}, x0={X0}, y0={Y0}, pitch_x={PITCH_X}, pitch_y={PITCH_Y}); PAGE {PAGE_W_MM}x{PAGE_H_MM} mm")
+    names = sys.argv[1:] or list(SHEET_NAMES)
+    for name in names:
+        if name not in SPECS:
+            raise SystemExit(f"unknown sheet {name!r}; choose from {', '.join(SHEET_NAMES)}")
+    (OUT / "nomarkers").mkdir(parents=True, exist_ok=True)
+    for name in names:
+        for markers, folder in ((True, OUT), (False, OUT / "nomarkers")):
+            save_png(folder / f"poke_{name}.png", render_poke_template(name, markers))
+            save_png(folder / f"face_{name}.png", render_face_preview(name, markers))
+        print(f"{name:11s} {len(sheet_cells(name)):3d} cells -> {OUT}/poke_{name}.png and {OUT}/nomarkers/poke_{name}.png")
+    if all(n in names for n in PRINT_PACK):
+        (OUT / "print").mkdir(exist_ok=True)
+        for i, (name, markers) in enumerate(((n, m) for n in PRINT_PACK for m in (True, False)), 1):
+            save_png(OUT / "print" / f"{i}_{name}_{'WITH' if markers else 'NO'}_markers.png", render_poke_template(name, markers))
+        for name in PRINT_PACK:  # print-and-use test sheets: check the camera side before poking anything
+            save_png(OUT / "print" / f"flat_test_{name}.png", render_flat_test(name))
+        print(f"the four to print: {OUT}/print/ (print at 100%; the WITH-markers ones also need markers/sheet.png cut out and stuck on)")
+    print(f"PAGE {PAGE_W_MM}x{PAGE_H_MM} mm")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-.venv/
+.venv*/
 __pycache__/
 .DS_Store
 
@@ -14,6 +14,7 @@ frame.png
 screenshot.png
 *_annotated.png
 
-# regenerable: python make_sheet.py / python make_markers.py (the printable sheet.png and poke_template.png ARE kept)
-sheet/face_preview.png
+# regenerable: python make_sheet.py / python make_markers.py (the printable markers/sheet.png and sheet/poke_*.png ARE kept)
+sheet/face_*.png
+sheet/nomarkers/face_*.png
 markers/marker_*.png
