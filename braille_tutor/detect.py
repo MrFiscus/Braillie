@@ -344,6 +344,11 @@ DOT_UV = {1: (0.25, 0.15), 2: (0.25, 0.5), 3: (0.25, 0.85), 4: (0.75, 0.15), 5: 
 _LETTER = {frozenset(int(ch) for ch in dots): letter for letter, dots in _ALPHABET.items()}  # plain-letter reading, if any
 
 
+def letter_of(dots: Iterable[int]) -> Optional[str]:
+    """The plain (uncontracted) letter a dot set spells, or None if it isn't a letter (a-z)."""
+    return _LETTER.get(frozenset(dots))
+
+
 def draw_cell(view: np.ndarray, quad, cell: Cell, color, labels: bool = False, dots: bool = True) -> None:
     """Draw a cell's box (quad = TL, TR, BR, BL in pixels) plus red dots where the detector says the dots are.
 

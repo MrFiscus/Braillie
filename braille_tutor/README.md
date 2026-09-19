@@ -51,6 +51,35 @@ x, y = to_page(H, finger_px, finger_py)
 cell = nearest_cell(cells, x, y)              # None if the finger is not on a cell
 ```
 
+## The tutor (detection + voice + word checking)
+
+`tutor.py` ties this module to the team's `voice_io.py` and `backend/braillie/word_correction.py`. It imports them from the
+repo, so there is nothing to install except the spell checker: `pip install pyspellchecker`.
+
+```
+python tutor.py --mock --autostart                      # letter quiz on the A-Z sheet; speech is printed, type commands
+python tutor.py --mock --mode read --auto-page 280 292  # "found it" reads the word under the finger, re-detecting bad reads
+python tutor.py --mock --mode word-quiz --words cap cat # "find the word cap"
+```
+
+Drop `--mock` to use the real Deepgram / ElevenLabs voices (needs their API keys, see `voice_io.py`). Voice commands: start quiz,
+repeat, hint, found it, next, stop. The same things are on the window keys s r h f n x (q quits).
+
+- **Finger:** nobody tracks the fingertip yet, so click on the camera view where the fingertip is. Plug a tracker into
+  `TutorSession.finger` (a function returning the page position in mm, or None).
+- **Letter quiz** uses the A-Z sheet's known layout. **Word modes** use fresh detections, turned into letters and words by `reader.py`
+  (plain letters only; any other cell reads as "?", which makes the backend re-detect instead of guessing).
+
+## Web server for the frontend
+
+`tutor_server.py` exposes the tutor over HTTP so a browser can show the camera and drive the session:
+
+```
+python tutor_server.py --mock          # then open http://127.0.0.1:8000
+```
+
+It serves a built-in console page and a small JSON / MJPEG / event-stream API. See `API.md` for the endpoints and a React hook.
+
 ## Known limits
 
 The pretrained model confuses some letters (on a clean example image it read d as f, i as e and missed y).
