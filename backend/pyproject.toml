@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "braillie-backend"
+version = "0.1.0"
+description = "Word validation/correction for braille cell detector output"
+requires-python = ">=3.10"
+dependencies = [
+    "pyspellchecker>=0.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["braillie*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
