@@ -97,6 +97,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(body["cells"]), 26)
         self.assertEqual(body["cells"][0]["letter"], "a")
         self.assertEqual(body["cells"][0]["dots"], [1])
+        self.assertEqual((body["cells"][0]["label"], body["cells"][0]["name"]), ("A", "the letter A"))
 
     def test_video_stream_delivers_a_jpeg(self):
         with urllib.request.urlopen(self.base + "/api/video", timeout=5) as r:

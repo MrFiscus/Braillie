@@ -85,11 +85,11 @@ class LetterQuizTests(unittest.TestCase):
         self.assertIn("can't see your finger", v.said[-1])
         pos["now"] = (500, 500)
         s.on_found_it()
-        self.assertIn("not on a letter", v.said[-1])
+        self.assertIn("not on a cell", v.said[-1])
         wrong = "a" if first != "a" else "b"
         pos["now"] = self.cell_pos(s, wrong)
         s.on_found_it()
-        self.assertIn(f"not {first.upper()}", v.said[-1])
+        self.assertIn(f"not the letter {first.upper()}", v.said[-1])
         s.on_hint()
         self.assertIn("dot", v.said[-1])
         s.on_hint()

@@ -75,7 +75,7 @@ function render(s) {
   $("page").textContent = s.page.message;
   $("page").className = s.page.ok ? "ok" : "no";
   const f = s.finger;
-  $("finger").textContent = f.page_mm ? `${f.page_mm[0]}, ${f.page_mm[1]} mm` + (f.cell ? ` on ${f.cell.letter ? f.cell.letter.toUpperCase() : "a mark"} (dots ${f.cell.dots.join("")})` : " (not on a cell)") : "unknown";
+  $("finger").textContent = f.page_mm ? `${f.page_mm[0]}, ${f.page_mm[1]} mm` + (f.cell ? ` on ${f.cell.name || (f.cell.letter ? "the letter " + f.cell.letter.toUpperCase() : "a mark")} (dots ${f.cell.dots.join("")})` : " (not on a cell)") : "unknown";
   $("mode").textContent = s.config.mode;
   const log = $("log");
   log.replaceChildren(...s.said.slice().reverse().map((m) => {

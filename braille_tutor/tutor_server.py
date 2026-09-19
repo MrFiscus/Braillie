@@ -6,7 +6,7 @@
   GET  /api/state        JSON snapshot: page status, quiz state, finger, what was said
   GET  /api/events       the same snapshot as a Server-Sent Events stream, pushed when it changes
   GET  /api/video        the camera as an MJPEG stream (use it as an <img src>)
-  GET  /api/cells        the letter-quiz layout cells in page mm (for drawing your own overlay)
+  GET  /api/cells        the printed sheet's cells in page mm, with their names (for drawing your own overlay)
   POST /api/command      {"command": "start quiz" | "repeat" | "hint" | "found it" | "next" | "stop"}
   POST /api/finger       {"u": 0..1, "v": 0..1} (a point on the video, as fractions)  |  {"x_mm":..,"y_mm":..}  |  {"clear": true}
 
@@ -114,18 +114,24 @@ class TutorRuntime:
         if pos is not None and session.cells:
             hit = nearest_cell(session.cells, *pos)
             if hit is not None:
-                cell = {"letter": letter_of(hit["dots"]), "dots": sorted(hit["dots"]), "row": hit["row"], "col": hit["col"]}
-        return {"config": {"mode": session.mode, "commands": list(COMMANDS)},
+                sym = session._symbol(hit)
+                cell = {"letter": letter_of(hit["dots"]), "label": sym.short if sym else None, "name": sym.spoken if sym else None,
+                        "dots": sorted(hit["dots"]), "row": hit["row"], "col": hit["col"]}
+        return {"config": {"mode": session.mode, "commands": list(COMMANDS), "llm": session.coach.status if session.coach else "off"},
                 "camera": {"ok": self.camera_ok, "frames": feed.frames},
                 "page": {"ok": feed.page_ok, "message": feed.message},
                 "tutor": session.status(),
                 "finger": {"page_mm": None if pos is None else [round(pos[0], 1), round(pos[1], 1)], "cell": cell},
-                "said": list(self.voice.said)[-15:], "debrief": self.voice.debrief}
+                "said": list(self.voice.said)[-15:], "debrief": session.last_debrief or self.voice.debrief}
 
     def cells(self) -> list:
-        return [{"x": round(c["x"], 2), "y": round(c["y"], 2), "w": round(c["w"], 2), "h": round(c["h"], 2),
-                 "letter": letter_of(c["dots"]), "dots": sorted(c["dots"]), "row": c["row"], "col": c["col"]}
-                for c in self.session.cells]
+        out = []
+        for c in self.session.cells:
+            sym = self.session._symbol(c)
+            out.append({"x": round(c["x"], 2), "y": round(c["y"], 2), "w": round(c["w"], 2), "h": round(c["h"], 2),
+                        "letter": letter_of(c["dots"]), "label": sym.short if sym else None, "name": sym.spoken if sym else None,
+                        "dots": sorted(c["dots"]), "row": c["row"], "col": c["col"]})
+        return out
 
     def command(self, name: str) -> None:
         """Run a tutor command in its own thread (speaking blocks, and the request must not)."""
@@ -294,28 +300,29 @@ def serve(rt: TutorRuntime, host: str = "127.0.0.1", port: int = 8000) -> Thread
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", choices=("letters", "read", "word-quiz"), default="letters")
-    ap.add_argument("--words", nargs="+", default=[])
-    ap.add_argument("--questions", type=int, default=5)
+    tutor.add_setup_args(ap)
     ap.add_argument("--mock", action="store_true", help="offline voice: speech is printed instead of played")
     ap.add_argument("--no-mic", action="store_true", help="don't listen on the microphone; use the HTTP commands only")
     ap.add_argument("--camera", default=None)
     ap.add_argument("--calib")
     ap.add_argument("--auto-page", type=float, nargs=2, metavar=("W_MM", "H_MM"))
+    ap.add_argument("--markers-only", action="store_true", help="require all four markers in every frame")
+    ap.add_argument("--paper", action="store_true", help="no markers: find the printed A4 sheet's own edges (see README)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--seed", type=int, default=None)
     a = ap.parse_args()
-    if a.mode == "word-quiz" and not a.words:
-        ap.error("--mode word-quiz needs --words")
+    setup = tutor.setup_from_args(a, ap)
     voice, wc = tutor.load_teammate_modules(a.mock)
     rv = RecordingVoice(voice)
-    cells: list = []
-    if a.mode == "letters":
-        import make_sheet
-        cells = make_sheet.sheet_cells()
-    feed = tutor.CameraFeed(page_source_from_args(a), cells or None)
-    session = tutor.TutorSession(rv, wc, cells, feed.finger, feed.scan, a.mode, a.questions, a.words, rng=random.Random(a.seed))
+    feed = tutor.CameraFeed(page_source_from_args(a), setup.cells or None, setup.labels,
+                            detector=tutor._Detector(0.15, "auto") if a.show_detections else None,
+                            track_finger=not a.no_finger_tracking)
+    session = tutor.TutorSession(rv, wc, setup.cells, feed.finger, feed.scan, a.mode, a.questions, setup.words,
+                                 rng=random.Random(a.seed), names=setup.names, coach=tutor.make_coach(a),
+                                 contracted=setup.contracted)
+    if setup.layout_scan:
+        session.scan = lambda: session.cells  # word modes read the printed sheet's known layout
     session.attach()
     rt = TutorRuntime(open_camera(a.camera), feed, session, rv, loop_file=bool(a.camera) and Path(a.camera).is_file())
     rt.start()
