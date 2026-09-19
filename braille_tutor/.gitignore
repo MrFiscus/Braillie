@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+.DS_Store
+
+# cloned separately, see README (contains ~95 MB of weights and is its own git repo)
+third_party/
+
+# files the tools write while you run them
+cells.json
+calibration.json
+calibration.png
+check.png
+frame.png
+screenshot.png
+*_annotated.png
+
+# regenerable: python make_sheet.py / python make_markers.py (the printable sheet.png and poke_template.png ARE kept)
+sheet/face_preview.png
+markers/marker_*.png
