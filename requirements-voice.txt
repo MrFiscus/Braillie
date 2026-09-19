@@ -1,0 +1,7 @@
+# Core voice I/O dependencies
+deepgram-sdk==7.9.0
+pyaudio>=0.2.14
+requests>=2.31
+
+# ElevenLabs debrief TTS (MP3 decode + playback)
+pydub>=0.25
