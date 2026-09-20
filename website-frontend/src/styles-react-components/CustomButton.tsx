@@ -13,8 +13,6 @@ interface CustomButtonProps {
 const CustomButton = ({buttonText, onClick, disabled, className, style} : CustomButtonProps) => {
     const [scale] = useState<number>(1.0)
     const [isButtonHovered, setIsButtonHovered] = useState<boolean>(false)
-
-
     const styles = getMainStyles(scale)
 
     return(
