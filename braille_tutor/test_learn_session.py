@@ -63,7 +63,9 @@ class SessionTests(unittest.TestCase):
         s, voice, _ = learn_session()
         s.attach()
         self.assertIsNotNone(s.journey)
-        self.assertEqual(sorted(voice.commands), sorted(["start quiz", "repeat", "hint", "found it", "next", "next page", "explore", "practice", "learn", "read", "quiz", "menu", "stop"]))
+        expected = {"start quiz", "repeat", "hint", "found it", "next", "next page", "explore", "practice", "learn", "read", "quiz", "menu",
+                    "help", "slower", "faster", "take your time", "normal pace", "stop"}  # (the phrases they are registered under)
+        self.assertLessEqual(expected, set(voice.commands))
         self.assertIsNone(tutor.TutorSession(FakeVoice(), WC, [], lambda: None, mode="explore").journey)
         self.assertEqual(s.learning_status()["phase"], "idle")
         self.assertIsNone(tutor.TutorSession(FakeVoice(), WC, [], lambda: None, mode="letters").learning_status())

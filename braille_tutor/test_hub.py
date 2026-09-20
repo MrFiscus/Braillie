@@ -50,8 +50,8 @@ def wait_for(pred, seconds=8.0):
     return False
 
 
-def fast_dwell():
-    return learn.Dwell(seconds=0.15)
+def fast_dwell(seconds=None):
+    return learn.Dwell(seconds=0.15)  # (whatever length was asked for)
 
 
 def hub(tmpdir=None, phone=None):

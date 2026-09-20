@@ -205,6 +205,21 @@ _COMMAND_MAP: dict[str, str] = {
     "main menu": "menu",
     "change mode": "menu",
     "go back": "menu",
+    # --- accessibility: ask what can be said, and how fast to go -----------
+    "help": "help",  # ("help me" is longer and still means hint)
+    "what can i say": "help",
+    "what are my options": "help",
+    "commands": "help",
+    "slower": "slower",
+    "speak slower": "slower",
+    "slow down": "slower",
+    "faster": "faster",
+    "speak faster": "faster",
+    "speed up": "faster",
+    "take your time": "relaxed",
+    "more time": "relaxed",
+    "normal pace": "normal",
+    "back to normal": "normal",
     "stop": "stop",
     "quit": "stop",
     "i'm done": "stop",
@@ -309,6 +324,8 @@ def _process_transcript_event(transcript: str, confidence: float, is_final: bool
     _debug_transcript_event(
         transcript, confidence, is_final, normalized, command, ignored_reason
     )
+    if is_final and normalized and ignored_reason in (None, "no command phrase matched", "confidence below threshold"):
+        _status["heard"] = {"n": _status["heard"]["n"] + 1, "text": normalized, "matched": command is not None, "reason": ignored_reason}
     if command is not None:
         log.info("Command recognised: %r (conf=%.2f)", command, confidence)
         _status["last_transcript"] = normalized
@@ -341,6 +358,9 @@ _status: dict = {
     "last_error": None,
     "last_transcript": None,
     "commands_fired": 0,
+    # the newest final utterance that was heard while the microphone was live, understood or not (for apps that want to say "I didn't
+    # catch that"): n counts them, matched says whether a command was found, reason says why not
+    "heard": {"n": 0, "text": "", "matched": False, "reason": None},
 }
 
 

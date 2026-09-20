@@ -37,7 +37,8 @@ WEB_DIR = Path(__file__).parent / "web"
 MAX_BODY = 4096
 COMMANDS = {"start quiz": "on_start", "repeat": "on_repeat", "hint": "on_hint", "found it": "on_found_it",
             "next": "on_next", "next page": "on_next_page", "explore": "on_explore", "practice": "on_practice",
-            "learn": "on_mode_learn", "read": "on_mode_read", "quiz": "on_mode_quiz", "menu": "on_mode_menu", "stop": "on_stop"}
+            "learn": "on_mode_learn", "read": "on_mode_read", "quiz": "on_mode_quiz", "menu": "on_mode_menu",
+            "help": "on_help", "slower": "on_slower", "faster": "on_faster", "relaxed": "on_relaxed", "normal": "on_normal", "stop": "on_stop"}
 LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
 FPS, STREAM_WIDTH = 15, 960
 
@@ -127,6 +128,7 @@ class TutorRuntime:
                    "voice": session.voice_status, "sheet": self.feed.sheet_name},
                 "reading": {"locked": sum(1 for c in feed.stable if c.get("locked")), "total": len(feed.observe_sheet or []),
                             "between_pages": bool(feed.identify_until)},
+                "settings": session.settings.to_dict(),
                 "hub": session.hub_status(),
                 "learning": session.learning_status(),
                 "progress": session.progress.summary() if session.journey is not None else None,
@@ -290,6 +292,8 @@ def make_handler(rt: TutorRuntime):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(png)
+            elif path == "/api/settings":
+                self._json(200, rt.session.settings.to_dict())
             elif path == "/api/progress":
                 if rt.session.journey is None:
                     return self._json(404, {"error": "progress is kept in learn mode (start with --mode learn)"})
@@ -305,11 +309,16 @@ def make_handler(rt: TutorRuntime):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt"):
+            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt", "/api/settings"):
                 return self._json(404, {"error": "not found"})
             body = self._read_json()
             if body is None:
                 return
+            if path == "/api/settings":  # speech speed, pace, sounds, "I didn't catch that": send only what should change
+                try:
+                    return self._json(200, rt.session.apply_settings(body))
+                except (ValueError, TypeError) as e:
+                    return self._json(400, {"error": str(e)})
             if path in ("/api/session", "/api/mode", "/api/prompt"):
                 if not rt.session.hub:
                     return self._json(404, {"error": "these belong to the menu-driven tutor (start tutor_server.py without --mode)"})
@@ -412,11 +421,13 @@ def main() -> None:
     if setup.layout_scan:
         session.scan = lambda: session.cells  # word modes read the printed sheet's known layout
     tutor.wire_new_page(session, feed)
+    session.start_watching()  # says so if the camera loses the sheet, or if it did not understand what was said
     session.voice_status = tutor.voice_check(voice)
     tutor.report_voice(session.voice_status)  # silence must never be a mystery
     session.attach()
     phone = phonelink.start_phone(a, announce=lambda text: session.say(text), voice=voice,
                                   on_ready=session.on_phone_ready if session.hub else None)
+    tutor.install_speed(voice, session, a)  # after the phone speaker, so the phone gets the slowed speech too
     link = phone[0] if phone else None
     if link is not None and session.hub:
         session.phone_ready_fn = lambda: link.connected  # the greeting waits until the phone is linked

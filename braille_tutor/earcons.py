@@ -12,6 +12,8 @@ from typing import Callable, Optional
 
 import numpy as np
 
+import audio_speed
+
 RATE = 24000
 LEVEL = 0.32  # of full scale: clearly audible, never loud
 
@@ -81,7 +83,8 @@ class Earcons:
             if pause:
                 pause()  # the microphone must not hear it as speech
             try:
-                self.voice._play_audio_stream([data])
+                with audio_speed.raw():  # a tone is not speech: it must not be slowed down with it
+                    self.voice._play_audio_stream([data])
             finally:
                 if resume:
                     resume()
