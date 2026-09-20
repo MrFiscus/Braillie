@@ -913,5 +913,484 @@ class EndToEndTests(unittest.TestCase):
             server.server_close()
 
 
+FAKE_TUNNEL = """#!{python}
+import sys, time
+print("2026-09-20T09:43:21Z INF Requesting new quick Tunnel on trycloudflare.com...", flush=True)
+print("2026-09-20T09:43:22Z INF see https://api.cloudflare.com/client/v4 and https://not-a-tunnel.example.com", flush=True)
+{body}
+"""
+
+
+def fake_tunnel(body: str) -> str:
+    """A program that behaves like `cloudflared tunnel --url ...`, with `body` deciding what it prints."""
+    path = Path(tempfile.mkdtemp()) / "cloudflared"
+    path.write_text(FAKE_TUNNEL.format(python=__import__("sys").executable, body=body))
+    path.chmod(0o755)
+    return str(path)
+
+
+GOOD_TUNNEL = 'print("|  https://quiet-river-paper-cloud.trycloudflare.com  |", flush=True)\ntime.sleep(60)'
+
+
+class TunnelTests(unittest.TestCase):
+    """--phone-tunnel: a public https address with a real certificate, so the phone shows no privacy warning."""
+
+    def test_the_address_is_found_in_the_programs_output_and_only_trycloudflare_addresses_count(self):
+        t = phonelink.start_tunnel(8443, binary=fake_tunnel(GOOD_TUNNEL), timeout=10)
+        try:
+            self.assertEqual(t.url, "https://quiet-river-paper-cloud.trycloudflare.com")
+            self.assertTrue(t.alive())
+        finally:
+            t.stop()
+        self.assertFalse(t.alive(), "stopping the tunnel ends the program")
+
+    def test_it_is_pointed_at_the_local_phone_port_only(self):
+        log = Path(tempfile.mkdtemp()) / "args.txt"
+        body = f'open({str(log)!r}, "w").write(" ".join(sys.argv[1:]))\n' + GOOD_TUNNEL
+        t = phonelink.start_tunnel(8447, binary=fake_tunnel(body), timeout=10)
+        t.stop()
+        self.assertEqual(log.read_text(), "tunnel --url http://127.0.0.1:8447 --no-autoupdate")
+
+    def test_a_missing_program_says_how_to_install_it(self):
+        from unittest import mock
+        with mock.patch.object(phonelink, "find_cloudflared", return_value=None):
+            with self.assertRaises(phonelink.TunnelError) as cm:
+                phonelink.start_tunnel(8443)
+        self.assertIn("brew install cloudflared", str(cm.exception))
+
+    def test_a_program_that_stops_early_says_why(self):
+        with self.assertRaises(phonelink.TunnelError) as cm:
+            phonelink.start_tunnel(8443, binary=fake_tunnel('print("ERR no route to host", flush=True)\nsys.exit(1)'), timeout=10)
+        self.assertIn("no route to host", str(cm.exception))
+        self.assertIn("internet", str(cm.exception))
+
+    def test_no_address_in_time_is_an_error_and_the_program_is_stopped(self):
+        binary = fake_tunnel("time.sleep(60)")
+        started = time.time()
+        with self.assertRaises(phonelink.TunnelError) as cm:
+            phonelink.start_tunnel(8443, binary=binary, timeout=1.0)
+        self.assertLess(time.time() - started, 8)
+        self.assertIn("no address", str(cm.exception))
+
+    def test_a_program_that_cannot_be_run_is_an_error_not_a_crash(self):
+        with self.assertRaises(phonelink.TunnelError):
+            phonelink.start_tunnel(8443, binary="/nonexistent/cloudflared")
+
+    def test_the_tunnel_never_outlives_the_tutor_however_the_tutor_ends(self):
+        import signal
+        import subprocess
+        import sys
+        for how in (signal.SIGKILL, signal.SIGTERM, signal.SIGHUP):
+            pidfile = Path(tempfile.mkdtemp()) / "pid"
+            body = f'import os\nopen({str(pidfile)!r}, "w").write(str(os.getpid()))\n' + GOOD_TUNNEL
+            binary = fake_tunnel(body)
+            tutor_proc = subprocess.Popen([sys.executable, "-c", f"import phonelink, time\nphonelink.start_tunnel(8443, binary={binary!r}, timeout=10)\nprint('up', flush=True)\ntime.sleep(120)"],
+                                          stdout=subprocess.PIPE, text=True, cwd=str(Path(phonelink.__file__).parent))
+            try:
+                self.assertEqual(tutor_proc.stdout.readline().strip(), "up")
+                pid = int(pidfile.read_text())
+                os.kill(pid, 0)  # the tunnel program is running
+                os.kill(tutor_proc.pid, how)
+                tutor_proc.wait(timeout=10)
+                end, gone = time.time() + 8, False
+                while time.time() < end and not gone:
+                    try:
+                        os.kill(pid, 0)
+                        time.sleep(0.1)
+                    except ProcessLookupError:
+                        gone = True
+                self.assertTrue(gone, f"the tunnel program was left running after the tutor got {signal.Signals(how).name}")
+            finally:
+                tutor_proc.kill()
+                tutor_proc.stdout.close()
+
+    def test_its_output_keeps_being_read_so_a_chatty_program_is_never_stalled(self):
+        done = Path(tempfile.mkdtemp()) / "done"
+        body = ('print("https://quiet-river-paper-cloud.trycloudflare.com", flush=True)\n'
+                'for i in range(4000):\n    print("log line " + "x" * 200, flush=True)\n'
+                f'open({str(done)!r}, "w").write("finished")')  # ~800 KB: far more than a pipe holds unread
+        t = phonelink.start_tunnel(8443, binary=fake_tunnel(body), timeout=10)
+        try:
+            end = time.time() + 10
+            while not done.exists() and time.time() < end:
+                time.sleep(0.05)
+            self.assertTrue(done.exists(), "the program blocked writing its log")
+        finally:
+            t.stop()
+
+
+class TunnelledLinkTests(unittest.TestCase):
+    def link(self, tunnel=True):
+        self.clock = FakeClock()
+        link = PhoneLink("192.168.1.23", 8443, code="482917", clock=self.clock, tls=False)
+        link.verbose = False
+        if tunnel:
+            link.public_base = "https://quiet-river-paper-cloud.trycloudflare.com"
+        return link
+
+    def test_the_address_in_the_qr_is_the_public_one(self):
+        link = self.link()
+        self.assertEqual(link.base, "https://quiet-river-paper-cloud.trycloudflare.com")
+        self.assertEqual(link.url, "https://quiet-river-paper-cloud.trycloudflare.com/phone?t=482917")
+        self.assertTrue(link.tunnelled)
+        self.assertEqual(decode_qr(phonelink.qr_image(link.url)) if hasattr(phonelink, "qr_image") else link.url, link.url)
+        self.assertFalse(self.link(tunnel=False).tunnelled)
+        self.assertEqual(self.link(tunnel=False).url, "http://192.168.1.23:8443/phone?t=482917")
+
+    def test_nothing_tells_the_phone_to_click_through_a_warning(self):
+        text = self.link().spoken_instructions()
+        self.assertNotIn("not private", text)
+        self.assertNotIn("advanced", text.lower())
+        self.assertIn("Wi-Fi or mobile data", text)
+        self.assertIn("not private", self.link(tunnel=False).spoken_instructions(), "the local-network way still warns, as before")
+
+    def test_the_diagnosis_talks_about_the_internet_not_the_wifi(self):
+        link = self.link()
+        self.assertIsNone(link.diagnose())
+        self.clock.t += 20
+        text = link.diagnose()
+        self.assertIn("internet connection", text)
+        self.assertNotIn("hotspot", text)
+        self.assertNotIn("privacy", text)
+
+    def test_the_state_says_whether_the_link_is_tunnelled(self):
+        import tutor_server
+        for tunnel in (True, False):
+            rt = type("RT", (), {"phone": self.link(tunnel)})()
+            info = tutor_server.TutorRuntime.phone_info(rt)
+            self.assertEqual(info["tunnel"], tunnel)
+            self.assertEqual(info["address"].startswith("https://quiet-river"), tunnel)
+            self.assertEqual(info["url"].startswith("https://quiet-river"), tunnel)
+
+
+class StartPhoneTunnelTests(unittest.TestCase):
+    """start_phone with --phone-tunnel: the phone server listens on this computer only, the QR has the public address, and if the tunnel
+    cannot start the local-network way (with its warning) is used instead."""
+
+    def args(self, tunnel=True):
+        import argparse
+        return argparse.Namespace(phone_camera=True, phone_host="127.0.0.1", phone_port=0, phone_tunnel=tunnel, sound="laptop", mic="laptop")
+
+    def start(self, binary=None, tunnel=True):
+        from unittest import mock
+        import contextlib
+        import io
+        out = io.StringIO()
+        with mock.patch.object(phonelink, "find_cloudflared", return_value=binary), contextlib.redirect_stdout(out):
+            link, camera, server = phonelink.start_phone(self.args(tunnel))
+        self.addCleanup(server.stop)
+        link.verbose = False
+        return link, server, out.getvalue()
+
+    def test_the_qr_has_the_public_address_and_the_server_is_local_and_plain(self):
+        link, server, out = self.start(fake_tunnel(GOOD_TUNNEL))
+        self.assertTrue(link.tunnelled and not link.tls)
+        self.assertEqual(server.httpd.server_address[0], "127.0.0.1", "the phone server is not on the local network at all: only the tunnel reaches it")
+        self.assertIn("https://quiet-river-paper-cloud.trycloudflare.com/phone?t=" + link.code, out)
+        code, _, body = request(f"http://127.0.0.1:{link.port}/phone/frame?t={link.code}", jpeg(), headers={"Content-Type": "image/jpeg"})
+        self.assertEqual((code, body["ok"]), (200, True))
+        self.assertTrue(link.connected)
+
+    def test_a_wrong_code_still_gets_nothing_through_the_tunnel(self):
+        link, _, _ = self.start(fake_tunnel(GOOD_TUNNEL))
+        code, _, _ = request(f"http://127.0.0.1:{link.port}/phone/frame?t=000000", jpeg(), headers={"Content-Type": "image/jpeg"})
+        self.assertEqual(code, 403)
+        self.assertFalse(link.connected)
+
+    def test_stopping_the_server_stops_the_tunnel(self):
+        _, server, _ = self.start(fake_tunnel(GOOD_TUNNEL))
+        self.assertTrue(server.tunnel.alive())
+        server.stop()
+        self.assertFalse(server.tunnel.alive())
+
+    def test_when_the_tunnel_cannot_start_the_local_network_way_is_used_and_it_says_so(self):
+        link, server, out = self.start(binary=None)
+        self.assertFalse(link.tunnelled)
+        self.assertTrue(link.tls, "back to https with the generated certificate")
+        self.assertEqual(server.httpd.server_address[0], "0.0.0.0")
+        self.assertIn("brew install cloudflared", out)
+        self.assertIn("not private", out)
+        self.assertIn("https://", link.url)
+
+    def test_without_the_flag_nothing_changes(self):
+        link, server, out = self.start(binary=fake_tunnel(GOOD_TUNNEL), tunnel=False)
+        self.assertFalse(link.tunnelled)
+        self.assertTrue(link.tls)
+        self.assertNotIn("trycloudflare", out)
+        self.assertIsNone(getattr(server, "tunnel", None))
+
+
+def make_cert(directory: Path, names=("*.local-ip.sh",), days=90) -> tuple:
+    """A self-signed certificate for `names` (the stand-in for a real one), as (certfile, keyfile)."""
+    import subprocess
+    cert, key = directory / "c.pem", directory / "c.key"
+    san = ",".join(f"DNS:{n}" for n in names)
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(cert), "-days", str(days),
+                    "-subj", "/CN=test", "-addext", f"subjectAltName={san}"], check=True, capture_output=True)
+    return str(cert), str(key)
+
+
+class CertCheckTests(unittest.TestCase):
+    def test_a_name_from_an_address(self):
+        self.assertEqual(phonelink.local_ip_name("192.168.1.22"), "192-168-1-22.local-ip.sh")
+        for bad in ("", "example.com", "1.2.3", "fe80::1"):
+            with self.assertRaises(phonelink.TrustedCertError):
+                phonelink.local_ip_name(bad)
+
+    def test_a_wildcard_covers_one_label_like_a_browser_would(self):
+        cert, _ = make_cert(Path(tempfile.mkdtemp()))
+        self.assertTrue(phonelink.cert_covers(cert, "192-168-1-22.local-ip.sh"))
+        self.assertFalse(phonelink.cert_covers(cert, "a.b.local-ip.sh"), "a wildcard does not cover two labels")
+        self.assertFalse(phonelink.cert_covers(cert, "local-ip.sh"))
+        self.assertFalse(phonelink.cert_covers(cert, "192-168-1-22.example.com"))
+
+    def test_days_left(self):
+        cert, _ = make_cert(Path(tempfile.mkdtemp()), days=30)
+        self.assertAlmostEqual(phonelink.cert_days_left(cert), 30, delta=1.5)
+        self.assertLess(phonelink.cert_days_left(cert, now=time.time() + 40 * 86400), 0)
+
+    def test_a_pair_is_refused_for_the_wrong_name_too_little_time_or_the_wrong_key(self):
+        d = Path(tempfile.mkdtemp())
+        cert, key = make_cert(d)
+        phonelink.check_cert_pair(cert, key, "192-168-1-22.local-ip.sh")  # fine
+        with self.assertRaisesRegex(phonelink.TrustedCertError, "not for"):
+            phonelink.check_cert_pair(cert, key, "192-168-1-22.example.com")
+        short, short_key = make_cert(Path(tempfile.mkdtemp()), days=1)
+        with self.assertRaisesRegex(phonelink.TrustedCertError, "runs out"):
+            phonelink.check_cert_pair(short, short_key, "192-168-1-22.local-ip.sh")
+        _, other_key = make_cert(Path(tempfile.mkdtemp()))
+        with self.assertRaisesRegex(phonelink.TrustedCertError, "does not belong"):
+            phonelink.check_cert_pair(cert, other_key, "192-168-1-22.local-ip.sh")
+
+
+class LocalIpCertificateTests(unittest.TestCase):
+    """The certificate that local-ip.sh publishes: fetched, checked, saved, refreshed weekly, and never replaced by a bad one."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.good = tuple(Path(p).read_bytes() for p in make_cert(Path(tempfile.mkdtemp())))
+        self.fetched = []
+        self.messages = []
+
+    def fetch(self, url, cert_key=None):
+        self.fetched.append(url)
+        cert, key = cert_key or self.good
+        return cert if url.endswith("server.pem") else key
+
+    def get(self, ip="192.168.1.22", fetch=None):
+        return phonelink.local_ip_certificate(ip, self.dir, fetch or self.fetch, say=self.messages.append)
+
+    def test_the_first_run_fetches_both_files_and_keeps_the_key_private(self):
+        name, (cert, key) = self.get()
+        self.assertEqual(name, "192-168-1-22.local-ip.sh")
+        self.assertEqual(self.fetched, [phonelink.LOCAL_IP_CERT_URL, phonelink.LOCAL_IP_KEY_URL])
+        self.assertEqual(Path(key).stat().st_mode & 0o077, 0, "the key is not readable by others")
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["server.key", "server.pem"], "no half-finished files left")
+
+    def test_a_fresh_copy_is_used_without_going_to_the_internet(self):
+        self.get()
+        self.fetched.clear()
+        self.get()
+        self.assertEqual(self.fetched, [])
+
+    def test_after_a_week_it_is_fetched_again(self):
+        self.get()
+        old = time.time() - 8 * 86400
+        for f in self.dir.iterdir():
+            os.utime(f, (old, old))
+        self.fetched.clear()
+        self.get()
+        self.assertEqual(len(self.fetched), 2)
+
+    def test_if_the_refresh_fails_the_saved_copy_is_used_and_the_terminal_says_so(self):
+        self.get()
+        old = time.time() - 8 * 86400
+        for f in self.dir.iterdir():
+            os.utime(f, (old, old))
+
+        def offline(url):
+            raise urllib.error.URLError("no route")
+        name, _ = self.get(fetch=offline)
+        self.assertEqual(name, "192-168-1-22.local-ip.sh")
+        self.assertTrue(any("using the saved one" in m for m in self.messages))
+
+    def test_with_nothing_saved_and_no_internet_it_says_why(self):
+        def offline(url):
+            raise urllib.error.URLError("no route")
+        with self.assertRaises(phonelink.TrustedCertError) as cm:
+            self.get(fetch=offline)
+        self.assertIn("internet", str(cm.exception))
+
+    def test_a_bad_download_never_replaces_a_good_saved_certificate(self):
+        _, (cert, key) = self.get()
+        before = (Path(cert).read_bytes(), Path(key).read_bytes())
+        old = time.time() - 8 * 86400
+        for f in self.dir.iterdir():
+            os.utime(f, (old, old))
+        wrong_name = tuple(Path(p).read_bytes() for p in make_cert(Path(tempfile.mkdtemp()), names=("*.example.com",)))
+        self.get(fetch=lambda url: self.fetch(url, wrong_name))
+        self.assertEqual((Path(cert).read_bytes(), Path(key).read_bytes()), before)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["server.key", "server.pem"])
+
+    def test_a_certificate_and_key_that_do_not_go_together_are_refused(self):
+        other_key = Path(make_cert(Path(tempfile.mkdtemp()))[1]).read_bytes()
+        with self.assertRaises(phonelink.TrustedCertError):
+            self.get(fetch=lambda url: self.fetch(url, (self.good[0], other_key)))
+
+    def test_your_own_domain(self):
+        d = Path(tempfile.mkdtemp())
+        cert, key = make_cert(d, names=("phone.example.org",))
+        self.assertEqual(phonelink.own_domain_certificate("phone.example.org", cert, key), ("phone.example.org", (cert, key)))
+        for args, why in ((("phone.example.org", None, key), "needs"), (("phone.example.org", cert, "/nope.pem"), "does not exist"),
+                          (("other.example.org", cert, key), "not for")):
+            with self.assertRaisesRegex(phonelink.TrustedCertError, why):
+                phonelink.own_domain_certificate(*args)
+
+    def test_pointing_at_this_computer_is_checked(self):
+        from unittest import mock
+        with mock.patch.object(phonelink.socket, "gethostbyname", return_value="192.168.1.22"):
+            self.assertIsNone(phonelink.points_here("x.local-ip.sh", "192.168.1.22"))
+        with mock.patch.object(phonelink.socket, "gethostbyname", return_value="10.9.9.9"):
+            self.assertIn("not at this computer", phonelink.points_here("x.local-ip.sh", "192.168.1.22"))
+        with mock.patch.object(phonelink.socket, "gethostbyname", side_effect=OSError("nope")):
+            self.assertIn("could not be looked up", phonelink.points_here("x.local-ip.sh", "192.168.1.22"))
+
+
+class TrustedLinkTests(unittest.TestCase):
+    def link(self, trusted=True):
+        self.clock = FakeClock()
+        link = PhoneLink("192.168.1.23", 8443, code="482917", clock=self.clock)
+        link.verbose = False
+        if trusted:
+            link.trusted_name = "192-168-1-23.local-ip.sh"
+        return link
+
+    def test_the_qr_has_the_trusted_name_and_nothing_tells_the_phone_to_click_through_a_warning(self):
+        link = self.link()
+        self.assertEqual(link.url, "https://192-168-1-23.local-ip.sh:8443/phone?t=482917")
+        self.assertTrue(link.no_warning and not link.tunnelled)
+        text = link.spoken_instructions()
+        self.assertNotIn("not private", text)
+        self.assertIn("same Wi-Fi", text)
+        self.assertFalse(self.link(trusted=False).no_warning)
+
+    def test_the_diagnosis_talks_about_wifi_and_dns_not_about_a_warning(self):
+        link = self.link()
+        self.assertIsNone(link.diagnose())
+        self.clock.t += 20
+        text = link.diagnose()
+        self.assertIn("same Wi-Fi", text)
+        self.assertIn("DNS rebinding", text)
+        self.assertIn("--phone-tunnel", text)
+        link.contact("192.168.1.50")
+        self.assertIn("never opened the page", link.diagnose())
+        self.assertNotIn("Advanced", link.diagnose())
+
+    def test_the_state_says_there_is_no_warning(self):
+        import tutor_server
+        for trusted in (True, False):
+            info = tutor_server.TutorRuntime.phone_info(type("RT", (), {"phone": self.link(trusted)})())
+            self.assertEqual((info["trusted"], info["tunnel"]), (trusted, False))
+
+
+class StartPhoneTrustedTests(unittest.TestCase):
+    """start_phone with --phone-trusted / --phone-domain: the phone server keeps listening on the local network, with a real certificate."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.cert, self.key = make_cert(Path(tempfile.mkdtemp()))
+        self.fetches = []
+
+    def start(self, fetch=None, **flags):
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+        args = argparse.Namespace(phone_camera=True, phone_host="127.0.0.1", phone_port=0, sound="laptop", mic="laptop", **flags)
+
+        def default_fetch(url, timeout=15.0):
+            self.fetches.append(url)
+            return Path(self.cert if url.endswith("server.pem") else self.key).read_bytes()
+        out = io.StringIO()
+        with mock.patch.object(phonelink, "TRUSTED_DIR", self.dir), mock.patch.object(phonelink, "fetch_file", fetch or default_fetch), \
+                mock.patch.object(phonelink.socket, "gethostbyname", return_value="127.0.0.1"), contextlib.redirect_stdout(out):
+            link, camera, server = phonelink.start_phone(args)
+        self.addCleanup(server.stop)
+        link.verbose = False
+        return link, server, out.getvalue()
+
+    def get(self, link, name, path):
+        """A phone's request: a real TLS connection that checks the certificate against the certificate we made and against `name`."""
+        import http.client
+        import socket
+        ctx = ssl.create_default_context(cafile=self.cert)
+        conn = http.client.HTTPSConnection(name, link.port, context=ctx)
+        raw = socket.create_connection(("127.0.0.1", link.port), timeout=5)
+        try:
+            conn.sock = ctx.wrap_socket(raw, server_hostname=name)  # (raises if the name is wrong)
+        except Exception:
+            raw.close()
+            raise
+        try:
+            conn.request("GET", path)
+            return conn.getresponse().status
+        finally:
+            conn.close()
+
+    def test_the_phone_gets_a_verified_https_connection_under_the_trusted_name(self):
+        link, server, out = self.start(phone_trusted=True)
+        self.assertEqual(link.trusted_name, "127-0-0-1.local-ip.sh")
+        self.assertEqual(server.httpd.server_address[0], "0.0.0.0", "still on the local network: the phone must reach it")
+        self.assertIn("https://127-0-0-1.local-ip.sh:%d/phone?t=%s" % (link.port, link.code), out)
+        self.assertIn("real certificate", out)
+        self.assertEqual(self.get(link, "127-0-0-1.local-ip.sh", f"/phone?t={link.code}"), 200)
+        with self.assertRaises(ssl.SSLCertVerificationError):  # and it is really checked against the name
+            self.get(link, "127-0-0-1.example.com", f"/phone?t={link.code}")
+
+    def test_nothing_is_sent_through_any_third_party(self):
+        link, server, _ = self.start(phone_trusted=True)
+        self.assertIsNone(link.public_base)
+        self.assertIsNone(getattr(server, "tunnel", None))
+        self.assertEqual(sorted(self.fetches), sorted([phonelink.LOCAL_IP_CERT_URL, phonelink.LOCAL_IP_KEY_URL]), "only the public certificate is downloaded")
+
+    def test_your_own_domain(self):
+        cert, key = make_cert(Path(tempfile.mkdtemp()), names=("phone.example.org",))
+        link, _, out = self.start(phone_domain="phone.example.org", phone_cert=cert, phone_key=key)
+        self.assertEqual(link.url, f"https://phone.example.org:{link.port}/phone?t={link.code}")
+        self.assertEqual(self.fetches, [], "your own certificate: nothing is downloaded")
+
+    def test_a_name_that_does_not_point_here_is_warned_about(self):
+        from unittest import mock
+        import argparse, contextlib, io
+        args = argparse.Namespace(phone_camera=True, phone_host="127.0.0.1", phone_port=0, sound="laptop", mic="laptop", phone_trusted=True)
+        out = io.StringIO()
+        with mock.patch.object(phonelink, "TRUSTED_DIR", self.dir), mock.patch.object(phonelink, "fetch_file", lambda url, timeout=15.0: Path(self.cert if url.endswith("pem") else self.key).read_bytes()), \
+                mock.patch.object(phonelink.socket, "gethostbyname", return_value="10.9.9.9"), contextlib.redirect_stdout(out):
+            _, _, server = phonelink.start_phone(args)
+        self.addCleanup(server.stop)
+        self.assertIn("WARNING", out.getvalue())
+        self.assertIn("10.9.9.9", out.getvalue())
+
+    def test_without_internet_the_self_signed_way_is_used_and_it_says_so(self):
+        def offline(url, timeout=15.0):
+            raise urllib.error.URLError("no route")
+        link, server, out = self.start(fetch=offline, phone_trusted=True)
+        self.assertIsNone(link.trusted_name)
+        self.assertTrue(link.tls and not link.no_warning)
+        self.assertIn("not private", out)
+        self.assertIn("internet", out)
+
+    def test_a_bad_domain_setup_falls_back_too(self):
+        link, _, out = self.start(phone_domain="phone.example.org", phone_cert=None, phone_key=None)
+        self.assertIsNone(link.trusted_name)
+        self.assertIn("--phone-cert", out)
+
+    def test_without_the_flags_nothing_changes(self):
+        link, _, out = self.start()
+        self.assertIsNone(link.trusted_name)
+        self.assertEqual(self.fetches, [])
+        self.assertNotIn("real certificate", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -58,7 +58,10 @@ const ConnectPhone = () => {
               <span>Open the camera on your phone and point it at the code.</span>
             </li>
             <li>
-              <span>Tap the link that appears. If the phone says the connection is not private, choose Advanced, then continue.</span>
+              <span>
+                Tap the link that appears.
+                {phone.trusted ? '' : ' If the phone says the connection is not private, choose Advanced, then continue.'}
+              </span>
             </li>
             <li>
               <span>Tap the big button on the phone. Then listen: Braillie will greet you.</span>

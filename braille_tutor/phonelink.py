@@ -32,16 +32,22 @@ from __future__ import annotations
 
 import collections
 import errno
+import os
 import hmac
 import json
 import re
 import secrets
 import socket
 import io
+import atexit
+import datetime as dt
+import shutil
 import ssl
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -64,6 +70,13 @@ MAX_MIC_CHUNK_BYTES = 200_000
 MIC_TAIL_SECONDS = 0.8  # after the phone has spoken, its microphone audio is dropped for this long (the tail of the tutor's own voice)
 MAX_BAD_CODES = 20  # this many wrong codes in a row locks phone connections out for LOCKOUT_SECONDS
 LOCKOUT_SECONDS = 60.0
+TUNNEL_URL = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com")
+TUNNEL_SECONDS = 30.0  # how long to wait for the tunnel to say its address
+LOCAL_IP_DOMAIN = "local-ip.sh"  # a public name service: 192-168-1-22.local-ip.sh points at 192.168.1.22, with a real certificate
+LOCAL_IP_CERT_URL, LOCAL_IP_KEY_URL = f"https://{LOCAL_IP_DOMAIN}/server.pem", f"https://{LOCAL_IP_DOMAIN}/server.key"
+TRUSTED_DIR = CERT_DIR / "local-ip"
+CERT_REFRESH_DAYS = 7  # a saved copy of that certificate is used for this long before a fresh one is fetched
+CERT_MIN_DAYS_LEFT = 2  # a certificate that runs out sooner than this is not used
 
 
 def lan_ip() -> str:
@@ -212,6 +225,96 @@ def install_phone_mic(voice, link: "PhoneLink") -> Callable:
 
 # ---- state shared between the phone's uploads and the tutor -----------------------------------------
 
+class TunnelError(RuntimeError):
+    """The tunnel could not be started; the message says why and what to do."""
+
+
+class Tunnel:
+    """A public https address that reaches the phone server, with a real certificate from Cloudflare's quick tunnels, so the phone shows no
+    "connection is not private" warning and the laptop and phone need not be on the same network. It is the `cloudflared` program (free, no
+    account) running next to the tutor; it stops when the tutor does. The address is random and only in the QR code; everything the phone
+    sends still needs the session code."""
+
+    def __init__(self, proc: subprocess.Popen, url: str, reader: Optional[threading.Thread] = None):
+        self.proc, self.url, self.reader = proc, url, reader
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
+
+    def stop(self) -> None:
+        _end(self.proc, self.reader)
+
+
+# The tunnel program runs under this small shell script, which also watches the tutor: if the tutor goes away in ANY way (Ctrl+C, being
+# killed, the terminal closing, a crash) the tunnel is shut down too, so a public address is never left open behind it. ($0 is the program, $1
+# the local address; stopping the script stops the program.)
+_WATCHDOG = """
+"$0" tunnel --url "$1" --no-autoupdate &
+child=$!
+trap 'kill $child 2>/dev/null; exit' TERM INT HUP
+( while kill -0 $PPID 2>/dev/null && kill -0 $child 2>/dev/null; do sleep 1; done; kill $child 2>/dev/null ) &
+wait $child
+"""
+
+
+def _end(proc: subprocess.Popen, reader: Optional[threading.Thread] = None) -> None:
+    """Stop the program and tidy up after it (wait for it, let the reader finish, close the pipe), so nothing is left running or open."""
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    if reader is not None:
+        reader.join(timeout=2)
+    if proc.stdout is not None and (reader is None or not reader.is_alive()):
+        proc.stdout.close()
+
+
+def find_cloudflared() -> Optional[str]:
+    """The cloudflared program: on the PATH, or a copy in ~/.braillie."""
+    return shutil.which("cloudflared") or (str(CERT_DIR / "cloudflared") if (CERT_DIR / "cloudflared").is_file() else None)
+
+
+INSTALL_HINT = ("Install it once with `brew install cloudflared` (macOS), or download it from "
+                "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/ and put it on your PATH.")
+
+
+def start_tunnel(port: int, binary: Optional[str] = None, timeout: float = TUNNEL_SECONDS) -> Tunnel:
+    """Start a quick tunnel to http://127.0.0.1:`port` and return it once it has its public address. Raises TunnelError."""
+    binary = binary or find_cloudflared()
+    if not binary:
+        raise TunnelError("the phone tunnel needs the `cloudflared` program, which is not installed. " + INSTALL_HINT)
+    try:
+        proc = subprocess.Popen(["/bin/sh", "-c", _WATCHDOG, binary, f"http://127.0.0.1:{port}"],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    except OSError as e:
+        raise TunnelError(f"could not run {binary}: {e}") from e
+    found, tail = threading.Event(), collections.deque(maxlen=6)
+    box: list = []
+
+    def read() -> None:  # keeps reading for as long as the program runs, so its output never fills the pipe and stalls it
+        for line in proc.stdout:
+            tail.append(line.strip())
+            if not box and (m := TUNNEL_URL.search(line)):
+                box.append(m.group(0))
+                found.set()
+        found.set()  # the program ended
+
+    reader = threading.Thread(target=read, daemon=True, name="tunnel-output")
+    reader.start()
+    found.wait(timeout)
+    if not box:
+        stopped = proc.poll() is not None
+        _end(proc, reader)
+        why = "it stopped: " + " | ".join(t for t in tail if t)[-300:] if stopped and tail else "it printed no address in time"
+        raise TunnelError(f"the phone tunnel did not start ({why}). Does this computer have an internet connection?")
+    tunnel = Tunnel(proc, box[0], reader)
+    atexit.register(tunnel.stop)
+    return tunnel
+
+
 class PhoneLink:
     """The newest frame from the phone, whether it is connected, and the session code. Thread-safe."""
 
@@ -219,6 +322,8 @@ class PhoneLink:
                  on_connect: Optional[Callable] = None, on_disconnect: Optional[Callable] = None, clock: Callable = time.monotonic,
                  on_audio_ready: Optional[Callable] = None):
         self.ip, self.port, self.tls = ip or lan_ip(), port, tls
+        self.public_base: Optional[str] = None  # set when a tunnel gives the phone a public https address (see Tunnel)
+        self.trusted_name: Optional[str] = None  # set when a name with a real certificate points at this computer (see local_ip_certificate)
         self.code = code or f"{secrets.randbelow(10**6):06d}"
         self.on_connect, self.on_disconnect, self.clock = on_connect, on_disconnect, clock
         self.cond = threading.Condition()
@@ -263,6 +368,19 @@ class PhoneLink:
                     "in the phone's browser settings, then reload it.")
         if self.page_opens:
             return "The phone opened the page but no video has arrived yet. If it asks to use the camera, choose Allow."
+        if self.tunnelled:
+            if self.clock() - self.started > 15:
+                return ("No phone has opened the link yet. Scan the code with the phone's camera and open the link. The phone needs "
+                        "an internet connection (Wi-Fi or mobile data); it does not have to be on the same network as the laptop.")
+            return None
+        if self.trusted_name:
+            if self.frames == 0 and self.contacts and not self.page_opens:
+                return "A device reached the laptop but never opened the page. Open the link from the QR code again."
+            if not self.contacts and self.clock() - self.started > 15:
+                return ("No phone has reached this laptop yet. The phone and laptop must be on the same Wi-Fi, and many shared networks block "
+                        "that. Some routers also refuse names that point at a local address (\"DNS rebinding protection\"): try the phone's "
+                        f"hotspot for both, or start the tutor with --phone-tunnel. The address is {self.base}.")
+            return None
         if self.contacts:
             return ("A device reached the laptop but never opened the page. If your phone showed a privacy warning, choose Advanced (or "
                     "Show Details), then continue to the website.")
@@ -274,7 +392,18 @@ class PhoneLink:
     # -- addresses --
     @property
     def base(self) -> str:
-        return f"{'https' if self.tls else 'http'}://{self.ip}:{self.port}"
+        if self.trusted_name:
+            return f"https://{self.trusted_name}:{self.port}"
+        return self.public_base or f"{'https' if self.tls else 'http'}://{self.ip}:{self.port}"
+
+    @property
+    def tunnelled(self) -> bool:
+        return self.public_base is not None
+
+    @property
+    def no_warning(self) -> bool:
+        """True when the phone will not be shown a "connection is not private" page: a real certificate, from a tunnel or for a real name."""
+        return self.tunnelled or bool(self.trusted_name)
 
     @property
     def url(self) -> str:
@@ -283,6 +412,12 @@ class PhoneLink:
 
     def spoken_instructions(self) -> str:
         """What to say to someone who cannot scan the code: the address and code, digit by digit."""
+        if self.trusted_name:  # a real certificate: nothing to click through
+            return ("To connect your phone camera: on your phone, point the camera app at the code on the laptop screen and open the link. "
+                    "The phone must be on the same Wi-Fi as the laptop. Then tap the big button on the phone.")
+        if self.tunnelled:  # a real certificate: nothing to click through, and any network will do
+            return ("To connect your phone camera: on your phone, point the camera app at the code on the laptop screen and open the link. "
+                    "The phone can use Wi-Fi or mobile data. Then tap the big button on the phone.")
         return ("To connect your phone camera: on your phone, point the camera app at the code on the laptop screen and open the "
                 f"link. Or open your phone's web browser and go to {'https' if self.tls else 'http'} colon slash slash "
                 f"{spell_out(self.ip)} colon {spell_out(str(self.port))}, then enter the code {spell_out(self.code)}. "
@@ -526,6 +661,116 @@ def ensure_cert(ip: str, directory: Path = CERT_DIR) -> tuple:
     return str(cert), str(key)
 
 
+class TrustedCertError(RuntimeError):
+    """A trusted certificate could not be set up; the message says why."""
+
+
+def local_ip_name(ip: str) -> str:
+    """192.168.1.22 -> 192-168-1-22.local-ip.sh (which a public DNS server answers with 192.168.1.22)."""
+    if not re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}", ip or ""):
+        raise TrustedCertError(f"{ip!r} is not an IPv4 address, so it has no {LOCAL_IP_DOMAIN} name")
+    return ip.replace(".", "-") + "." + LOCAL_IP_DOMAIN
+
+
+def _openssl_x509(certfile: str, *args: str) -> str:
+    try:
+        return subprocess.run(["openssl", "x509", "-in", certfile, "-noout", *args], check=True, capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        raise TrustedCertError(f"could not read the certificate {certfile} (is the openssl command installed?): {e}") from e
+
+
+def cert_days_left(certfile: str, now: Optional[float] = None) -> float:
+    """Days until the (first) certificate in the file expires (negative if it has)."""
+    text = _openssl_x509(certfile, "-enddate").strip()  # notAfter=Nov 17 14:51:54 2026 GMT
+    try:
+        end = dt.datetime.strptime(text.split("=", 1)[1].replace(" GMT", ""), "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc)
+    except (IndexError, ValueError) as e:
+        raise TrustedCertError(f"could not read when the certificate expires: {text!r}") from e
+    return (end.timestamp() - (time.time() if now is None else now)) / 86400
+
+
+def cert_covers(certfile: str, name: str) -> bool:
+    """Does the certificate's list of names include `name` (a *.example.com entry covers one label, like a browser would)?"""
+    names = re.findall(r"DNS:([^\s,]+)", _openssl_x509(certfile, "-text"))
+    name = name.lower()
+    return any(n.lower() == name or (n.startswith("*.") and "." in name and name.split(".", 1)[1] == n[2:].lower()) for n in names)
+
+
+def check_cert_pair(cert: str, key: str, name: str) -> None:
+    """The certificate must be for `name`, have days left, and belong to the key. Raises TrustedCertError."""
+    if not cert_covers(cert, name):
+        raise TrustedCertError(f"the certificate {cert} is not for {name}")
+    left = cert_days_left(cert)
+    if left < CERT_MIN_DAYS_LEFT:
+        raise TrustedCertError(f"the certificate {cert} {'has expired' if left <= 0 else f'runs out in {left:.1f} days'}")
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)
+    except (ssl.SSLError, OSError) as e:
+        raise TrustedCertError(f"the key {key} does not belong to the certificate {cert}: {e}") from e
+
+
+def fetch_file(url: str, timeout: float = 15.0) -> bytes:
+    with urllib.request.urlopen(url, timeout=timeout) as r:  # (certificate-checked: this is a normal https download)
+        return r.read(200_000)
+
+
+def local_ip_certificate(ip: str, directory: Optional[Path] = None, fetch: Optional[Callable] = None, say: Callable = print) -> tuple:
+    """(name, (certfile, keyfile)) for a name that points at `ip`, with a REAL certificate, so the phone shows no warning and its video and
+    sound stay on the local network. It is the public wildcard certificate that local-ip.sh publishes (issued by Let's Encrypt): it is
+    kept in ~/.braillie/local-ip, refreshed after a week, and checked (right name, days left, key matches) before use. Because that key is
+    public, it gives no more protection against someone actively interfering on the same Wi-Fi than a self-signed certificate does."""
+    name, directory, fetch = local_ip_name(ip), directory or TRUSTED_DIR, fetch or fetch_file
+    cert, key = directory / "server.pem", directory / "server.key"
+
+    def usable() -> bool:
+        try:
+            check_cert_pair(str(cert), str(key), name)
+            return True
+        except (TrustedCertError, OSError):
+            return False
+
+    if usable() and time.time() - cert.stat().st_mtime < CERT_REFRESH_DAYS * 86400:
+        return name, (str(cert), str(key))
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        new_cert, new_key = directory / "server.pem.new", directory / "server.key.new"
+        new_cert.write_bytes(fetch(LOCAL_IP_CERT_URL))
+        new_key.write_bytes(fetch(LOCAL_IP_KEY_URL))
+        new_key.chmod(0o600)
+        check_cert_pair(str(new_cert), str(new_key), name)  # only a good pair replaces what was saved
+        os.replace(new_key, key)
+        os.replace(new_cert, cert)
+    except (OSError, urllib.error.URLError, TrustedCertError, ValueError) as e:
+        for leftover in (directory / "server.pem.new", directory / "server.key.new"):
+            leftover.unlink(missing_ok=True)
+        if not usable():
+            raise TrustedCertError(f"could not get the trusted certificate from {LOCAL_IP_DOMAIN} ({e}). It needs an internet connection "
+                                   "the first time, and once a week after that.") from e
+        say(f"[phone] could not refresh the saved {LOCAL_IP_DOMAIN} certificate ({e}); using the saved one")
+    return name, (str(cert), str(key))
+
+
+def own_domain_certificate(domain: str, cert: Optional[str], key: Optional[str]) -> tuple:
+    """(name, (certfile, keyfile)) for your own domain name, which must point at this computer (an A record with its address on the local
+    network) and have a certificate from a real authority (for example from Let's Encrypt). Checked before use."""
+    if not (cert and key):
+        raise TrustedCertError("--phone-domain needs --phone-cert and --phone-key (the certificate and its key, as .pem files)")
+    for f in (cert, key):
+        if not Path(f).is_file():
+            raise TrustedCertError(f"{f} does not exist")
+    check_cert_pair(cert, key, domain)
+    return domain, (cert, key)
+
+
+def points_here(name: str, ip: str) -> Optional[str]:
+    """None if `name` resolves to `ip`; otherwise a sentence saying what happens instead (for the terminal)."""
+    try:
+        found = socket.gethostbyname(name)
+    except OSError as e:
+        return f"{name} could not be looked up from this computer ({e}): check the internet connection"
+    return None if found == ip else f"{name} points at {found}, not at this computer ({ip}): the phone would not reach it"
+
+
 def make_handler(link: PhoneLink):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -686,6 +931,9 @@ class PhoneServer:
         return self
 
     def stop(self) -> None:
+        tunnel = getattr(self, "tunnel", None)
+        if tunnel is not None:
+            tunnel.stop()
         self.httpd.shutdown()
         self.httpd.server_close()
 
@@ -714,6 +962,16 @@ def add_phone_args(ap) -> None:
                     help="with --phone-camera: where spoken commands are heard. phone (default): the phone's microphone while it is "
                          "streaming one, the laptop's otherwise; laptop: always the laptop's")
     ap.add_argument("--phone-host", default=None, help="this computer's address for the phone to use (default: found automatically)")
+    ap.add_argument("--phone-trusted", action="store_true",
+                    help="with --phone-camera: give the phone a real, trusted certificate (a *.local-ip.sh name that points at this computer), so it "
+                         "shows no \"connection is not private\" warning while the video and sound stay on your Wi-Fi. Needs internet for the "
+                         "first run, and the phone and laptop on the same Wi-Fi")
+    ap.add_argument("--phone-domain", default=None, help="with --phone-camera: your own domain name, pointing at this computer, with --phone-cert and --phone-key")
+    ap.add_argument("--phone-cert", default=None, help="the certificate (.pem) for --phone-domain")
+    ap.add_argument("--phone-key", default=None, help="the key (.pem) for --phone-domain")
+    ap.add_argument("--phone-tunnel", action="store_true",
+                    help="with --phone-camera: reach the phone through a public https tunnel (needs the cloudflared program and internet), so the phone "
+                         "shows no \"connection is not private\" warning and can be on any network")
 
 
 def start_phone(a, announce: Optional[Callable] = None, voice=None, on_ready: Optional[Callable] = None) -> Optional[tuple]:
@@ -765,9 +1023,39 @@ def start_phone(a, announce: Optional[Callable] = None, voice=None, on_ready: Op
             install_phone_mic(voice, link)
         except RuntimeError as e:  # e.g. no pyaudio: speech still works, commands use the laptop microphone
             print(f"[phone] the phone microphone will not be used: {e}", flush=True)
-    server = PhoneServer(link).start()
+    server = None
+    if getattr(a, "phone_tunnel", False):
+        link.tls = False  # the tunnel's own certificate is what the phone sees; this server is only for the tunnel, on this computer
+        server = PhoneServer(link, host="127.0.0.1").start()
+        try:
+            server.tunnel = start_tunnel(link.port)
+            link.public_base = server.tunnel.url
+        except TunnelError as e:
+            print(f"\n[phone] {e}\n[phone] Using the local network instead (the phone will warn the connection is not private).", flush=True)
+            server.stop()
+            server, link.tls = None, True
+    if server is None and (getattr(a, "phone_trusted", False) or getattr(a, "phone_domain", None)):
+        try:
+            if getattr(a, "phone_domain", None):
+                name, cert = own_domain_certificate(a.phone_domain, getattr(a, "phone_cert", None), getattr(a, "phone_key", None))
+            else:
+                name, cert = local_ip_certificate(link.ip)
+            link.trusted_name = name
+            server = PhoneServer(link, cert=cert).start()
+            problem = points_here(name, link.ip)
+            if problem:
+                print(f"[phone] WARNING: {problem}", flush=True)
+        except (TrustedCertError, RuntimeError) as e:
+            link.trusted_name = None
+            print(f"\n[phone] {e}\n[phone] Using the self-signed certificate instead (the phone will warn the connection is not private).", flush=True)
+    if server is None:
+        server = PhoneServer(link).start()
     threading.Thread(target=_hint_loop, args=(link,), daemon=True, name="phone-hints").start()
     print(f"\nPhone camera: scan this with your phone's camera, or open {link.url}\n", flush=True)
     print(qr_terminal(link.url), flush=True)
     print(f"\n(no camera to scan with? on the phone open {link.base} and enter the code {link.code})", flush=True)
+    if link.tunnelled:
+        print("(this address works on any network and shows no privacy warning; it is random and needs the code above)", flush=True)
+    elif link.trusted_name:
+        print("(this address has a real certificate, so the phone shows no privacy warning; it must be on the same Wi-Fi)", flush=True)
     return link, PhoneCamera(link), server

@@ -7,6 +7,8 @@ export interface PhoneInfo {
   address: string
   code: string
   qr: string // path of the QR code image, relative to TUTOR_API
+  tunnel?: boolean // reached through a public tunnel (--phone-tunnel)
+  trusted?: boolean // the phone gets a real certificate (--phone-trusted, --phone-domain or --phone-tunnel): no "connection is not private" page to click through
   instructions: string
   diagnosis?: string | null // why no video has arrived yet, in plain words
   sound?: boolean
