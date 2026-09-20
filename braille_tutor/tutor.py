@@ -232,6 +232,14 @@ class _JourneyHost:
     def cells(self) -> list:
         return self.s._explore_cells()  # a fresh reading of the page, or the sheet's layout if there is none yet
 
+    def known_cells(self) -> list:
+        """The printed sheet's own layout: what IS on the page, whatever the camera can make out of it right now.
+
+        set_sheet() keeps it in step with the sheet in front of the camera, so it is as current as a reading is,
+        without needing a clear view of the very cell a finger is resting on.
+        """
+        return self.s.cells
+
     def sheet_name(self) -> str:
         return self.s.current_sheet()
 

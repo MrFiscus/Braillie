@@ -186,7 +186,8 @@ class Dwell:
 
 class Journey:
     """The lesson state machine. `host` supplies: say(text), tone(kind), finger() -> (x, y) mm or None, cells() -> the cells currently
-    read (dicts with dots/row/col/x/y), sheet_name() -> str, request_sheet(name), explore_reset(), explore_tick(now), finish()."""
+    read (dicts with dots/row/col/x/y), known_cells() -> the same for the printed sheet's own layout, sheet_name() -> str,
+    request_sheet(name), explore_reset(), explore_tick(now), finish()."""
 
     def __init__(self, host, progress: Progress, lessons=LESSONS, coach=None, rng: Optional[random.Random] = None,
                  clock: Callable[[], float] = time.monotonic):
@@ -402,8 +403,14 @@ class Journey:
         self.asked_at = self.last_activity = self.clock()
 
     def _judge(self, pos: tuple) -> None:
-        """The learner rested on `pos`: is that the target?"""
-        cell = nearest_cell(self.host.cells(), *pos)
+        """The learner rested on `pos`: is that the target?
+
+        Judged against the sheet's own layout, not a reading of it: the cell being judged is the one under a resting
+        finger, which is the one the camera can least rely on seeing. A hand there does not simply hide the dots -- skin,
+        creases and shadow read as dots that aren't there, steadily enough that vote.py's locker eventually lets go of a
+        cell it had read correctly, and the lesson would then fail a learner whose finger is in exactly the right place.
+        """
+        cell = nearest_cell(self.host.known_cells(), *pos)
         now = self.clock()
         if cell is None:
             if now - self.off_page_since >= OFF_PAGE_AFTER:  # (once per rest: the dwell stays "answered" until the finger moves away)
@@ -486,8 +493,9 @@ class Journey:
             self.lesson_results[letter] = self.lesson_results.get(letter, False) or (correct and clean)
 
     def _cell_of(self, letter: str) -> Optional[dict]:
+        """Where `letter` is printed on the sheet (for "it is in row 2, column 3"), or None if this sheet has no such letter."""
         want = DOTS[letter]
-        return next((c for c in self.host.cells() if frozenset(c["dots"]) == want), None)
+        return next((c for c in self.host.known_cells() if frozenset(c["dots"]) == want), None)
 
     def _abandon_round(self) -> None:
         self.target, self.queue, self._pending_review = None, [], None
