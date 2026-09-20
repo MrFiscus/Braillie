@@ -328,8 +328,7 @@ class NextPageVoiceTests(unittest.TestCase):
 
     def heard(self, transcript):
         import voice_io
-        m = voice_io._COMMAND_PATTERN.search(transcript.lower())
-        return voice_io._COMMAND_MAP[m.group(1).lower()] if m else None
+        return voice_io._match_command(voice_io._normalize_transcript(transcript))
 
     def test_phrases(self):
         import tutor
