@@ -372,9 +372,7 @@ throughout. The rules for what is understood are in `website-frontend/src/voice/
 ### The look of the website
 
 "Paper and ink": warm paper, black ink, one accent, hard offset shadows, dots as the only decoration (the name written in braille; each mode
-drawn as its own first letter). Fraunces and Atkinson Hyperlegible (made for low vision) are bundled in `public/fonts`. The **Display** menu in
-the top bar sets text size (three steps) and colours (match my device, light, dark, high contrast) and is remembered. Every colour pair is
-checked to WCAG AAA (7:1) by `tests/contrast.test.mjs`; all styling is in `src/styles-css/braillie.css`.
+drawn as its own first letter). Fraunces and Atkinson Hyperlegible (made for low vision) are bundled in `public/fonts`. The **Display** menu in the top bar sets text size (four steps, up to 190%; at the two biggest the page becomes one column) and colours, and is remembered: match my device, Light, Dark, and two made for low vision: **Black on white** (blue accent, safe for colour-blind users) and **Yellow on black**, with thicker edges and heavier text. "Match my device" follows the device's contrast setting; Windows forced-colours mode is respected. Every colour pair is checked to WCAG AAA (7:1) by `tests/contrast.test.mjs`, with more margin for reading text (ink 12:1, secondary text 10:1, and 9:1 for every pair in the two strong themes); all styling is in `src/styles-css/braillie.css`.
 
 
 ## Phone as the camera: scan a QR code (`--phone-camera`)
