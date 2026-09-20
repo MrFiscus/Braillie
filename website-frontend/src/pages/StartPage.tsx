@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { getMainStyles } from '../styles-react-components/mainStyles.tsx'
 import AccSlider from '../styles-react-components/AccSlider.tsx'
 import CustomButton from '../styles-react-components/CustomButton.tsx'
+import { signInWithGoogle } from '../components/GoogleLogin.tsx'
 
 export interface StartPageProps {
   onStart?: () => void
@@ -10,7 +10,6 @@ export interface StartPageProps {
 
 export default function StartPage({ onStart }: StartPageProps) {
   const [scale] = useState<number>(1.0)
-  const navigate = useNavigate()
 
   // Dynamic styles derived from mainStyles based on slider scale
   const styles = getMainStyles(scale)
@@ -19,7 +18,7 @@ export default function StartPage({ onStart }: StartPageProps) {
     if (onStart) {
       onStart()
     } else {
-      navigate('/user-information')
+      signInWithGoogle(`${window.location.origin}/user-information`)
     }
   }
 

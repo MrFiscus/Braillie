@@ -4,8 +4,9 @@ import '../styles-css/App.css';
 import { Routes, Route } from 'react-router-dom';
 
 import StartPage from "../pages/StartPage.tsx"
-import GetToKnow from './GetToKnow.tsx';
+import GetToKnow from './GetToKnow.tsx'
 import Layout from "../components/Layout.tsx"
+import {Login} from "../components/GoogleLogin.tsx"
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
 
         <Route path="get-started" element={<StartPage />} />
         <Route path="user-information" element={<GetToKnow />} />
+        <Route path="login" element={<Login />} />
         
         {/*gaslight gatekeep girlboss */}
         {/* here purely for reference, from another project I did
