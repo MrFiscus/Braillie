@@ -24,6 +24,7 @@ listen on the network unless you pass `--host 0.0.0.0` (don't, on a shared netwo
 | GET | `/api/cells` | the printed sheet's cells in page mm: `{cells:[{x,y,w,h,letter,label,name,dots,row,col}]}` (`name` is e.g. "the number 3") |
 | POST | `/api/command` | `{"command": "start quiz"}`; others: `repeat`, `hint`, `found it`, `next`, `stop` (`found_it` also works). Replies `202` |
 | POST | `/api/finger` | `{"u":0.4,"v":0.7}` a point on the video as fractions, or `{"x_mm":..,"y_mm":..}`, or `{"clear":true}` |
+| GET | `/api/phone/qr.png` | the QR code (PNG) that connects a phone camera. 404 unless started with `--phone-camera` |
 
 Errors are JSON `{"error": "..."}` with 400 (bad input), 403 (foreign origin), 404, or 413 (body over 4 KB).
 
@@ -44,7 +45,7 @@ Errors are JSON `{"error": "..."}` with 400 (bad input), 403 (foreign origin), 4
 
 `tutor.state` is `idle`, `asking` (quiz running), `reading` (read mode) or `done`. When the session ends, `debrief` becomes
 `{"accuracy": 0.5, "missed": ["J", "H"]}`. `page.ok` false means the page can't be located; `page.message` says why.
-`finger` is the camera-tracked fingertip (`fingertip.py`; off with `--no-finger-tracking`) unless something was posted to `/api/finger`, which overrides it until `{"clear": true}`. `finger.cell` is filled in when a printed
+`finger` is the camera-tracked fingertip (`fingertip.py`; off with `--no-finger-tracking`) unless something was posted to `/api/finger`, which overrides it until `{"clear": true}`. `POST /api/command` also takes `"next page"` (forget the page being read and, in explore mode, work out which printed sheet is now on the desk): `state.reading` = `{"locked", "total", "between_pages"}` and `state.config.sheet` follow it. With `--phone-camera` the tutor's voice is played on the phone (`--sound laptop` to keep it here): nothing to do in the frontend. `phone.diagnosis` (string or null) says in plain words why no video has arrived yet, and `phone.events` lists the last few steps the phone got through: show the diagnosis on the setup screen. In `explore` mode the `/api/video` frames carry the detection boxes and a status line. `config.voice` is `{"mode": "live"|"mock", "ok": bool, "problems": [...], "warnings": [...]}`: `ok` false means the user will hear nothing, and `problems` says why (show it). `config.mode` may be `explore` (no quiz: `tutor.state` is `exploring`, and what is said is what the camera detects under the finger). `phone` is null unless the server was started with `--phone-camera`; then it is `{"connected": false, "address": "https://192.168.1.5:8443", "code": "482917", "qr": "/api/phone/qr.png", "instructions": "..."}`: show the `qr` image (and `address` + `code` as text, or speak `instructions`) until `connected` is true. Until a phone connects, `/api/video` itself shows the QR code and steps. `finger.cell` is filled in when a printed
 sheet is loaded (letters mode, or `--sheet`).
 
 ## From React (TypeScript)
