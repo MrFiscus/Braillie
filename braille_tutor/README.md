@@ -290,23 +290,41 @@ and a whole lesson was run through the real server with a simulated camera and a
 sheet (the timings, such as the 1.2 s rest, are educated guesses to tune with real learners), the AI coach with a real key, and the account
 sync against a real Supabase project.
 
-## The website flow (React frontend)
+## The website flow and the menu (`tutor_server.py` with no `--mode`)
 
-With the tutor running (`python tutor_server.py --mode explore --sheet alphabet --paper`, add `--phone-camera` for a phone) and the site
-running (`cd website-frontend && npm run dev`), the flow after sign-in is:
+Started without `--mode`, `tutor_server.py` is the **menu-driven tutor**: it waits to be told who is using it, then what they want to do.
+With the tutor running (`python tutor_server.py --phone-camera`, or without it to use the laptop's camera) and the site running
+(`cd website-frontend && npm run dev`) the flow is:
 
-1. **Get to Know** (`/user-information`), then **Next** goes to
-2. **Connect your camera** (`/connect-phone`): a QR code and the typed address + code when the tutor was started with `--phone-camera`
-   (Continue unlocks once the phone's video arrives, and a plain-words hint says where a phone got stuck); with the laptop camera it says
-   so and Continue is available at once. Then
-3. **Practice / Learn** (`/practice`): with `--mode learn` it becomes the learning screen (lesson, the letter with its dot diagram, progress
-   through the lesson, a map of how well each letter is known, streak, and the progress sync); the live camera with a box on every detected cell (red dots = what it sees, letter above, green = locked in),
-   a status line ("All 26 cells read. Rest a finger on a cell to hear it."), the sheet, what the finger is on, buttons for the voice
-   commands (next page, repeat, hint, found it, stop), and what the tutor said. A warning box explains if speech will not be heard.
-   Clicking the video stands in for the fingertip. The tutor itself does the speaking.
+1. **Sign in** (`/`, which goes straight to `/login`): built to be used without seeing it. Real headings and labels in a sensible order
+   (Google first), one thing to do per section, big high-contrast targets, strong keyboard focus rings, errors announced, and the tutor
+   SAYS the options aloud (the laptop speaks "Welcome to Braillie. On this page you can sign in with Google, or continue without an
+   account..."). Two ways in:
+   * **Sign in with Google**: the learner's progress is remembered (on the laptop under their account id, and by the website in their Supabase
+     account, see below).
+   * **Continue without an account**: just a first name for the greeting. **Nothing is saved**: not in an account and not on the laptop
+     (the tutor keeps a guest's progress in memory for the session, so practice can still adapt, and forgets it).
+2. **Connect your phone** (`/connect-phone`): the QR code (and the tutor says how). The moment the phone is linked, and its sound is on,
+   the tutor says **"What do you want to do today, <name>? You can say learn, read, or quiz."** and the page moves on by itself.
+   (Without `--phone-camera` the laptop's camera is used and the greeting comes as soon as the name is known.)
+3. **Choose** (`/modes`): say **learn**, **read** or **quiz**, or press the button. Each uses its own printed sheet:
+   * **Learn**: the guided lessons (see above), starting with A on the **alphabet** sheet.
+   * **Read**: rest a finger on a word and the tutor reads it aloud, on the **words** sheet.
+   * **Quiz**: eight questions on the **look-alikes** sheet; rest a finger on the letter that was named.
+4. **The activity** (`/practice`): the live camera with a box on every detected cell, plus the lesson / quiz / reading panel and the voice
+   commands as buttons. "Change what I am doing" (or saying **menu**) goes back to the choice; finishing or saying **stop** does too.
 
-The pages talk to the tutor on `http://127.0.0.1:8000` (`VITE_TUTOR_API` overrides it); shared code is in `website-frontend/src/tutor/`.
-The site needs `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_GOOGLE_CLIENT_ID` in a git-ignored `website-frontend/.env` to log in.
+The pages talk to the tutor on `http://127.0.0.1:8000` (`VITE_TUTOR_API` overrides it); shared code is in `website-frontend/src/tutor/`
+and `website-frontend/src/auth/`. The site needs `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_GOOGLE_CLIENT_ID` in a
+git-ignored `website-frontend/.env` (or `.env.local`) to sign in with Google; without them "Sign in with Google" says it is not set up and
+"Continue without an account" still works. The friend-built start page, Get to Know and questions pages are still there at
+`/get-started`, `/user-information` but are no longer in the main flow.
+
+How the tutor knows: `POST /api/session {"kind": "google"|"guest", "name", "profile"}` says who is here (a google session needs the account id
+as `profile`; a guest never saves), `POST /api/mode {"mode": "learn"|"read"|"quiz"|"menu"}` chooses, and `state.hub` reports
+`{"mode", "user", "greeted"}` (see API.md). Choosing by voice needs `learn`, `read`, `quiz` and `menu` in `voice_io.py`'s command list
+(added). What is tested: the tutor side (`test_hub.py`), the user model (`node --test "tests/*.test.mjs"`), and the whole path in real Chrome
+against a running tutor with a simulated phone. NOT tested: Google sign-in past Google's own page, and a real phone and hand.
 
 ## Phone as the camera: scan a QR code (`--phone-camera`)
 

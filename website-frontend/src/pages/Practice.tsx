@@ -1,10 +1,14 @@
 import { type MouseEvent } from 'react'
+import { Navigate, useNavigate } from 'react-router-dom'
 import { getToKnowStyles, themeTokens } from '../styles-react-components/mainStyles.tsx'
 import CustomButton from '../styles-react-components/CustomButton.tsx'
-import { TUTOR_API, sendCommand, sendFinger } from '../tutor/tutorApi.ts'
+import { TUTOR_API, sendCommand, sendFinger, setMode } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useProgressSync } from '../tutor/useProgressSync.ts'
+import { useTutorSession } from '../tutor/useTutorSession.ts'
+import { useUser } from '../auth/useUser.ts'
 import LearnPanel from '../components/LearnPanel.tsx'
+import { QuizPanel, ReadPanel } from '../components/ActivityPanels.tsx'
 
 const SHEET_NAMES: Record<string, string> = {
   alphabet: 'Alphabet A to Z',
@@ -14,15 +18,23 @@ const SHEET_NAMES: Record<string, string> = {
 }
 const COMMANDS = ['next page', 'repeat', 'hint', 'found it', 'stop'] // the ones that mean something while exploring a page
 const LEARN_COMMANDS = ['start quiz', 'repeat', 'hint', 'found it', 'next', 'explore', 'practice', 'next page', 'stop'] // in the guided lessons
-const LABELS: Record<string, string> = { 'start quiz': 'Start / continue', 'found it': 'I found it', explore: 'Free explore', practice: 'Practice review' }
+const QUIZ_COMMANDS = ['repeat', 'hint', 'next', 'stop']
+const READ_COMMANDS = ['repeat', 'stop']
+const LABELS: Record<string, string> = { 'start quiz': 'Start / continue', 'found it': 'I found it', explore: 'Free explore', practice: 'Practice review', stop: 'Finish' }
+const TITLES: Record<string, string> = { learn: 'Learn braille', read: 'Read', quiz: 'Quiz' }
 
 // The practice screen: the live camera with a box on every braille cell the tutor detects (red dots = what it sees, green box = locked
 // in as read correctly), what it reads, and the same voice commands as buttons. The tutor speaks; this page shows what it is doing.
 const Practice = () => {
   const styles = getToKnowStyles
   const { state, reach } = useTutorState(600)
-  const sync = useProgressSync(state)
+  const navigate = useNavigate()
+  const { user, loading } = useUser()
+  useTutorSession(user, state)
+  const sync = useProgressSync(state, user?.kind === 'google')
   const learning = state?.learning ?? null
+  const hub = state?.hub ?? null
+  const activity = hub && hub.mode !== 'menu' ? hub.mode : null // learn, read or quiz, when the tutor is menu-driven
 
   const reading = state?.reading
   let status = 'Looking for the tutor…'
@@ -42,19 +54,25 @@ const Practice = () => {
   }
 
   const finger = state?.finger.cell
-  const buttons = (learning ? LEARN_COMMANDS : COMMANDS).filter((c) => state?.config.commands.includes(c))
+  const commands = activity === 'quiz' ? QUIZ_COMMANDS : activity === 'read' ? READ_COMMANDS : learning ? LEARN_COMMANDS : COMMANDS
+  const buttons = commands.filter((c) => state?.config.commands.includes(c))
   const voiceProblems = state?.config.voice && !state.config.voice.ok ? state.config.voice.problems : []
   const said = state ? [...state.said].reverse().slice(0, 5) : []
+
+  if (hub && hub.mode === 'menu') return <Navigate to="/modes" replace /> // nothing chosen yet (or they went back): choose
+  if (hub && !loading && !user) return <Navigate to="/login" replace />
 
   return (
     <main style={styles.container}>
       <div style={{ ...styles.card, maxWidth: 980, alignItems: 'stretch' }}>
-        <h1 style={styles.title}>{learning ? 'Learn braille' : 'Practice'}</h1>
+        <h1 style={styles.title}>{activity ? TITLES[activity] : learning ? 'Learn braille' : 'Practice'}</h1>
         <p style={styles.subtitle} role="status" aria-live="polite">
           {status}
         </p>
 
         {learning && <LearnPanel learning={learning} progress={state?.progress} />}
+        {activity === 'quiz' && state && <QuizPanel tutor={state.tutor} />}
+        {activity === 'read' && <ReadPanel said={said.map((s) => s.text)} />}
 
         {voiceProblems.length > 0 && (
           <div role="alert" style={{ padding: 12, borderRadius: 12, border: `1px solid ${themeTokens.colors.badgeBorder}`, background: themeTokens.colors.badgeBg, textAlign: 'left' }}>
@@ -93,10 +111,24 @@ const Practice = () => {
           ))}
         </div>
 
-        {learning && sync.detail && (
+        {learning && user?.kind === 'guest' && (
+          <p role="status" style={{ margin: 0, fontSize: 13, color: themeTokens.colors.textMuted }}>
+            You are using Braillie as a guest, so your progress is not saved.
+          </p>
+        )}
+        {learning && user?.kind === 'google' && sync.detail && (
           <p role="status" aria-live="polite" style={{ margin: 0, fontSize: 13, color: sync.status === 'error' ? themeTokens.colors.badgeText : themeTokens.colors.textMuted }}>
             {sync.detail}
           </p>
+        )}
+
+        {hub && (
+          <CustomButton
+            buttonText="Change what I am doing"
+            onClick={() => {
+              void setMode('menu').then(() => navigate('/modes'))
+            }}
+          />
         )}
 
         {said.length > 0 && (

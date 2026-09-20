@@ -192,7 +192,7 @@ class CameraTests(unittest.TestCase):
 
     def test_falls_back_to_the_setup_screen_when_the_phone_goes_quiet(self):
         clock = FakeClock()
-        link = PhoneLink("192.168.1.23", 8443, clock=clock)
+        link = PhoneLink("192.168.1.23", 8443, code="123456", clock=clock)  # (a fixed code: some random ones are hard for OpenCV's QR reader)
         cam = PhoneCamera(link)
         link.push(jpeg())
         self.assertEqual(cam.read()[1].shape, (120, 160, 3))

@@ -716,26 +716,44 @@ def add_phone_args(ap) -> None:
     ap.add_argument("--phone-host", default=None, help="this computer's address for the phone to use (default: found automatically)")
 
 
-def start_phone(a, announce: Optional[Callable] = None, voice=None) -> Optional[tuple]:
+def start_phone(a, announce: Optional[Callable] = None, voice=None, on_ready: Optional[Callable] = None) -> Optional[tuple]:
     """If --phone-camera was given: start the phone server and return (link, PhoneCamera, server); else None.
     `announce(text)` is called (in a thread) when a phone connects or drops, to speak it. With `voice` (the voice_io module) and
-    --sound phone (the default) the speech is played on the phone once its sound is on."""
+    --sound phone (the default) the speech is played on the phone once its sound is on. `on_ready()` (if given) replaces the generic
+    "phone connected" announcements: it is called once per connection when the phone is connected and its sound is on (or 6 s have
+    passed without it), which is the moment the app wants to speak to the user."""
     if not getattr(a, "phone_camera", False):
         return None
     say = announce or (lambda text: None)
     hold = "Hold the phone upright, above the page, about thirty centimetres up."
     sound_on_phone = voice is not None and getattr(a, "sound", "phone") == "phone" and not getattr(voice, "MOCK_MODE", False)
 
+    ready_flag = [False]  # on_ready has been called for this connection
+
+    def ready() -> None:
+        if on_ready is not None and not ready_flag[0]:
+            ready_flag[0] = True
+            on_ready()
+
+    def lost() -> None:
+        ready_flag[0] = False
+        say("The phone camera disconnected.")
+
     def connected() -> None:
+        if on_ready is not None:
+            if sound_on_phone:  # give the phone a moment to turn its sound on, so the greeting comes out of it
+                deadline = time.time() + 6
+                while not link.audio_ready and link.connected and time.time() < deadline:
+                    time.sleep(0.1)
+            return ready()
         if not sound_on_phone:
             return say(f"Phone camera connected. {hold}")
         time.sleep(6)  # the phone's tap turns its sound on a moment after the video starts: that greeting is the one to say
         if not link.audio_ready and link.connected:
             say("Phone camera connected, but its sound is off, so I am speaking here. Tap the big button on the phone to hear me there.")
 
-    link = PhoneLink(a.phone_host, a.phone_port, on_connect=connected,
-                     on_disconnect=lambda: say("The phone camera disconnected."),
-                     on_audio_ready=lambda: say(f"Phone connected. You will hear me on this phone now. {hold}"))
+    link = PhoneLink(a.phone_host, a.phone_port, on_connect=connected, on_disconnect=lost,
+                     on_audio_ready=lambda: ready() if on_ready is not None else say(f"Phone connected. You will hear me on this phone now. {hold}"))
     if sound_on_phone:
         try:
             install_phone_speaker(voice, link)

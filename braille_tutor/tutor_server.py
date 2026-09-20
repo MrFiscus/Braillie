@@ -36,7 +36,8 @@ from detect import letter_of, nearest_cell, open_camera, page_source_from_args
 WEB_DIR = Path(__file__).parent / "web"
 MAX_BODY = 4096
 COMMANDS = {"start quiz": "on_start", "repeat": "on_repeat", "hint": "on_hint", "found it": "on_found_it",
-            "next": "on_next", "next page": "on_next_page", "explore": "on_explore", "practice": "on_practice", "stop": "on_stop"}
+            "next": "on_next", "next page": "on_next_page", "explore": "on_explore", "practice": "on_practice",
+            "learn": "on_mode_learn", "read": "on_mode_read", "quiz": "on_mode_quiz", "menu": "on_mode_menu", "stop": "on_stop"}
 LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
 FPS, STREAM_WIDTH = 15, 960
 
@@ -126,6 +127,7 @@ class TutorRuntime:
                    "voice": session.voice_status, "sheet": self.feed.sheet_name},
                 "reading": {"locked": sum(1 for c in feed.stable if c.get("locked")), "total": len(feed.observe_sheet or []),
                             "between_pages": bool(feed.identify_until)},
+                "hub": session.hub_status(),
                 "learning": session.learning_status(),
                 "progress": session.progress.summary() if session.journey is not None else None,
                 "camera": {"ok": self.camera_ok, "frames": feed.frames}, "phone": self.phone_info(),
@@ -133,6 +135,31 @@ class TutorRuntime:
                 "tutor": session.status(),
                 "finger": {"page_mm": None if pos is None else [round(pos[0], 1), round(pos[1], 1)], "cell": cell},
                 "said": list(self.voice.said)[-15:], "debrief": session.last_debrief or self.voice.debrief}
+
+    def hub_request(self, path: str, body: dict) -> tuple:
+        """/api/session, /api/mode and /api/prompt: returns (status, json). Speech and mode changes run in a thread so the answer is quick."""
+        session = self.session
+        if path == "/api/session":
+            kind, name, profile = body.get("kind"), body.get("name"), body.get("profile")
+            if kind not in ("google", "guest"):
+                raise ValueError('"kind" must be "google" or "guest"')
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError('"name" must be a non-empty string')
+            if kind == "google" and not (isinstance(profile, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", profile)):
+                raise ValueError('a google session needs a "profile" (the account id: letters, digits, - and _)')
+            session.set_user(name, kind, profile if kind == "google" else None)
+            return 200, {"ok": True, "hub": session.hub_status()}
+        if path == "/api/mode":
+            mode = str(body.get("mode", "")).lower()
+            if mode != "menu" and mode not in tutor.HUB_MODES:
+                raise ValueError(f'"mode" must be one of: menu, {", ".join(tutor.HUB_MODES)}')
+            threading.Thread(target=session.set_mode, args=(mode,), daemon=True).start()
+            return 202, {"accepted": mode}
+        name = str(body.get("name", ""))
+        if name not in tutor.PROMPTS:
+            raise ValueError(f'"name" must be one of: {", ".join(tutor.PROMPTS)}')
+        threading.Thread(target=session.speak_prompt, args=(name,), daemon=True).start()
+        return 202, {"accepted": name}
 
     def merge_progress(self, data) -> None:
         """Fold a saved copy of the learner's progress (e.g. the one in their account) into the live one, and keep the result."""
@@ -278,11 +305,18 @@ def make_handler(rt: TutorRuntime):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/api/command", "/api/finger", "/api/progress"):
+            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt"):
                 return self._json(404, {"error": "not found"})
             body = self._read_json()
             if body is None:
                 return
+            if path in ("/api/session", "/api/mode", "/api/prompt"):
+                if not rt.session.hub:
+                    return self._json(404, {"error": "these belong to the menu-driven tutor (start tutor_server.py without --mode)"})
+                try:
+                    return self._json(*rt.hub_request(path, body))
+                except (ValueError, TypeError) as e:
+                    return self._json(400, {"error": str(e)})
             if path == "/api/progress":
                 if rt.session.journey is None:
                     return self._json(404, {"error": "progress is kept in learn mode (start with --mode learn)"})
@@ -350,6 +384,7 @@ def serve(rt: TutorRuntime, host: str = "127.0.0.1", port: int = 8000) -> Thread
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     tutor.add_setup_args(ap)
+    ap.set_defaults(mode="menu")  # the website asks who is here and what they want to do; --mode learn, explore ... still work
     ap.add_argument("--mock", action="store_true", help="offline voice: speech is printed instead of played")
     ap.add_argument("--no-mic", action="store_true", help="don't listen on the microphone; use the HTTP commands only")
     ap.add_argument("--camera", default=None)
@@ -380,8 +415,11 @@ def main() -> None:
     session.voice_status = tutor.voice_check(voice)
     tutor.report_voice(session.voice_status)  # silence must never be a mystery
     session.attach()
-    phone = phonelink.start_phone(a, announce=lambda text: session.say(text), voice=voice)
+    phone = phonelink.start_phone(a, announce=lambda text: session.say(text), voice=voice,
+                                  on_ready=session.on_phone_ready if session.hub else None)
     link = phone[0] if phone else None
+    if link is not None and session.hub:
+        session.phone_ready_fn = lambda: link.connected  # the greeting waits until the phone is linked
     rt = TutorRuntime(phone[1] if phone else open_camera(a.camera), feed, session, rv,
                       loop_file=not phone and bool(a.camera) and Path(a.camera).is_file(), phone=link)
     rt.start()

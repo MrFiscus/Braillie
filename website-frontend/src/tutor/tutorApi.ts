@@ -41,6 +41,16 @@ export interface ProgressSummary {
   lessons: Record<string, { best: number; last: number; times: number }>
 }
 
+export type HubMode = 'menu' | 'learn' | 'read' | 'quiz'
+
+/** The menu-driven tutor: who is using it and which activity they chose (null when the tutor was started in a fixed mode). */
+export interface HubInfo {
+  mode: HubMode
+  modes: Record<string, { title: string; sheet: string }>
+  user: { name: string; kind: 'google' | 'guest'; saves: boolean } | null
+  greeted: boolean
+}
+
 export interface TutorState {
   config: {
     mode: string
@@ -51,11 +61,12 @@ export interface TutorState {
   camera: { ok: boolean; frames: number }
   phone: PhoneInfo | null // null unless the tutor was started with --phone-camera
   page: { ok: boolean; message: string }
-  tutor: { mode: string; state: string; prompt: string }
+  tutor: { mode: string; state: string; prompt: string; question?: number; total?: number; asked?: number; correct?: number; tries?: number }
   finger: { page_mm: [number, number] | null; cell: { letter: string | null; label: string | null; name: string | null; dots: number[] } | null }
   said: { t: number; kind: string; text: string }[]
   reading?: { locked: number; total: number; between_pages: boolean }
-  learning?: LearningStatus | null // null unless --mode learn
+  hub?: HubInfo | null // null unless the tutor was started as the menu-driven tutor
+  learning?: LearningStatus | null // null unless the learn activity is running
   progress?: ProgressSummary | null
 }
 
@@ -89,3 +100,17 @@ export async function mergeProgress(data: unknown): Promise<void> {
   const res = await post('/api/progress', { data })
   if (!res.ok) throw new Error(`progress: ${res.status}`)
 }
+
+async function ok(res: Response, what: string): Promise<void> {
+  if (!res.ok) throw new Error(`${what}: ${res.status}`)
+}
+
+/** Tell the tutor who is using it. A "google" learner's progress is kept (under `profile`, their account id); a "guest" keeps nothing. */
+export const setSession = async (who: { kind: 'google' | 'guest'; name: string; profile?: string }) =>
+  ok(await post('/api/session', who), 'session')
+
+/** Choose what to do: learn, read, quiz, or menu to go back to the choice. */
+export const setMode = async (mode: HubMode) => ok(await post('/api/mode', { mode }), 'mode')
+
+/** Ask the tutor to say one of its prepared lines (only those it knows: "welcome"). */
+export const sayPrompt = async (name: 'welcome') => ok(await post('/api/prompt', { name }), 'prompt')
