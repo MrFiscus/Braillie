@@ -1,29 +1,27 @@
 import '../styles-css/App.css';
 
 
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 
-import StartPage from "../pages/StartPage.tsx"
-import GetToKnow from './GetToKnow.tsx'
 import Layout from "../components/Layout.tsx"
 import SignIn from './SignIn.tsx'
 import Modes from './Modes.tsx'
 import ConnectPhone from './ConnectPhone.tsx'
 import Practice from './Practice.tsx'
 
+// The one way through the app: sign in -> link the phone -> choose Learn, Read or Quiz -> do it. (The earlier start page and Get to Know
+// pages are no longer part of it; their files are still in this folder.)
 function App() {
-  const navigate = useNavigate()
   return (
     <Routes>
       <Route path="/" element={<Layout />}>
         <Route index element={<Navigate to="/login" replace />} />
 
-        <Route path="get-started" element={<StartPage />} />
-        <Route path="user-information" element={<GetToKnow onSubmit={() => navigate('/connect-phone')} />} />
         <Route path="connect-phone" element={<ConnectPhone />} />
         <Route path="practice" element={<Practice />} />
         <Route path="login" element={<SignIn />} />
         <Route path="modes" element={<Modes />} />
+        <Route path="*" element={<Navigate to="/login" replace />} /> {/* any old or unknown address starts again at the sign-in page */}
         
         {/*gaslight gatekeep girlboss */}
         {/* here purely for reference, from another project I did

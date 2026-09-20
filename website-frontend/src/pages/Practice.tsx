@@ -60,7 +60,7 @@ const Practice = () => {
   const said = state ? [...state.said].reverse().slice(0, 5) : []
 
   if (hub && hub.mode === 'menu') return <Navigate to="/modes" replace /> // nothing chosen yet (or they went back): choose
-  if (hub && !loading && !user) return <Navigate to="/login" replace />
+  if (!loading && !user) return <Navigate to="/login" replace /> // the way in is the sign-in page, whatever the address
 
   return (
     <main style={styles.container}>

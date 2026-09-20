@@ -317,8 +317,9 @@ With the tutor running (`python tutor_server.py --phone-camera`, or without it t
 The pages talk to the tutor on `http://127.0.0.1:8000` (`VITE_TUTOR_API` overrides it); shared code is in `website-frontend/src/tutor/`
 and `website-frontend/src/auth/`. The site needs `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_GOOGLE_CLIENT_ID` in a
 git-ignored `website-frontend/.env` (or `.env.local`) to sign in with Google; without them "Sign in with Google" says it is not set up and
-"Continue without an account" still works. The friend-built start page, Get to Know and questions pages are still there at
-`/get-started`, `/user-information` but are no longer in the main flow.
+"Continue without an account" still works. This is the ONLY way through the app: every other address (including the old `/get-started` and `/user-information`) goes to the sign-in page,
+and `/connect-phone`, `/modes` and `/practice` send you back to it if nobody is signed in. The earlier start page, Get to Know and questions
+pages are no longer routed; their files are still in `website-frontend/src/pages/` if they are wanted again.
 
 How the tutor knows: `POST /api/session {"kind": "google"|"guest", "name", "profile"}` says who is here (a google session needs the account id
 as `profile`; a guest never saves), `POST /api/mode {"mode": "learn"|"read"|"quiz"|"menu"}` chooses, and `state.hub` reports
