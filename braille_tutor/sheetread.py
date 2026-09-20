@@ -48,6 +48,9 @@ def respond(flat: np.ndarray, px_per_mm: float = PX_PER_MM) -> np.ndarray:
 SEARCH_MM = 4.5  # how far off the registration may be and still be corrected (the dots are 6 mm apart, so more is ambiguous)
 SEARCH_STEP_MM = 0.2
 PULL = 0.15  # tie-break: a shift of SEARCH_MM costs this share of the score of a perfectly lined-up sheet
+LOCAL_SEARCH_MM = 4.5  # per-cell fine tuning after align(): how much each cell may drift from the global shift on its own
+LOCAL_PULL = 0.25  # tie-break: a per-cell shift only wins if it clearly beats the global position (see refine_per_cell)
+LOCAL_MIN_DOTS = 3  # a cell with fewer expected dots is too weak a signature to refine independently -- see refine_per_cell
 
 
 def _slots(cells: list) -> tuple:
@@ -94,6 +97,70 @@ def _sample(resp: np.ndarray, x_mm: float, y_mm: float, radius_px: int, px_per_m
     return float(patch.max()) if patch.size else 0.0
 
 
+def refine_per_cell(resp: np.ndarray, cells: list, px_per_mm: float = PX_PER_MM, search_mm: float = LOCAL_SEARCH_MM) -> list:
+    """Nudge each cell by up to ~half a pitch so it sits on its own dots, on top of align()'s single global shift.
+
+    align() finds the one shift that lines the whole page up best; on a curved sheet, one whose corner markers were
+    stuck a millimetre or two off ideal, or one registered from only 3 of the 4 markers (the fourth briefly covered),
+    that one shift is wrong in different amounts in different parts of the page. This picks up the residual per cell.
+
+    For each cell with at least LOCAL_MIN_DOTS raised dots we score its expected raised slots minus its expected empty
+    slots across every candidate shift within `search_mm`, biased toward not moving (LOCAL_PULL) so a cell only drifts
+    if the picture clearly prefers a shifted position. The search stays under one pitch, so a cell cannot latch onto
+    its neighbour's dots. A weaker cell ('a' has one dot, 'b' has two) can't do this alone -- it might slide off its
+    own dot -- so it inherits the shift of its nearest refined neighbour, matching how much the image is corrected in
+    that region. That keeps the sampling threshold consistent across the page: if only strong cells were nudged, their
+    on-dot samples would jump up and pull the threshold with them, and every weak cell's dots would read as blank."""
+    if not cells:
+        return cells
+    cap = float(np.percentile(resp, 99.5)) + 1e-6
+    r = cv2.GaussianBlur(np.minimum(resp, cap), (0, 0), 0.5 * DOT_R_MM * px_per_mm)  # same smoothing as align()
+    h, w = r.shape
+    n = int(round(search_mm * px_per_mm))  # pixels of search each side; the search step is one pixel = 1 / px_per_mm mm
+    k = 2 * n + 1
+    offs = np.arange(-n, n + 1) / px_per_mm  # (k,), mm
+    dist = np.hypot(offs[None, :], offs[:, None])  # (k, k), mm from no-shift for the tie-break
+
+    def patch(cx_px: int, cy_px: int) -> np.ndarray:
+        """A k*k patch of `r` centred on (cx_px, cy_px); zero-padded where it would fall outside the image."""
+        p = np.zeros((k, k), np.float64)
+        y0, y1 = cy_px - n, cy_px + n + 1
+        x0, x1 = cx_px - n, cx_px + n + 1
+        iy0, iy1, ix0, ix1 = max(0, y0), min(h, y1), max(0, x0), min(w, x1)
+        if iy1 > iy0 and ix1 > ix0:
+            p[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = r[iy0:iy1, ix0:ix1]
+        return p
+
+    shifts: dict = {}  # (row, col) -> (dx_mm, dy_mm), only for cells refined on their own dots
+    for c in cells:
+        if len(c["dots"]) < LOCAL_MIN_DOTS:
+            continue
+        raised = [SLOT_OFFSETS[i] for i in c["dots"]]
+        empty = [SLOT_OFFSETS[i] for i in range(1, 7) if i not in c["dots"]]
+        cx_px = int(round((c["x"] + MARGIN_MM) * px_per_mm))
+        cy_px = int(round((c["y"] + MARGIN_MM) * px_per_mm))
+        on = sum(patch(cx_px + int(round(dx * px_per_mm)), cy_px + int(round(dy * px_per_mm))) for dx, dy in raised) / len(raised)
+        off = sum(patch(cx_px + int(round(dx * px_per_mm)), cy_px + int(round(dy * px_per_mm))) for dx, dy in empty) / len(empty) if empty else 0.0
+        score = on - off - LOCAL_PULL * on * dist / search_mm
+        iy, ix = np.unravel_index(int(np.argmax(score)), score.shape)
+        shifts[(c["row"], c["col"])] = (float(offs[ix]), float(offs[iy]))
+
+    if not shifts:  # nothing was strong enough to refine on; keep the global-only positions
+        return cells
+    keys = list(shifts)
+    key_pos = np.array([(cells[i]["x"], cells[i]["y"]) for i, c in enumerate(cells) if (c["row"], c["col"]) in shifts], np.float64)
+    out = []
+    for c in cells:
+        rc = (c["row"], c["col"])
+        if rc in shifts:
+            dx, dy = shifts[rc]
+        else:  # weak cell: take the shift of the nearest refined neighbour, in page mm
+            nearest = int(np.argmin(np.hypot(key_pos[:, 0] - c["x"], key_pos[:, 1] - c["y"])))
+            dx, dy = shifts[keys[nearest]]
+        out.append({**c, "x": c["x"] + dx, "y": c["y"] + dy})
+    return out
+
+
 def _split(values: np.ndarray, floor: float) -> float:
     """Threshold between 'flat' and 'raised' slots: the best two-class split (Otsu), never below `floor`."""
     hist, edges = np.histogram(values, bins=64)
@@ -115,8 +182,9 @@ def observe(frame: np.ndarray, H: np.ndarray, cells: list, px_per_mm: float = PX
             floor_sigmas: float = 2.0, self_align: bool = True) -> list:
     """For each cell of a known sheet, the dots that are actually raised in the image. Returns Cells (same layout, observed
     dots); each cell's `confidence` is how far its weakest decision was from the threshold, from 0 (a coin flip) to 1.
-    With `self_align` the registration is first corrected by up to SEARCH_MM (see align()); the returned cells then sit where
-    the dots really are, and carry that correction as `shift` (mm)."""
+    With `self_align` the registration is first corrected by up to SEARCH_MM by a single global shift (see align()), then
+    each cell is nudged by up to LOCAL_SEARCH_MM on its own (see refine_per_cell) to catch a warped sheet or corner markers
+    stuck a little out; the returned cells then sit where the dots really are, and carry the global correction as `shift`."""
     return observe_response(respond(rectify(frame, H, px_per_mm), px_per_mm), cells, px_per_mm, radius_mm, floor_sigmas, self_align)
 
 
@@ -127,15 +195,20 @@ def observe_response(resp: np.ndarray, cells: list, px_per_mm: float = PX_PER_MM
     if shift != (0.0, 0.0):
         cells = [{**c, "x": c["x"] + shift[0], "y": c["y"] + shift[1]} for c in cells]
     radius = int(round(radius_mm * px_per_mm))  # registration is good to ~0.3 mm, so a small patch: less noise to take the max of
-    ev = {(i, n): _sample(resp, c["x"] + dx, c["y"] + dy, radius, px_per_mm)
-          for i, c in enumerate(cells) for n, (dx, dy) in SLOT_OFFSETS.items()}
-    # what an empty patch of the page scores: between the lines, where nothing is ever placed
+    sample = lambda cs: {(i, n): _sample(resp, c["x"] + dx, c["y"] + dy, radius, px_per_mm)
+                         for i, c in enumerate(cs) for n, (dx, dy) in SLOT_OFFSETS.items()}
+    # what an empty patch of the page scores: between the lines, where nothing is ever placed. Computed from the
+    # globally-shifted positions (not per-cell refined ones) so per-cell refinement can only lift a cell's on-dot
+    # samples above the threshold, never push a weak cell's dots below it by raising the bar for everyone.
     ys = sorted({round(c["y"], 1) for c in cells})
     pitch_y = float(np.median(np.diff(ys))) if len(ys) > 1 else 40.0
     quiet = [_sample(resp, c["x"], c["y"] + pitch_y / 2 + 0.5 * DOT_MM, radius, px_per_mm) for c in cells]
     floor = float(np.mean(quiet) + floor_sigmas * (np.std(quiet) + 1e-6))
+    threshold = _split(np.array(list(sample(cells).values())), floor)
+    if self_align:
+        cells = refine_per_cell(resp, cells, px_per_mm)  # residual per cell after the global shift
+    ev = sample(cells)
     values = np.array(list(ev.values()))
-    threshold = _split(values, floor)
     scale = max(float(np.percentile(values, 95)) - threshold, 1e-6)
     out = []
     for i, c in enumerate(cells):

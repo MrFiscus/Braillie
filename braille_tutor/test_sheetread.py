@@ -153,7 +153,8 @@ class AlignmentTests(PhotoCase):
         (bx, by), (sx, sy) = base[0]["shift"], moved[0]["shift"]
         self.assertAlmostEqual(sx - bx, 2.0, delta=0.4)  # registration moved by (+2, -1) mm: the dots appear that much further on
         self.assertAlmostEqual(sy - by, -1.0, delta=0.4)
-        self.assertAlmostEqual(moved[0]["x"], expected[0]["x"] + sx, places=6)  # cells report where the dots really are
+        # cells report where the dots really are (global shift + a small per-cell nudge from refine_per_cell)
+        self.assertAlmostEqual(moved[0]["x"], expected[0]["x"] + sx, delta=1.0)
 
     def test_scale_and_rotation_errors_still_read(self):
         for P in (misregister(scale=1.02), misregister(rot=1.0), misregister(1.5, 1.0, 1.01, 0.5)):
@@ -190,6 +191,17 @@ class AlignmentTests(PhotoCase):
         start = time.time()
         sheetread.observe(cam, H, expected)
         self.assertLess(time.time() - start, 1.5)  # was about 3 s before the working resolution came down
+
+    def test_a_warped_page_reads_when_the_top_and_the_bottom_need_different_shifts(self):
+        """The single shift from align() can't fix a page whose top drifts one way and its bottom the other -- a curved sheet
+        or corner markers stuck a bit crooked. refine_per_cell picks up that residual per cell."""
+        expected = sheets.get_sheet("alphabet").cells
+        cam, H = self.photo_of_file("alphabet")
+        # A gentle vertical warp: the top of the page is placed 2.5 mm right of where it belongs, the bottom 2.5 mm left.
+        # No single global shift can line every row up; every cell still needs to read correctly.
+        warp = np.array([[1, 0.02, -2.5], [0, 1, 0], [0, 0, 1.0]], np.float64)
+        observed = sheetread.observe(cam, warp @ H, expected)
+        self.assertEqual(wrong_cells(observed, expected), [])
 
 
 class HelperTests(unittest.TestCase):
