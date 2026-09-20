@@ -263,6 +263,23 @@ class WordModeTests(unittest.TestCase):
         self.assertIn("c, a, x", v.said[-1])
         self.assertEqual(st["calls"], 1 + 2)  # first read + max_redetects
 
+    def test_read_mode_says_unknown_as_one_word_for_an_undecoded_cell(self):
+        """An undecoded cell reads as "?" internally, and must be spoken as "unknown", not spelled u, n, k, n, o, w, n
+        (the old code replaced "?" with "unknown" and then joined every character with ", ")."""
+        from detect import _make_cell, dots_to_label
+
+        def scan():  # cells for "c a ?" where the third cell has dots {2, 4, 6} -- not any plain letter
+            base = cells_from_layout(["ca"], x0=10, y0=10, pitch_x=12, pitch_y=20)
+            base.append(_make_cell(10 + 2 * 12, 10, 7.2, 12, dots_to_label({2, 4, 6}), 1.0, 0, 2))
+            base += cells_from_layout(["   dog"], x0=10, y0=10, pitch_x=12, pitch_y=20)[3:]
+            return base
+
+        s, v = session(mode="read", cells=[], scan=scan, finger=lambda: (22, 12))
+        s.on_start()
+        s.on_found_it()
+        self.assertIn("c, a, unknown", v.said[-1])
+        self.assertNotIn("u, n, k", v.said[-1])
+
     def test_quiz_accepts_after_redetect(self):
         scan, st = self.scans("cax dog", "cap dog")
         s, v = session(mode="word-quiz", cells=[], scan=scan, finger=lambda: (22, 12), words=("cap",), questions=1)

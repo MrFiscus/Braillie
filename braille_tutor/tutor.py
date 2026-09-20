@@ -1119,8 +1119,9 @@ class TutorSession:
         result = self.wc.correct_word_read_mode(raw, redetect=lambda: self._word_at(pos))
         if result.source in ("exact", "redetect"):
             self.say(f"The word is {result.word}.")
-        else:  # the backend never guesses; say what was read, letter by letter
-            self.say("I couldn't read that clearly. I think it says " + ", ".join(result.raw.replace("?", "unknown")) + ".")
+        else:  # the backend never guesses; say what was read, letter by letter -- "unknown" for any cell that isn't a plain letter
+            spoken = ", ".join("unknown" if ch == "?" else ch for ch in result.raw)
+            self.say(f"I couldn't read that clearly. I think it says {spoken}.")
 
     def _check_word(self, pos) -> None:
         target = self.items[self.index]
