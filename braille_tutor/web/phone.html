@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Braillie phone camera</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #111; --accent: #0b5cff; --ok: #0a7d32; --bad: #b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #000; --fg: #fff; --accent: #6ea2ff; --ok: #5ad17a; --bad: #ff8a80; } }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
+  main { max-width: 36rem; margin: 0 auto; padding: 1.25rem 16px 2rem; display: flex; flex-direction: column; gap: 1.25rem; }
+  h1 { font-size: 1.6rem; margin: 0; }
+  #status { font-size: 1.5rem; line-height: 1.35; font-weight: 600; min-height: 4.5rem; }
+  #status.ok { color: var(--ok); } #status.bad { color: var(--bad); }
+  button { font: inherit; font-size: 1.5rem; font-weight: 700; padding: 1.4rem 1rem; border-radius: 1rem; border: 3px solid var(--accent);
+           background: var(--accent); color: var(--bg); min-height: 5rem; width: 100%; }
+  button.secondary { background: transparent; color: var(--accent); }
+  label { font-size: 1.3rem; font-weight: 600; }
+  input { font: inherit; font-size: 2rem; letter-spacing: .3em; padding: .8rem; width: 100%; box-sizing: border-box; border-radius: .75rem;
+          border: 3px solid var(--fg); background: var(--bg); color: var(--fg); }
+  video { width: 100%; max-height: 40vh; object-fit: contain; border-radius: .75rem; background: #000; }
+  [hidden] { display: none !important; }
+  p { font-size: 1.15rem; line-height: 1.45; margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Braillie phone camera</h1>
+  <div id="status" role="status" aria-live="assertive">Getting ready.</div>
+
+  <form id="codeform" hidden>
+    <label for="code">Enter the 6 digit code from the laptop</label>
+    <input id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" aria-describedby="status">
+    <button type="submit" style="margin-top:1rem">Connect</button>
+  </form>
+
+  <button id="go" hidden aria-label="Start the camera and the sound">Tap to start the camera and sound</button>
+  <audio id="voice" playsinline hidden></audio>
+  <video id="preview" playsinline muted autoplay hidden aria-hidden="true"></video>
+  <p id="help" hidden>Hold the phone upright, flat above the page, about 30 centimetres up, with the whole sheet in view. Keep this screen open.</p>
+  <button id="stop" class="secondary" hidden>Stop</button>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status"), video = $("preview");
+let code = new URLSearchParams(location.search).get("t") || "";
+let stream = null, running = false, wake = null;
+let lastSpoken = "", lastSpokenAt = 0, pageOk = null, pageBadSince = 0, lastNag = 0;
+let soundOn = false, clipPlaying = false;
+let micCtx = null, micStream = null, micOn = false;   // the phone's microphone, sent to the laptop for the spoken commands
+const MIC_RATE = 16000;                               // what the laptop's speech recognition expects: 16 kHz, mono, 16-bit
+const micPending = [];
+const handledClips = new Set();
+// a tenth of a second of silence: playing it inside the tap is what lets the page play the tutor's voice later (phones block sound until then)
+const SILENCE = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Tell the laptop what this browser says, so a phone that "does not work" can be diagnosed from the laptop's terminal.
+function report(event, detail) {
+  if (!code) return;
+  try {
+    fetch("/phone/log?t=" + encodeURIComponent(code), { method: "POST", headers: { "Content-Type": "application/json" },
+                                                       body: JSON.stringify({ event, detail: String(detail || "").slice(0, 200) }) }).catch(() => {});
+  } catch (e) { /* nothing more to do */ }
+}
+
+function say(text, tone) {
+  statusEl.textContent = text;            // read by VoiceOver / TalkBack through aria-live
+  statusEl.className = tone || "";
+  const now = Date.now();
+  if (text === lastSpoken && now - lastSpokenAt < 8000) return;
+  lastSpoken = text; lastSpokenAt = now;
+  try {                                   // also spoken by the phone itself (iOS only allows this after a tap, so it may stay silent until then)
+    if ("speechSynthesis" in window && !clipPlaying) {
+      speechSynthesis.cancel();
+      speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+    }
+  } catch (e) { /* the text above is still there */ }
+}
+
+const voice = $("voice");
+
+// Must be called straight from a tap (before any await): starts the silent clip that unlocks sound for the whole page.
+function unlockAudio() {
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = "playback";   // iPhone: play even with the ring/silent switch on
+    prepareMic();
+    voice.src = SILENCE;
+    return voice.play().then(() => { soundOn = true; }).catch((e) => { soundOn = false; report("sound-error", `${e && e.name}: ${e && e.message}`); });
+  } catch (e) {
+    report("sound-error", String(e));
+    return Promise.resolve();
+  }
+}
+
+function clipUrl(path, id, extra) {
+  return `${path}?t=${encodeURIComponent(code)}&id=${id}${extra || ""}`;
+}
+
+// The laptop made some speech and sent it here: fetch it, play it, tell the laptop when it has finished (it waits, so lines never overlap).
+async function playClip(clip) {
+  if (handledClips.has(clip.id)) return;
+  handledClips.add(clip.id);
+  clipPlaying = true;
+  try { speechSynthesis.cancel(); } catch (e) { /* none */ }
+  const finish = (error) => {
+    clipPlaying = false;
+    fetch(clipUrl("/phone/audio-done", clip.id, error ? "&error=" + encodeURIComponent(error) : ""), { method: "POST" }).catch(() => {});
+  };
+  try {
+    const res = await fetch(clipUrl("/phone/audio", clip.id), { cache: "no-store" });
+    if (!res.ok) throw new Error("fetch " + res.status);
+    const url = URL.createObjectURL(await res.blob());
+    voice.onended = () => { URL.revokeObjectURL(url); finish(""); };
+    voice.onerror = () => { URL.revokeObjectURL(url); finish("decode"); };
+    voice.src = url;
+    await voice.play();
+  } catch (e) {
+    finish(`${e && e.name}: ${e && e.message}`.slice(0, 60));
+  }
+}
+
+// Called straight from the tap, with unlockAudio(): phones only let a page start audio inside a tap.
+function prepareMic() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx && !micCtx) { micCtx = new Ctx(); micCtx.resume(); }
+  } catch (e) { report("mic-error", "audio context: " + e); }
+}
+
+// Average groups of input samples down to 16 kHz (the browser's own rate is 44.1 or 48 kHz), as signed 16-bit numbers.
+function makeDownsampler(inRate) {
+  const ratio = inRate / MIC_RATE;
+  let sum = 0, n = 0, edge = ratio, i = 0;
+  return (input, out) => {
+    for (let k = 0; k < input.length; k++) {
+      sum += input[k]; n += 1; i += 1;
+      if (i >= edge) {
+        const v = Math.max(-1, Math.min(1, sum / n));
+        out.push(v < 0 ? v * 0x8000 : v * 0x7fff);
+        sum = 0; n = 0; edge += ratio;
+      }
+    }
+  };
+}
+
+const WORKLET = `class Tap extends AudioWorkletProcessor {
+  process(inputs) { const ch = inputs[0] && inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; }
+}
+registerProcessor("mic-tap", Tap);`;
+
+async function startMic(audioTracks) {
+  if (!micCtx || !audioTracks.length) { report("mic-error", "no microphone track"); return; }
+  micStream = new MediaStream(audioTracks);
+  await micCtx.resume();
+  const source = micCtx.createMediaStreamSource(micStream);
+  const down = makeDownsampler(micCtx.sampleRate);
+  const silent = micCtx.createGain(); silent.gain.value = 0; silent.connect(micCtx.destination);   // (some browsers only run a node that reaches the output)
+  let how = "worklet";
+  try {
+    if (!micCtx.audioWorklet) throw new Error("no AudioWorklet");
+    await micCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })));
+    const node = new AudioWorkletNode(micCtx, "mic-tap");
+    node.port.onmessage = (e) => down(e.data, micPending);
+    source.connect(node); node.connect(silent);
+  } catch (e) {                                    // older browsers
+    how = "script-processor";
+    const node = micCtx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (e) => down(e.inputBuffer.getChannelData(0), micPending);
+    source.connect(node); node.connect(silent);
+  }
+  micOn = true;
+  report("mic-started", `${micCtx.sampleRate} Hz via ${how}`);
+  micSendLoop();
+}
+
+async function micSendLoop() {
+  while (running && micOn) {
+    await sleep(200);
+    if (micPending.length > 2 * MIC_RATE) micPending.splice(0, micPending.length - MIC_RATE);   // far behind: keep only the last second
+    if (!micPending.length) continue;
+    const pcm = new Int16Array(micPending.splice(0, micPending.length));
+    try {
+      await fetch("/phone/mic?t=" + encodeURIComponent(code), { method: "POST", body: pcm.buffer, headers: { "Content-Type": "application/octet-stream" } });
+    } catch (e) { /* real time: a lost chunk is just dropped */ }
+  }
+}
+
+async function verify() {
+  try {
+    const res = await fetch("/phone/check?t=" + encodeURIComponent(code), { cache: "no-store" });
+    return res.ok;
+  } catch (e) {
+    say("I cannot reach the laptop. Check that the phone and the laptop are on the same Wi-Fi.", "bad");
+    return null;
+  }
+}
+
+async function begin(unlocked) {
+  if (!code) { $("codeform").hidden = false; $("go").hidden = true; say("Enter the 6 digit code shown on the laptop."); $("code").focus(); return; }
+  $("codeform").hidden = true;
+  const ok = await verify();
+  if (ok === null) { $("go").hidden = false; $("go").textContent = "Try again"; return; }
+  if (!ok) { code = ""; $("codeform").hidden = false; say("That code is not right. Enter the 6 digit code shown on the laptop.", "bad"); $("code").focus(); return; }
+  if (unlocked) await unlocked;   // (already started inside the tap; here only to know how it went)
+  report("page-loaded", `secure=${window.isSecureContext} cameraApi=${!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)} ${navigator.userAgent}`);
+  await start();
+}
+
+async function start() {
+  $("go").hidden = true;
+  say("Starting the camera. If your phone asks, allow camera access.");
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    report("camera-error", `no camera API here (secure context: ${window.isSecureContext})`);
+    say("This browser will not let the page use the camera. On an iPhone use Safari; on Android use Chrome. If you were shown a privacy warning, choose Advanced, then continue.", "bad");
+    $("go").hidden = false; $("go").textContent = "Try again";
+    return;
+  }
+  const videoWanted = { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } };
+  try {
+    try {           // camera and microphone in one prompt...
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoWanted,
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (first) {   // ...and if the microphone is the problem, the camera alone still works (the laptop's microphone is used)
+      report("mic-error", `${first && first.name}: ${first && first.message}`);
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoWanted, audio: false });
+    }
+  } catch (e) {
+    report("camera-error", `${e && e.name}: ${e && e.message}`);
+    const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
+    say(denied ? "The camera is blocked. Allow the camera for this page in your browser settings, then reload the page."
+               : "I could not start the camera. Close other apps that use it and try again.", "bad");
+    $("go").hidden = false; $("go").textContent = "Try again";
+    return;
+  }
+  video.srcObject = stream;
+  video.hidden = false; $("help").hidden = false; $("stop").hidden = false;
+  await video.play().catch(() => {});
+  const track = stream.getVideoTracks()[0];
+  try {                                   // sharper pages: keep focusing, and light the desk where the phone can
+    const caps = (track.getCapabilities && track.getCapabilities()) || {};
+    const advanced = [];
+    if (caps.focusMode && caps.focusMode.includes("continuous")) advanced.push({ focusMode: "continuous" });
+    if (caps.torch) advanced.push({ torch: true });
+    if (advanced.length) await track.applyConstraints({ advanced });
+  } catch (e) { /* not supported here: fine */ }
+  try { if (navigator.wakeLock) wake = await navigator.wakeLock.request("screen"); } catch (e) { /* screen may sleep: nothing to do */ }
+  running = true;
+  const audioTracks = stream.getAudioTracks();
+  if (audioTracks.length) { try { await startMic(audioTracks); } catch (e) { report("mic-error", String(e)); } }
+  if (soundOn) fetch("/phone/audio-ready?t=" + encodeURIComponent(code), { method: "POST" }).catch(() => {});  // from now on the laptop sends its voice here
+  report("camera-started", `${video.videoWidth}x${video.videoHeight}` + (soundOn ? " sound=on" : " sound=off") + (micOn ? " mic=on" : " mic=off"));
+  say(soundOn
+      ? (micOn ? "Camera, sound and microphone on. You will hear the tutor on this phone, and you can speak to it here."
+               : "Camera and sound on. You will hear the tutor on this phone. The microphone is off here, so speak to the laptop.")
+      : "Camera on. Sending to the laptop. The sound is off on this phone, so the laptop will speak.", "ok");
+  loop();
+}
+
+function announce(info) {
+  const now = Date.now();
+  if (info.page_ok) {
+    if (pageOk !== true) say("Page found. You are ready.", "ok");
+    pageOk = true; pageBadSince = 0;
+  } else {
+    if (pageOk !== false) { pageOk = false; pageBadSince = now; lastNag = now; }
+    if (now - pageBadSince > 4000 && now - lastNag > 12000) {   // nag gently, not constantly
+      lastNag = now;
+      say("I cannot see the page yet. Hold the phone higher and keep the whole sheet in view.", "bad");
+    }
+  }
+}
+
+async function loop() {
+  const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
+  let failures = 0;
+  while (running) {
+    const t0 = performance.now();
+    if (video.videoWidth) {
+      const s = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+      canvas.width = Math.round(video.videoWidth * s); canvas.height = Math.round(video.videoHeight * s);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.8));
+      try {
+        const res = await fetch("/phone/frame?t=" + encodeURIComponent(code),
+                                { method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" } });
+        if (res.status === 403) { halt(); say("The laptop did not accept this phone. Reload the page and scan the code again.", "bad"); return; }
+        if (!res.ok) throw new Error("bad reply " + res.status);
+        const info = await res.json();
+        announce(info);
+        if (info.say && soundOn) playClip(info.say);   // (not awaited: the camera keeps streaming while it talks)
+        if (failures >= 5) say("Connected again.", "ok");
+        failures = 0;
+      } catch (e) {
+        failures += 1;
+        if (failures === 5) say("Lost the connection to the laptop. Check that both are on the same Wi-Fi.", "bad");
+        if (failures === 1) console.warn("upload failed", e);
+        await sleep(500);
+      }
+    }
+    await sleep(Math.max(0, 120 - (performance.now() - t0)));   // about 8 frames a second is plenty for reading a page
+  }
+}
+
+function halt() {
+  running = false;
+  micOn = false;
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  micStream = null;
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  if (wake) { try { wake.release(); } catch (e) { /* ignore */ } wake = null; }
+}
+
+$("stop").addEventListener("click", () => { halt(); try { voice.pause(); } catch (e) { /* none */ } video.hidden = true; $("stop").hidden = true; $("help").hidden = true;
+                                              $("go").hidden = false; $("go").textContent = "Start camera"; say("Camera stopped."); });
+$("go").addEventListener("click", () => { const unlocked = unlockAudio(); begin(unlocked); });
+$("codeform").addEventListener("submit", (e) => { e.preventDefault(); code = $("code").value.trim(); const unlocked = unlockAudio(); begin(unlocked); });
+document.addEventListener("visibilitychange", async () => {   // a phone that was locked or switched away needs the screen lock again
+  if (document.visibilityState === "visible" && running && navigator.wakeLock && !wake) {
+    try { wake = await navigator.wakeLock.request("screen"); } catch (e) { /* ignore */ }
+  }
+});
+window.addEventListener("pagehide", halt);
+
+if (code) {   // sound can only be unlocked by a tap, so wait for one (one big button; the camera starts with it)
+  $("go").hidden = false;
+  say("Tap the big button to start the camera and the sound.");
+  $("go").focus();
+} else { $("codeform").hidden = false; say("Enter the 6 digit code shown on the laptop."); $("code").focus(); }
+</script>
+</body>
+</html>
