@@ -1,5 +1,6 @@
 # Core voice I/O dependencies
 deepgram-sdk==7.9.0
+python-dotenv>=1.0
 pyaudio>=0.2.14
 requests>=2.31
 

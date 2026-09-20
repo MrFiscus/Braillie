@@ -14,9 +14,19 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import struct
 import sys
 import time
+from pathlib import Path
+
+# Load the same .env file voice_io.py loads, so this diagnostic sees the same
+# environment.  Shell variables retain precedence (load_dotenv never overrides).
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).with_name(".env"))
+except ImportError:
+    pass  # dotenv not installed; fall back to shell env only
 
 # ---------------------------------------------------------------------------
 # Constants pulled from voice_io.py so this script stays in sync.
@@ -95,18 +105,23 @@ def print_device_table(pa) -> None:
     rows        = _device_rows(pa)
     default_idx = _default_input_index(pa)
 
+    # Read the pinned device index the same way voice_io.py does.
+    mic_index_env = os.getenv("VOICE_IO_MIC_INDEX", "").strip()
+    pinned_idx: int | None = int(mic_index_env) if mic_index_env else None
+
     if not rows:
         print("No input devices found.")
         return
 
-    # Column widths
-    name_w = max(len(r["name"]) for r in rows)
-    name_w = max(name_w, len("Name"))
-    api_w  = max(len(r["host_api"]) for r in rows)
-    api_w  = max(api_w, len("Host API"))
+    # Column widths — "Pinned" marker column header
+    name_w  = max(len(r["name"]) for r in rows)
+    name_w  = max(name_w, len("Name"))
+    api_w   = max(len(r["host_api"]) for r in rows)
+    api_w   = max(api_w, len("Host API"))
+    mark_w  = 9   # width of the marker column (e.g. " <default")
 
     header = (
-        f"{'Idx':>3}  {'Default':7}  "
+        f"{'Idx':>3}  {'':>{mark_w}}  "
         f"{'Name':<{name_w}}  {'Rate':>8}  {'Host API':<{api_w}}"
     )
     sep = "-" * len(header)
@@ -116,28 +131,68 @@ def print_device_table(pa) -> None:
     print(header)
     print(sep)
     for r in rows:
-        marker = "  <---  " if r["index"] == default_idx else "         "
+        idx = r["index"]
+        if idx == pinned_idx and idx == default_idx:
+            marker = " <default"   # both — rare but possible
+        elif idx == pinned_idx:
+            marker = " <PINNED "   # what voice_io.py will actually open
+        elif idx == default_idx:
+            marker = " <default"
+        else:
+            marker = "          "
         print(
-            f"{r['index']:>3}  {marker}"
+            f"{r['index']:>3}  {marker:>{mark_w}}  "
             f"{r['name']:<{name_w}}  {r['rate']:>8}  {r['host_api']:<{api_w}}"
         )
     print(sep)
+    if pinned_idx is not None:
+        print(f"  <PINNED  = VOICE_IO_MIC_INDEX={pinned_idx} (what voice_io.py will open)")
+    print(f"  <default = OS default input device (used when VOICE_IO_MIC_INDEX is not set)")
 
-    # voice_io.py explanation
+    # voice_io.py explanation — read the same env var voice_io.py reads at import
+    mic_index_env = os.getenv("VOICE_IO_MIC_INDEX", "").strip()
+    pinned_idx: int | None = int(mic_index_env) if mic_index_env else None
+
     print("\nVOICE_IO.PY DEVICE SELECTION")
-    print(
-        "  voice_io.py calls pa.open(input=True) with no input_device_index,\n"
-        "  so PyAudio opens whichever device is the system default at that moment."
-    )
-    if default_idx >= 0:
-        default_info = pa.get_device_info_by_index(default_idx)
+    if pinned_idx is not None:
         print(
-            f"  → Device #{default_idx}: \"{default_info['name']}\"  "
-            f"({int(default_info['defaultSampleRate'])} Hz)\n"
-            f"     voice_io.py will request {VOICE_IO_SAMPLE_RATE} Hz from this device."
+            f"  VOICE_IO_MIC_INDEX={pinned_idx} → voice_io.py calls\n"
+            f"  pa.open(input=True, input_device_index={pinned_idx})"
         )
+        try:
+            pinned_info = pa.get_device_info_by_index(pinned_idx)
+            if pinned_info["maxInputChannels"] < 1:
+                print(
+                    f"  → WARNING: Device #{pinned_idx} (\"{pinned_info['name']}\") "
+                    f"has no input channels — voice_io.py will fail and fall back to default."
+                )
+            else:
+                print(
+                    f"  → Device #{pinned_idx}: \"{pinned_info['name']}\"  "
+                    f"({int(pinned_info['defaultSampleRate'])} Hz)\n"
+                    f"     voice_io.py will request {VOICE_IO_SAMPLE_RATE} Hz from this device."
+                )
+        except Exception:
+            print(
+                f"  → WARNING: Device #{pinned_idx} does not exist on this system.\n"
+                f"     voice_io.py will fail to open it and fall back to the system default."
+            )
     else:
-        print("  → Could not determine the system default input device.")
+        print(
+            "  VOICE_IO_MIC_INDEX is not set → voice_io.py calls\n"
+            "  pa.open(input=True) with no input_device_index,\n"
+            "  opening whichever device the OS considers the default at runtime.\n"
+            "  Set VOICE_IO_MIC_INDEX=<index> to pin a specific device."
+        )
+        if default_idx >= 0:
+            default_info = pa.get_device_info_by_index(default_idx)
+            print(
+                f"  → Device #{default_idx}: \"{default_info['name']}\"  "
+                f"({int(default_info['defaultSampleRate'])} Hz)\n"
+                f"     voice_io.py will request {VOICE_IO_SAMPLE_RATE} Hz from this device."
+            )
+        else:
+            print("  → Could not determine the system default input device.")
     print()
 
 
