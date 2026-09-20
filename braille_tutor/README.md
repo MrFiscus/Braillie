@@ -414,9 +414,32 @@ port 8443 is busy (an earlier run still going) it moves to the next free port an
 tutor should run at a time: stop the old one (Ctrl+C) before starting a new one.
 
 How it works and what to know:
-- Phone browsers only give a page the camera over HTTPS, so the laptop makes a self-signed certificate once (`openssl`, saved in
-  `~/.braillie`). The first time, the phone says the connection is not private: choose Advanced, then continue. **That warning
-  is the one step that cannot go away without a real domain name; a helper may need to tap it.**
+- Phone browsers only give a page the camera over HTTPS, so the tutor needs a certificate. There are three ways, from the default to the
+  most private; **the last two remove the "connection is not private" page**:
+  1. *Default: self-signed* (`openssl`, saved in `~/.braillie`). Works with no internet, but the phone warns the first time: choose
+     Advanced, then continue.
+  2. **`--phone-trusted`: a real certificate, and everything stays on your Wi-Fi (recommended).** The link is
+     `https://192-168-1-22.local-ip.sh:8443/...`: [local-ip.sh](https://local-ip.sh) is a public name service whose names point at the
+     address in them (here your laptop's) and which publishes a Let's Encrypt certificate for `*.local-ip.sh`. The tutor downloads it once
+     (then weekly; kept in `~/.braillie/local-ip`, checked for the right name, days left and matching key) and the phone connects straight
+     to the laptop: no warning, no third party carrying the video or sound, about 10 ms per frame instead of ~150 ms through a tunnel.
+     With `run_all.sh`: `./run_all.sh --phone-trusted`. What to know: the first run and each weekly refresh need internet, and the phone
+     must be able to look the name up (the phone needs DNS, and some routers refuse names that point at a local address, "DNS rebinding
+     protection": if so use the phone's hotspot for both, or `--phone-tunnel`); phone and laptop must be on the same Wi-Fi; and because
+     that certificate's key is public, it protects against someone on the same Wi-Fi only as much as the self-signed one does (both stop
+     passive eavesdropping, neither stops someone actively in the middle). If it cannot be set up the tutor says why and uses the
+     self-signed one.
+     *Your own domain, for real protection:* `--phone-domain phone.example.org --phone-cert cert.pem --phone-key key.pem`, where the
+     name has an A record with your laptop's local address and the certificate is from a real authority (for example Let's Encrypt via
+     `lego` with a free DuckDNS name). It is checked before use. (Serving with your certificate is tested; getting one from Let's Encrypt is
+     not something this repository automates or tests.)
+  3. **`--phone-tunnel`: no warning, any network, but through Cloudflare.** The tutor starts `cloudflared` (free, no account; install once
+     with `brew install cloudflared`) which gives the phone server a public `https://...trycloudflare.com` address with a trusted
+     certificate. The phone can then be on mobile data or a Wi-Fi that blocks devices from talking to each other. What to know: it needs
+     internet on both; the video and microphone go through Cloudflare's servers (readable by them) and add ~150 ms; the address is random,
+     only in the QR code, and nothing is accepted without the six-digit code (20 wrong codes lock it out for a minute); the phone server
+     then listens on this computer only; the tunnel stops when the tutor stops, however it ends. Without `cloudflared` the tutor says
+     why and carries on the local-network way.
 - Same-Wi-Fi only, and many campus, hotel and hackathon networks block devices from talking to each other. If the phone cannot
   reach the address, join both to the phone's hotspot or the laptop's. `--phone-host IP` overrides the address it guesses,
   `--phone-port` the port (8443).

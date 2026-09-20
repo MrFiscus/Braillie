@@ -191,7 +191,7 @@ class TutorRuntime:
         if link is None:
             return None
         return {"connected": link.connected, "url": link.url, "address": link.base, "code": link.code, "qr": "/api/phone/qr.png",
-                "instructions": link.spoken_instructions(), "diagnosis": link.diagnose(), "sound": link.sound_ready(), "mic": link.mic_live(),
+                "tunnel": link.tunnelled, "trusted": link.no_warning, "instructions": link.spoken_instructions(), "diagnosis": link.diagnose(), "sound": link.sound_ready(), "mic": link.mic_live(),
                 "events": [text for _, text in list(link.events)[-8:]]}
 
     def cells(self) -> list:

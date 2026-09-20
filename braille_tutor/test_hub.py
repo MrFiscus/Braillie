@@ -294,6 +294,28 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: any("The word is cat" in t for t in voice.said)), voice.said[-3:])
         s.set_mode("menu")
 
+    def test_stop_leaves_read_and_quiz_even_when_the_adaptive_planner_is_on(self):
+        """With the adaptive planner on, a plain _finish() only ended the round: "stop" said "Round complete" and stayed in the mode, however
+        many times it was said."""
+        from test_tutor import PlanningClient
+        for mode, sheet in (("read", "words"), ("quiz", "lookalikes")):
+            s, voice, finger, feed = hub()
+            s.adaptive_planner = tutor.AdaptiveTargetPlanner(PlanningClient())
+            s.scan = lambda sheet=sheet: SHEETS[sheet].cells
+            s.set_user("Sam", "guest")
+            s.set_mode(mode)
+            self.assertEqual(s.hub_mode, mode)
+            s.voice.commands["stop"]()
+            self.assertTrue(wait_for(lambda: s.hub_mode == "menu", 5), f"{mode}: stop did not leave it: {voice.said[-3:]}")
+            self.assertEqual((s.mode, s.state), ("menu", "menu"))
+            self.assertNotIn("Round complete", " ".join(voice.said), mode)
+            said = len(voice.said)
+            for _ in range(3):  # and saying it again at the menu just repeats the menu, it does not start anything
+                s.voice.commands["stop"]()
+            self.assertEqual((s.hub_mode, s.state), ("menu", "menu"))
+            self.assertTrue(all("learn, read, or quiz" in t for t in voice.said[said:]), voice.said[said:])
+            s.set_mode("menu")
+
     def test_switching_mode_stops_the_old_one_completely(self):
         s, voice, finger, feed = hub()
         s.set_mode("learn")

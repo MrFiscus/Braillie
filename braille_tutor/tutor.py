@@ -821,7 +821,7 @@ class TutorSession:
         with self.lock:
             if self.hub and self.hub_mode == "menu":
                 return self.say(MENU_LINE)
-            self._finish()
+            self._finish(stop=True)  # "stop" always ends it (with the adaptive planner on, a plain _finish() only ends the ROUND and stays in the mode)
 
     def on_explore(self) -> None:
         """"Explore": free exploring in learn mode."""
