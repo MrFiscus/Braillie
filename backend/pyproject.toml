@@ -9,11 +9,13 @@ description = "Word validation/correction for braille cell detector output"
 requires-python = ">=3.10"
 dependencies = [
     "pyspellchecker>=0.8",
+    "websockets>=17.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-asyncio",
 ]
 
 [tool.setuptools.packages.find]
