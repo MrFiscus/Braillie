@@ -10,7 +10,7 @@ import numpy as np
 
 import make_sheet
 import page
-from detect import (WEIGHTS, cells_from_boxes, cells_from_layout, dot_distance, dots_to_char, dots_to_label,
+from detect import (WEIGHTS, cell_letter_text, cells_from_boxes, cells_from_layout, dot_distance, dots_to_char, dots_to_label,
                     label_to_dots, load_cells, nearest_cell, rows_of, save_cells, scan_page)
 from make_sheet import dot_points, sheet_cells
 
@@ -485,6 +485,23 @@ class GroupingTests(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(cells_from_boxes([], np.eye(3)), [])
+
+
+class CellLetterTextTests(unittest.TestCase):
+    """The letter to draw on the video for one cell: live-read letter, else printed fallback, else "?" (see detect.cell_letter_text)."""
+
+    def test_live_reading_is_used_when_the_dots_spell_a_letter(self):
+        self.assertEqual(cell_letter_text({"dots": frozenset({1})}), "A")
+        self.assertEqual(cell_letter_text({"dots": frozenset({1})}, printed="z"), "A", "the camera wins whenever it produces a letter")
+
+    def test_printed_fallback_is_used_when_the_live_dots_do_not_spell_a_letter(self):
+        # (a finger hides some dots on the printed A: the observed pattern is not a letter, so the sheet's known letter fills in)
+        self.assertEqual(cell_letter_text({"dots": frozenset()}, printed="a"), "A")
+        self.assertEqual(cell_letter_text({"dots": frozenset({1, 2, 3, 4, 5, 6})}, printed="b"), "B")
+
+    def test_falls_back_to_question_mark_when_nothing_is_known(self):
+        self.assertEqual(cell_letter_text({"dots": frozenset({1, 2, 3, 4, 5, 6})}), "?")
+        self.assertEqual(cell_letter_text({"dots": frozenset()}, printed=None), "?")
 
 
 class LookupTests(unittest.TestCase):

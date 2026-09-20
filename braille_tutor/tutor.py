@@ -1342,9 +1342,14 @@ class CameraFeed:
         view = draw_overlay(frame, H, self.overlay_cells, self.labels) if (H is not None and self.overlay_cells and self.reader is None) else frame.copy()
         if self.reader is not None:
             if H is not None:
+                # The sheet's printed layout, keyed by (row, col): what letter is meant to be at each cell. Used as a fallback
+                # when the live-read dots don't spell a letter (a finger over the cell hides some of the dots), so a covered
+                # cell shows the printed letter instead of "?". The camera's own reading still wins whenever it produces one.
+                printed = {(c["row"], c["col"]): letter_of(c["dots"]) for c in (self.observe_sheet or [])}
                 for c in self.stable:  # one box per cell, in page mm mapped back to the picture
                     quad = [to_image(H, c["x"] + sx * c["w"] / 2, c["y"] + sy * c["h"] / 2) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
-                    draw_cell(view, quad, c, GREEN if c.get("locked") else AMBER, False, True, letters=True)
+                    draw_cell(view, quad, c, GREEN if c.get("locked") else AMBER, False, True, letters=True,
+                              letter_text=printed.get((c["row"], c["col"])))
             if hud:
                 lines = [(self.message, GREEN if H is not None else RED)]
                 if self.identify_until:

@@ -523,10 +523,21 @@ def letter_of(dots: Iterable[int]) -> Optional[str]:
     return _LETTER.get(frozenset(dots))
 
 
-def draw_cell(view: np.ndarray, quad, cell: Cell, color, labels: bool = False, dots: bool = True, letters: bool = False) -> None:
+def cell_letter_text(cell: Cell, printed: Optional[str] = None) -> str:
+    """What to draw over a cell: the live-read letter if the observed dots spell one, else the printed fallback, else "?".
+
+    On a known sheet the printed layout is ground truth; using it stops a finger that hides some dots from turning the
+    overlay for that cell into "?". The camera's own reading still wins whenever it produces a letter, so what the tutor
+    is actually seeing is visible in the demo -- the fallback only fills in cells the camera can't decide right now."""
+    return (letter_of(cell["dots"]) or printed or "?").upper()
+
+
+def draw_cell(view: np.ndarray, quad, cell: Cell, color, labels: bool = False, dots: bool = True, letters: bool = False,
+              letter_text: Optional[str] = None) -> None:
     """Draw a cell's box (quad = TL, TR, BR, BL in pixels) plus red dots where the detector says the dots are.
 
-    The red dots should sit on the real dots underneath: a real dot with no red dot on it is a miss."""
+    The red dots should sit on the real dots underneath: a real dot with no red dot on it is a miss.
+    `letter_text` is the printed letter to draw when the live-read dots don't spell a letter (see cell_letter_text)."""
     tl, tr, br, bl = [np.float32(p) for p in quad]
     cv2.polylines(view, [np.int32([tl, tr, br, bl])], True, color, 1, cv2.LINE_AA)
     r = max(2, int(np.linalg.norm(tr - tl) / 9))
@@ -537,7 +548,7 @@ def draw_cell(view: np.ndarray, quad, cell: Cell, color, labels: bool = False, d
     if labels:
         cv2.putText(view, "".join(map(str, sorted(cell["dots"]))), (int(tl[0]), int(tl[1]) - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, RED, 1)
     if letters:  # the reading itself, large and outlined so it can be read on any background
-        text = (letter_of(cell["dots"]) or "?").upper()
+        text = cell_letter_text(cell, letter_text)
         scale = float(np.clip(np.linalg.norm(tr - tl) / 30.0, 0.5, 1.1))
         pos = (int(tl[0]), int(tl[1]) - int(6 + 8 * scale))
         cv2.putText(view, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4, cv2.LINE_AA)
