@@ -246,7 +246,7 @@ class RealVoiceTests(unittest.TestCase):
     def test_every_voice_command_is_registered(self):
         s = tutor.TutorSession(VOICE, WC, [], finger=lambda: None)
         s.attach()
-        self.assertEqual(set(VOICE._callbacks), {"start quiz", "repeat", "hint", "found it", "next", "next page", "stop"})
+        self.assertEqual(set(VOICE._callbacks), {"start quiz", "repeat", "hint", "found it", "next", "next page", "explore", "practice", "stop"})
 
 
 @unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")

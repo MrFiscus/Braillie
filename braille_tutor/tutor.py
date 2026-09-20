@@ -30,8 +30,11 @@ import reader
 from detect import AMBER, GREEN, RED, _Detector, braille_status, dot_distance, draw_cell, draw_detections, draw_hud, draw_page_outline, letter_of, locked_check_line, nearest_cell, open_camera, page_source_from_args, page_status
 from llm import Coach, LLMClient
 import phonelink
+from earcons import Earcons
 from fingertip import FingerTracker
+from learn import Journey
 from page import to_image, to_page
+from progress import Progress, progress_path
 from sheets import Symbol, get_sheet, letter_symbol
 from vote import CellLocker
 
@@ -123,6 +126,7 @@ def report_voice(check: dict) -> None:
 def wire_new_page(session: "TutorSession", feed: "CameraFeed") -> None:
     """Connect "next page": the session asks the feed to forget the old page; what the feed then works out is spoken and applied."""
     session.new_page = feed.new_page
+    session.current_sheet = lambda: feed.sheet_name
     session.identifies_sheets = bool(feed.known_sheets)
     feed.on_sheet = session.set_sheet
     feed.announce = lambda text: threading.Thread(target=session.say, args=(text,), daemon=True).start()  # speaking blocks
@@ -131,7 +135,7 @@ def wire_new_page(session: "TutorSession", feed: "CameraFeed") -> None:
 def known_sheets_for(a, setup) -> Optional[dict]:
     """Explore mode on a printed sheet can switch between all of them when the page is turned; other modes stay on their sheet."""
     from sheets import SHEET_NAMES
-    return {name: get_sheet(name) for name in SHEET_NAMES} if (a.mode == "explore" and setup.observed) else None
+    return {name: get_sheet(name) for name in SHEET_NAMES} if (a.mode in ("explore", "learn") and setup.observed) else None
 
 
 def load_teammate_modules(mock: bool = False):
@@ -149,6 +153,45 @@ def load_teammate_modules(mock: bool = False):
     return voice_io, word_correction
 
 
+class _JourneyHost:
+    """What the lesson engine (learn.py) needs from the outside, provided by the running tutor session."""
+
+    def __init__(self, session: "TutorSession"):
+        self.s = session
+
+    def say(self, text: str) -> None:
+        self.s.say(text)
+
+    def tone(self, kind: str) -> None:
+        self.s.earcons.play(kind)
+
+    def finger(self):
+        return self.s.finger()
+
+    def cells(self) -> list:
+        return self.s._explore_cells()  # a fresh reading of the page, or the sheet's layout if there is none yet
+
+    def sheet_name(self) -> str:
+        return self.s.current_sheet()
+
+    def request_sheet(self, name: str) -> None:
+        if self.s.new_page is not None:
+            self.s.new_page()  # forget the old page and work out which sheet is on the desk now (the tutor announces it)
+
+    def explore_reset(self) -> None:
+        self.s._ex = self.s._new_explore_state()
+
+    def explore_tick(self, now: float) -> None:
+        self.s.explore_tick(now)
+
+    def finish(self) -> None:
+        self.s.state = "done"
+        self.s.finished.set()
+
+    def save(self) -> None:
+        self.s.save_progress()
+
+
 class TutorSession:
     """The quiz/read logic. All outside pieces are passed in, so it can be tested without a camera or a microphone.
 
@@ -162,7 +205,8 @@ class TutorSession:
 
     def __init__(self, voice, wc, cells: list, finger: Callable, scan: Optional[Callable] = None, mode: str = "letters",
                  questions: int = 5, words: tuple = (), max_tries: int = 3, rng: Optional[random.Random] = None,
-                 names: Optional[dict] = None, coach: Optional[Coach] = None, contracted: bool = False):
+                 names: Optional[dict] = None, coach: Optional[Coach] = None, contracted: bool = False,
+                 progress: Optional[Progress] = None, progress_file=None, tones: bool = True):
         self.contracted = contracted  # read words as contracted (Grade 2) braille: for a real page; printed sheets are plain letters
         self.coach, self.confusions, self.last_debrief = coach, {}, None  # coach = optional LLM extras; see llm.py
         self.names = names  # (row, col) -> sheets.Symbol for every cell of a printed sheet; None = every letter cell is a letter
@@ -176,13 +220,19 @@ class TutorSession:
         self.voice_status: Optional[dict] = None  # set by the apps from voice_check(): whether speech will actually be heard
         self.new_page: Optional[Callable] = None  # set by the apps: forgets the old page (its reading and its registration)
         self.identifies_sheets = False  # set by the apps: "next page" also works out which printed sheet is now on the desk
+        self.current_sheet: Callable = lambda: "alphabet"  # set by the apps: which printed sheet the camera is reading now
+        self.progress, self.progress_file = progress or Progress(), progress_file  # what the learner has learned; saved as it changes
+        self.earcons = Earcons(getattr(voice, "voice", voice), enabled=tones)  # (a wrapped voice keeps the real module as .voice)
+        self.journey: Optional[Journey] = None
+        if mode == "learn":  # the guided lessons (learn.py)
+            self.journey = Journey(_JourneyHost(self), self.progress, coach=coach, rng=self.rng)
 
     # ---- wiring ---------------------------------------------------------------------------------
     def attach(self) -> None:
         """Register the voice commands."""
         for name, handler in (("start quiz", self.on_start), ("repeat", self.on_repeat), ("hint", self.on_hint),
                               ("found it", self.on_found_it), ("next", self.on_next), ("next page", self.on_next_page),
-                              ("stop", self.on_stop)):
+                              ("explore", self.on_explore), ("practice", self.on_practice), ("stop", self.on_stop)):
             try:
                 self.voice.register_command(name, handler)
             except ValueError:  # an older voice_io that does not know this phrase: the others still work
@@ -202,8 +252,42 @@ class TutorSession:
         return {"mode": self.mode, "state": self.state, "prompt": prompt, "question": self.index + 1 if asking else 0,
                 "total": len(self.items), "asked": self.asked, "correct": self.correct, "tries": self.tries}
 
+    def learning_status(self) -> Optional[dict]:
+        """Where the learner is in the lessons (None unless --mode learn)."""
+        return None if self.journey is None else self.journey.status()
+
+    def save_progress(self) -> None:
+        """Keep what was learned (called as it changes; a small atomic write)."""
+        if self.progress_file is not None:
+            try:
+                self.progress.save(self.progress_file)
+            except OSError as e:
+                print(f"could not save progress to {self.progress_file}: {e}", flush=True)
+
+    def _learn(self, command: str) -> None:
+        """Run a voice command in learn mode: the lesson engine handles it, and its clock loop is kept running."""
+        with self.lock:
+            if command == "on_start":
+                self.finished.clear()  # "start" after "stop" begins again
+                self.state = "learning"
+                if not getattr(self, "_learn_thread", None) or not self._learn_thread.is_alive():
+                    self._learn_thread = threading.Thread(target=self._learn_loop, daemon=True, name="learn")
+                    self._learn_thread.start()
+            getattr(self.journey, command)()
+
+    def _learn_loop(self) -> None:
+        while not self.finished.is_set():
+            with self.lock:
+                try:
+                    self.journey.tick()
+                except Exception:  # keep teaching: one bad moment must not silence the tutor
+                    traceback.print_exc()
+            time.sleep(0.1)
+
     # ---- commands -------------------------------------------------------------------------------
     def on_start(self) -> None:
+        if self.journey is not None:
+            return self._learn("on_start")
         with self.lock:
             self.asked = self.correct = self.index = 0
             self.slips = {}
@@ -226,6 +310,8 @@ class TutorSession:
             self._ask()
 
     def on_repeat(self) -> None:
+        if self.journey is not None:
+            return self._learn("on_repeat")
         with self.lock:
             if self.state == "exploring":
                 self.say(self._last_said or "Rest a finger on a cell and I will tell you what it is.")
@@ -237,6 +323,8 @@ class TutorSession:
                 self.say("Say start quiz to begin.")
 
     def on_hint(self) -> None:
+        if self.journey is not None:
+            return self._learn("on_hint")
         with self.lock:
             if self.state == "exploring":
                 return self._explore_here(full=True)
@@ -259,6 +347,8 @@ class TutorSession:
                 self.say(f"{'One of them is' if copies > 1 else 'It is'} in row {cell['row'] + 1}, column {cell['col'] + 1}.")
 
     def on_found_it(self) -> None:
+        if self.journey is not None:
+            return self._learn("on_found_it")
         with self.lock:
             if self.state == "exploring":
                 return self._explore_here(full=False)  # don't wait for the finger to settle
@@ -275,6 +365,8 @@ class TutorSession:
                 self._check_symbol(pos)
 
     def on_next(self) -> None:
+        if self.journey is not None:
+            return self._learn("on_next")
         with self.lock:
             if self.state == "exploring":
                 return self.say("Just move your finger to another cell. Say stop when you are done.")
@@ -284,8 +376,23 @@ class TutorSession:
             self._advance()
 
     def on_stop(self) -> None:
+        if self.journey is not None:
+            return self._learn("on_stop")
         with self.lock:
             self._finish()
+
+    def on_explore(self) -> None:
+        """"Explore": free exploring in learn mode."""
+        if self.journey is not None:
+            return self._learn("on_explore")
+        self.say("Free exploring is part of the guided lessons: start with --mode learn, or use --mode explore." if self.mode != "explore"
+                 else "You are already exploring. Rest a finger on any cell.")
+
+    def on_practice(self) -> None:
+        """"Practice": an adaptive review of the letters that need it, in learn mode."""
+        if self.journey is not None:
+            return self._learn("on_practice")
+        self.say("Practice is part of the guided lessons: start with --mode learn.")
 
     def on_next_page(self) -> None:
         """"Next page": forget the page that was being read, so the one now on the desk is read fresh (a locked-in reading
@@ -548,7 +655,7 @@ class TutorSession:
 
 # ---- the camera app ---------------------------------------------------------------------------------
 
-KEYS = {"s": "on_start", "r": "on_repeat", "h": "on_hint", "f": "on_found_it", "n": "on_next", "p": "on_next_page", "x": "on_stop"}
+KEYS = {"s": "on_start", "r": "on_repeat", "h": "on_hint", "f": "on_found_it", "n": "on_next", "p": "on_next_page", "e": "on_explore", "v": "on_practice", "x": "on_stop"}
 
 
 class CameraFeed:
@@ -795,8 +902,12 @@ class Setup(NamedTuple):
 def add_setup_args(ap: argparse.ArgumentParser) -> None:
     """The options shared by tutor.py and tutor_server.py that choose the mode and the printed sheet."""
     from sheets import SHEET_NAMES
-    ap.add_argument("--mode", choices=("letters", "read", "word-quiz", "explore"), default="letters",
-                    help="explore: no quiz, it says what the camera detects under your finger, with the dots (starts by itself)")
+    ap.add_argument("--mode", choices=("letters", "read", "word-quiz", "explore", "learn"), default="letters",
+                    help="learn: guided lessons (teach a few letters at a time, practise, recap, adaptive review, free exploring), "
+                         "starts by itself and remembers progress; explore: no quiz, it says what the camera detects under your finger")
+    ap.add_argument("--profile", default="default", help="learn mode: whose progress to keep (one file per name in ~/.braillie)")
+    ap.add_argument("--no-tones", action="store_true", help="learn mode: no little sounds for right and wrong answers, only speech")
+    ap.add_argument("--no-llm", action="store_true", help="learn mode uses the AI coach automatically when OPENAI_API_KEY is set; this stops that")
     ap.add_argument("--sheet", choices=SHEET_NAMES, help="a printed sheet (see sheets.py). Letters mode quizzes on it "
                     "(default alphabet); word modes then read its known layout instead of running the detector")
     ap.add_argument("--detect", action="store_true", help="with --sheet in a word mode: read with the camera detector anyway")
@@ -814,21 +925,37 @@ def add_setup_args(ap: argparse.ArgumentParser) -> None:
 
 
 def make_coach(a) -> Optional[Coach]:
-    """The LLM helper if --llm was given and a key is set, else None (the tutor then behaves exactly as before)."""
-    if not getattr(a, "llm", False):
+    """The LLM helper if asked for (--llm) or, in learn mode, whenever OPENAI_API_KEY is set (--no-llm stops that); else None and the
+    tutor uses its built-in wording. Only lesson facts are ever sent."""
+    explicit = getattr(a, "llm", False)
+    automatic = getattr(a, "mode", "") == "learn" and not getattr(a, "no_llm", False)
+    if not (explicit or automatic):
         return None
-    client = LLMClient.from_env(a.llm_model)
+    client = LLMClient.from_env(getattr(a, "llm_model", None))
     if client is None:
-        print("--llm was given but OPENAI_API_KEY is not set: the LLM helper stays off.", flush=True)
+        if explicit:
+            print("--llm was given but OPENAI_API_KEY is not set: the LLM helper stays off.", flush=True)
+        else:
+            print("AI coach off: add OPENAI_API_KEY=... to the .env file to turn it on (the built-in coaching works without it).", flush=True)
         return None
-    print(f"LLM helper on ({client.model}). Only lesson facts (cell names, dot numbers, scores) are sent, never camera images "
+    print(f"AI coach on ({client.model}). Only lesson facts (letter names, dot numbers, scores) are sent, never camera images "
           "or audio. If the service is slow or fails, the built-in wording is used.", flush=True)
     return Coach(client)
 
 
+def progress_for(a) -> tuple:
+    """(Progress, file) for the learner in learn mode, loaded from ~/.braillie; (None, None) in other modes."""
+    if getattr(a, "mode", "") != "learn":
+        return None, None
+    path = progress_path(getattr(a, "profile", "default"))
+    progress = Progress.load(path)
+    print(f"Progress for '{getattr(a, 'profile', 'default')}': {len(progress.learned())} letters learned, {progress.sessions} sessions ({path})", flush=True)
+    return progress, path
+
+
 def setup_from_args(a, ap: argparse.ArgumentParser) -> Setup:
     """Resolve --mode / --sheet / --words / --detect into cells, names and reading behaviour."""
-    sheet = get_sheet(a.sheet or "alphabet") if (a.mode in ("letters", "explore") or a.sheet) else None
+    sheet = get_sheet(a.sheet or "alphabet") if (a.mode in ("letters", "explore", "learn") or a.sheet) else None
     words = list(a.words)
     if a.mode == "word-quiz" and not words:
         if sheet is not None and sheet.spec.name == "words":
@@ -837,7 +964,7 @@ def setup_from_args(a, ap: argparse.ArgumentParser) -> Setup:
             ap.error("--mode word-quiz needs --words (or --sheet words)")
     if sheet is None:
         return Setup([], None, None, False, words, contracted=a.mode in ("read", "word-quiz"))
-    if a.mode == "explore":  # speak what the camera SEES on the sheet, never the layout copied from the file
+    if a.mode in ("explore", "learn"):  # speak what the camera SEES on the sheet, never the layout copied from the file
         return Setup(sheet.cells, sheet.names, {k: s.short for k, s in sheet.names.items()}, False, words, observed=True)
     layout = a.mode != "letters" and not a.detect
     if layout:
@@ -861,8 +988,10 @@ def main() -> None:
     a = ap.parse_args()
     setup = setup_from_args(a, ap)
     voice, wc = load_teammate_modules(a.mock)
+    progress, progress_file = progress_for(a)
     session = TutorSession(voice, wc, setup.cells, finger=lambda: None, mode=a.mode, questions=a.questions, words=setup.words,
-                           rng=random.Random(a.seed), names=setup.names, coach=make_coach(a), contracted=setup.contracted)
+                           rng=random.Random(a.seed), names=setup.names, coach=make_coach(a), contracted=setup.contracted,
+                           progress=progress, progress_file=progress_file, tones=not a.no_tones)
     session.voice_status = voice_check(voice)
     report_voice(session.voice_status)  # silence must never be a mystery
     session.attach()
@@ -872,7 +1001,7 @@ def main() -> None:
     try:
         if phone:  # someone who cannot see the QR code on screen hears how to connect
             session.say(phone[0].spoken_instructions())
-        if a.autostart or a.mode == "explore":  # explore has nothing to wait for
+        if a.autostart or a.mode in ("explore", "learn"):  # these have nothing to wait for
             session.on_start()
         else:
             session.say("Welcome to Braillie. Say start quiz to begin.")

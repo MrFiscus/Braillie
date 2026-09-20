@@ -179,6 +179,17 @@ _COMMAND_MAP: dict[str, str] = {
     "next page": "next page",  # turn to a new page: longer phrases win, so this is never heard as plain "next"
     "new page": "next page",
     "another page": "next page",
+    # --- guided lessons (learn mode) -------------------------------------
+    "explore": "explore",  # free exploring between lessons
+    "free explore": "explore",
+    "let me explore": "explore",
+    "practice": "practice",  # adaptive review of the letters that need it most
+    "practise": "practice",
+    "review": "practice",
+    "start": "start quiz",  # "say start to begin a lesson"
+    "start lesson": "start quiz",
+    "begin lesson": "start quiz",
+    "start learning": "start quiz",
     "stop": "stop",
     "quit": "stop",
     "i'm done": "stop",

@@ -30,12 +30,13 @@ import cv2
 
 import phonelink
 import tutor
+from progress import Progress
 from detect import letter_of, nearest_cell, open_camera, page_source_from_args
 
 WEB_DIR = Path(__file__).parent / "web"
 MAX_BODY = 4096
 COMMANDS = {"start quiz": "on_start", "repeat": "on_repeat", "hint": "on_hint", "found it": "on_found_it",
-            "next": "on_next", "next page": "on_next_page", "stop": "on_stop"}
+            "next": "on_next", "next page": "on_next_page", "explore": "on_explore", "practice": "on_practice", "stop": "on_stop"}
 LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
 FPS, STREAM_WIDTH = 15, 960
 
@@ -125,11 +126,21 @@ class TutorRuntime:
                    "voice": session.voice_status, "sheet": self.feed.sheet_name},
                 "reading": {"locked": sum(1 for c in feed.stable if c.get("locked")), "total": len(feed.observe_sheet or []),
                             "between_pages": bool(feed.identify_until)},
+                "learning": session.learning_status(),
+                "progress": session.progress.summary() if session.journey is not None else None,
                 "camera": {"ok": self.camera_ok, "frames": feed.frames}, "phone": self.phone_info(),
                 "page": {"ok": feed.page_ok, "message": feed.message},
                 "tutor": session.status(),
                 "finger": {"page_mm": None if pos is None else [round(pos[0], 1), round(pos[1], 1)], "cell": cell},
                 "said": list(self.voice.said)[-15:], "debrief": session.last_debrief or self.voice.debrief}
+
+    def merge_progress(self, data) -> None:
+        """Fold a saved copy of the learner's progress (e.g. the one in their account) into the live one, and keep the result."""
+        if not isinstance(data, dict):
+            raise ValueError('body must be {"data": <progress object>}')
+        with self.session.lock:
+            self.session.progress.merge(Progress.from_dict(data))
+            self.session.save_progress()
 
     def phone_info(self) -> Optional[dict]:
         """None unless the camera is a phone; then what a setup screen needs: show `qr` (an image) until `connected`."""
@@ -252,6 +263,10 @@ def make_handler(rt: TutorRuntime):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(png)
+            elif path == "/api/progress":
+                if rt.session.journey is None:
+                    return self._json(404, {"error": "progress is kept in learn mode (start with --mode learn)"})
+                self._json(200, {"summary": rt.session.progress.summary(), "data": rt.session.progress.to_dict()})
             elif path == "/api/cells":
                 self._json(200, {"cells": rt.cells()})
             elif path == "/api/video":
@@ -263,11 +278,19 @@ def make_handler(rt: TutorRuntime):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/api/command", "/api/finger"):
+            if path not in ("/api/command", "/api/finger", "/api/progress"):
                 return self._json(404, {"error": "not found"})
             body = self._read_json()
             if body is None:
                 return
+            if path == "/api/progress":
+                if rt.session.journey is None:
+                    return self._json(404, {"error": "progress is kept in learn mode (start with --mode learn)"})
+                try:
+                    rt.merge_progress(body.get("data"))
+                except (ValueError, TypeError) as e:
+                    return self._json(400, {"error": str(e)})
+                return self._json(200, {"summary": rt.session.progress.summary(), "data": rt.session.progress.to_dict()})
             if path == "/api/command":
                 name = str(body.get("command", "")).replace("_", " ").strip().lower()
                 if name not in COMMANDS:
@@ -347,9 +370,10 @@ def main() -> None:
                             track_finger=not a.no_finger_tracking, observe_sheet=setup.cells if setup.observed else None,
                             show_reading=not a.hide_detections, known_sheets=tutor.known_sheets_for(a, setup),
                             sheet_name=a.sheet or "alphabet")
+    progress, progress_file = tutor.progress_for(a)
     session = tutor.TutorSession(rv, wc, setup.cells, feed.finger, feed.scan, a.mode, a.questions, setup.words,
                                  rng=random.Random(a.seed), names=setup.names, coach=tutor.make_coach(a),
-                                 contracted=setup.contracted)
+                                 contracted=setup.contracted, progress=progress, progress_file=progress_file, tones=not a.no_tones)
     if setup.layout_scan:
         session.scan = lambda: session.cells  # word modes read the printed sheet's known layout
     tutor.wire_new_page(session, feed)
@@ -364,7 +388,7 @@ def main() -> None:
     def opening() -> None:
         if link is not None:  # someone who cannot see the QR code hears how to connect
             session.say(link.spoken_instructions())
-        if a.mode == "explore":  # nothing to wait for: it starts by itself
+        if a.mode in ("explore", "learn"):  # nothing to wait for: it starts by itself
             session.on_start()
 
     threading.Thread(target=opening, daemon=True).start()
