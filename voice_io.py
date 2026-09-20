@@ -53,10 +53,17 @@ ENVIRONMENT VARIABLES
 
     VOICE_IO_MOCK=1     — Offline/mock mode: prints instead of hitting APIs.
                           Useful for dev/CI without spending credits.
+    VOICE_IO_DEBUG=1    — Print every raw Deepgram transcript + match result.
+    COMMAND_CONFIDENCE_THRESHOLD — Float 0–1, default 0.72.  Lower = more
+                          sensitive; raise if you get false fires in noisy rooms.
 
 QUICK START
 -----------
-    from voice_io import register_command, start_listening, speak
+    from voice_io import check_api_key, register_command, start_listening, speak
+
+    ok, msg = check_api_key()
+    if not ok:
+        raise RuntimeError(msg)
 
     register_command("next", lambda: print("Moving to next cell"))
     register_command("repeat", lambda: speak("The letter is A"))
@@ -74,7 +81,10 @@ import queue
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Callable
+
+from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
 # Optional heavy deps — imported lazily so import errors surface with a clear
@@ -83,28 +93,43 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
+# Read only the project-local file. Existing environment variables retain
+# precedence, which keeps deployed configurations and CI secrets unchanged.
+load_dotenv(Path(__file__).with_name(".env"))
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 MOCK_MODE: bool = os.getenv("VOICE_IO_MOCK", "0").strip() in ("1", "true", "yes")
 
+# Debug mode: print every raw Deepgram transcript with confidence + match result.
+DEBUG_MODE: bool = os.getenv("VOICE_IO_DEBUG", "0").strip() in ("1", "true", "yes")
+
 DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
+
+# ElevenLabs integration is retained in code but not used on the active run
+# path. ELEVENLABS_API_KEY is not required; nothing in the normal flow checks
+# or warns about it being absent.
 ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 
-# Deepgram TTS voice — a clear, neutral voice suitable for accessibility.
+# Deepgram TTS — Aura Asteria: used for all narration, including the
+# end-of-session debrief. Single backend keeps the demo path simple.
 DEEPGRAM_TTS_MODEL: str = "aura-asteria-en"
 
-# ElevenLabs voice ID for the debrief — "Rachel" (calm, warm, expressive).
-# Override via ELEVENLABS_VOICE_ID env var.
+# ElevenLabs voice ID retained for future reference; not called at runtime.
 ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 
 # Deepgram STT model.
-DEEPGRAM_STT_MODEL: str = "nova-2"
+# nova-3 is Deepgram's current flagship real-time model (better accuracy,
+# lower latency than nova-2, especially for short phrases in noisy rooms).
+DEEPGRAM_STT_MODEL: str = "nova-3"
 
-# Minimum confidence for a recognised command (Deepgram word confidence).
+# Minimum average word-confidence before a transcript is eligible for matching.
+# 0.72 is deliberately below 0.75 so that clearly-spoken commands near the
+# threshold don't get silently dropped; raise via env var in very noisy rooms.
 COMMAND_CONFIDENCE_THRESHOLD: float = float(
-    os.getenv("COMMAND_CONFIDENCE_THRESHOLD", "0.75")
+    os.getenv("COMMAND_CONFIDENCE_THRESHOLD", "0.72")
 )
 
 # Explicit microphone device index.  None = fall back to system default.
@@ -123,22 +148,41 @@ CHUNK_MS: int = 100  # milliseconds of audio per microphone read
 # ---------------------------------------------------------------------------
 
 # Map of normalised command text → canonical command name.
-# Multiple phrasings can map to the same command.
+# Phrases may appear as complete words anywhere in a final transcript, so
+# "give me a hint" fires "hint" and "okay I found it" fires "found it".
 _COMMAND_MAP: dict[str, str] = {
+    # --- repeat ----------------------------------------------------------
     "repeat": "repeat",
+    "say it again": "repeat",
+    # --- hint ------------------------------------------------------------
+    # "hint" is consistently misheard as "hand", "int", "hamed", etc.
+    # All four phrases below route to the same callback.
     "hint": "hint",
+    "give me a hint": "hint",
+    "clue": "hint",
+    "help me": "hint",
+    # --- found it --------------------------------------------------------
     "found it": "found it",
     "i found it": "found it",
+    "got it": "found it",     # natural shorthand: "got it" = located the cell
+    "i got it": "found it",
+    # --- navigation ------------------------------------------------------
     "next": "next",
     "stop": "stop",
+    # --- quiz ------------------------------------------------------------
     "start quiz": "start quiz",
     "begin quiz": "start quiz",
 }
 
-# Pre-compiled pattern that matches any command phrase anywhere in a transcript.
-_COMMAND_PATTERN = re.compile(
-    r"\b(" + "|".join(re.escape(k) for k in sorted(_COMMAND_MAP, key=len, reverse=True)) + r")\b",
-    re.IGNORECASE,
+# Test phrases longest-first. Testing each phrase in that order, rather than
+# relying on one alternation regex, guarantees the longest matching command is
+# selected even when a shorter phrase appears earlier in the utterance.
+_COMMAND_PHRASES: tuple[str, ...] = tuple(
+    sorted(_COMMAND_MAP, key=lambda phrase: (-len(phrase), phrase))
+)
+_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (phrase, re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)"))
+    for phrase in _COMMAND_PHRASES
 )
 
 # ---------------------------------------------------------------------------
@@ -150,6 +194,130 @@ _listening_active: bool = False
 _mic_paused: bool = False
 _listener_thread: threading.Thread | None = None
 _stop_event: threading.Event = threading.Event()
+
+
+def _normalize_transcript(transcript: str) -> str:
+    """Normalize user speech without altering words inside the transcript."""
+    normalized = " ".join(transcript.casefold().strip().split())
+    return normalized.rstrip(".,!?;:")
+
+
+def _match_command(normalized_transcript: str) -> str | None:
+    """Return the canonical command for the longest whole-phrase match."""
+    for phrase, pattern in _COMMAND_PATTERNS:
+        if pattern.search(normalized_transcript):
+            return _COMMAND_MAP[phrase]
+    return None
+
+
+def _classify_transcript(
+    transcript: str,
+    confidence: float,
+    is_final: bool,
+) -> tuple[str, str | None, str | None]:
+    """Normalize and decide whether one STT event is eligible to dispatch.
+
+    Returns ``(normalized_transcript, command, ignored_reason)``. Exactly one
+    command can be returned for an event.
+    """
+    normalized = _normalize_transcript(transcript)
+    if not is_final:
+        return normalized, None, "interim transcript"
+    if _mic_paused:
+        return normalized, None, "microphone is paused"
+    if not normalized:
+        return normalized, None, "empty transcript"
+    if confidence < COMMAND_CONFIDENCE_THRESHOLD:
+        return normalized, None, "confidence below threshold"
+
+    command = _match_command(normalized)
+    if command is None:
+        return normalized, None, "no command phrase matched"
+    return normalized, command, None
+
+
+def _debug_transcript_event(
+    transcript: str,
+    confidence: float,
+    is_final: bool,
+    normalized: str,
+    command: str | None,
+    ignored_reason: str | None,
+) -> None:
+    """Emit safe, opt-in diagnostics for a single Deepgram transcript event."""
+    if not DEBUG_MODE:
+        return
+    status = "final" if is_final else "interim"
+    outcome = f"matched_command={command!r}" if command else "matched_command=None"
+    reason = "" if ignored_reason is None else f" ignored_reason={ignored_reason!r}"
+    print(
+        "[VOICE_IO DEBUG]"
+        f" transcript={transcript!r}"
+        f" confidence={confidence:.3f}"
+        f" status={status}"
+        f" normalized={normalized!r}"
+        f" {outcome}{reason}",
+        flush=True,
+    )
+
+
+def _process_transcript_event(transcript: str, confidence: float, is_final: bool) -> str | None:
+    """Classify one transcript event and dispatch at most one command."""
+    normalized, command, ignored_reason = _classify_transcript(
+        transcript, confidence, is_final
+    )
+    _debug_transcript_event(
+        transcript, confidence, is_final, normalized, command, ignored_reason
+    )
+    if command is not None:
+        log.info("Command recognised: %r (conf=%.2f)", command, confidence)
+        _fire_command(command)
+    return command
+
+
+# ---------------------------------------------------------------------------
+# Public API — auth check
+# ---------------------------------------------------------------------------
+
+
+def check_api_key() -> tuple[bool, str]:
+    """Verify DEEPGRAM_API_KEY is set and accepted by Deepgram's API.
+
+    Makes a single lightweight GET request (no audio, no billing).
+    Returns (True, info_message) on success, (False, error_message) on failure.
+    Call this at app startup before start_listening() so a bad key surfaces
+    immediately rather than silently after the first audio packet.
+
+    Example::
+
+        ok, msg = check_api_key()
+        if not ok:
+            raise RuntimeError(f"Deepgram auth failed: {msg}")
+    """
+    if MOCK_MODE:
+        return True, "Mock mode — auth check skipped"
+    if not DEEPGRAM_API_KEY:
+        return False, (
+            "DEEPGRAM_API_KEY is not set.  "
+            "Export it or set VOICE_IO_MOCK=1 for offline testing."
+        )
+    try:
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            "https://api.deepgram.com/v1/auth/token",
+            headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return True, f"API key valid (HTTP {resp.status})"
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            return False, "API key rejected (HTTP 401 Unauthorized) — check DEEPGRAM_API_KEY"
+        return False, f"Deepgram auth endpoint returned HTTP {exc.code}"
+    except Exception as exc:
+        return False, f"Auth check failed (network?): {exc}"
+
 
 # ---------------------------------------------------------------------------
 # Public API — callbacks
@@ -248,21 +416,21 @@ def resume_listening() -> None:
 
 
 def speak(text: str, mode: str = "normal") -> None:
-    """Synthesise *text* and play it.
+    """Synthesise *text* and play it via Deepgram TTS.
 
     Automatically pauses the microphone before speaking and resumes it
     after, so the system never transcribes its own narration.
 
     Args:
         text: The text to speak.
-        mode: "normal" → Deepgram TTS; "debrief" → ElevenLabs TTS.
+        mode: Accepted for API compatibility ("normal", "debrief") but both
+              route through Deepgram TTS.  ElevenLabs code is retained in
+              _elevenlabs_speak() but is not called from this path.
     """
     pause_listening()
     try:
         if MOCK_MODE:
             _mock_speak(text, mode)
-        elif mode == "debrief":
-            _elevenlabs_speak(text)
         else:
             _deepgram_speak(text)
     except Exception:
@@ -272,7 +440,7 @@ def speak(text: str, mode: str = "normal") -> None:
 
 
 def speak_debrief(accuracy: float, missed_cells: list[str]) -> None:
-    """Generate and speak an end-of-session debrief via ElevenLabs.
+    """Generate and speak an end-of-session debrief via Deepgram TTS.
 
     Args:
         accuracy:     Session accuracy as a fraction 0.0–1.0.
@@ -355,6 +523,7 @@ def _deepgram_listener_loop() -> None:
 
     try:
         from deepgram import DeepgramClient  # type: ignore[import-untyped]
+        from deepgram.core import EventType  # type: ignore[import-untyped]
         from deepgram.listen.v1.types.listen_v1results import (  # type: ignore[import-untyped]
             ListenV1Results,
         )
@@ -388,73 +557,82 @@ def _deepgram_listener_loop() -> None:
             chunk_frames = int(SAMPLE_RATE * CHUNK_MS / 1000)
 
             with client.listen.v1.connect(
-                model=DEEPGRAM_STT_MODEL,
+                model=DEEPGRAM_STT_MODEL,    # nova-3
+                language="en-US",            # pin language; avoids detection latency
                 encoding="linear16",
                 sample_rate=SAMPLE_RATE,
                 channels=CHANNELS,
-                endpointing=500,
+                endpointing=300,             # 300 ms silence → finalise utterance
+                                             # (was 500; shorter = faster command response
+                                             #  without cutting off "start quiz" mid-phrase)
                 vad_events=True,
-                smart_format=True,
-                interim_results=False,
+                smart_format=True,           # handles capitalisation + punctuation;
+                                             # our \b regex handles trailing periods fine
+                interim_results=False,       # only final transcripts; interim results are
+                                             # a common source of inaccurate word picks
+                keyterm=[                    # boost command vocabulary in the acoustic model
+                    "repeat", "hint", "next", "stop",
+                    "found it", "got it",
+                    "start quiz", "begin quiz",
+                ],
             ) as socket:
-
-                # --- reader thread: receives transcript messages ----------
-
                 reader_done = threading.Event()
+                connection_open = threading.Event()
+
+                def _on_open(_event: object) -> None:
+                    connection_open.set()
+
+                def _on_message(msg: object) -> None:
+                    """Process only transcript result events from the socket."""
+                    if not isinstance(msg, ListenV1Results):
+                        if DEBUG_MODE:
+                            print(f"[DG:other] type={type(msg).__name__}", flush=True)
+                        return
+                    try:
+                        alt = msg.channel.alternatives[0]
+                        transcript: str = alt.transcript
+                        words = alt.words or []
+                        avg_conf = (
+                            sum(w.confidence for w in words) / len(words)
+                            if words else 1.0
+                        )
+                        _process_transcript_event(
+                            transcript, avg_conf, bool(msg.is_final)
+                        )
+                    except Exception:
+                        log.exception("Error processing transcript.")
+
+                def _on_error(exc: object) -> None:
+                    log.warning("Deepgram connection error: %s", exc)
 
                 def _reader() -> None:
                     try:
-                        for msg in socket:
-                            if _mic_paused:
-                                continue
-                            if not isinstance(msg, ListenV1Results):
-                                continue
-                            if not msg.is_final:
-                                continue
-                            try:
-                                alt = msg.channel.alternatives[0]
-                                transcript: str = alt.transcript.strip().lower()
-                                if not transcript:
-                                    continue
-
-                                words = alt.words or []
-                                avg_conf = (
-                                    sum(w.confidence for w in words) / len(words)
-                                    if words else 1.0
-                                )
-
-                                if avg_conf < COMMAND_CONFIDENCE_THRESHOLD:
-                                    log.debug(
-                                        "Low-confidence (%.2f): %r — skipping.",
-                                        avg_conf, transcript,
-                                    )
-                                    continue
-
-                                match = _COMMAND_PATTERN.search(transcript)
-                                if match:
-                                    phrase = match.group(1).lower()
-                                    command = _COMMAND_MAP[phrase]
-                                    log.info(
-                                        "Command recognised: %r (conf=%.2f)",
-                                        command, avg_conf,
-                                    )
-                                    _fire_command(command)
-                                else:
-                                    log.debug(
-                                        "Unmatched speech (%.2f): %r",
-                                        avg_conf, transcript,
-                                    )
-                            except Exception:
-                                log.exception("Error processing transcript.")
+                        socket.start_listening()
                     except Exception as exc:
                         log.warning("Deepgram reader exited: %s", exc)
                     finally:
                         reader_done.set()
 
+                # Handlers must be registered before start_listening(), whose
+                # first action is to emit EventType.OPEN.
+                socket.on(EventType.OPEN, _on_open)
+                socket.on(EventType.MESSAGE, _on_message)
+                socket.on(EventType.ERROR, _on_error)
                 reader_thread = threading.Thread(
                     target=_reader, daemon=True, name="dg-reader"
                 )
                 reader_thread.start()
+
+                # Do not read or send microphone bytes until the socket's
+                # listening loop has signalled a usable connection.
+                if not connection_open.wait(timeout=5):
+                    log.error("Deepgram connection did not open within 5 seconds.")
+                    try:
+                        socket.send_close_stream()
+                    except Exception:
+                        pass
+                    reader_thread.join(timeout=3)
+                    continue
 
                 # --- microphone ------------------------------------------
 
@@ -479,6 +657,7 @@ def _deepgram_listener_loop() -> None:
                 if device_index is not None:
                     open_kwargs["input_device_index"] = device_index
 
+                _fell_back = False
                 try:
                     audio_stream = pa.open(**open_kwargs)
                 except OSError as exc:
@@ -489,15 +668,33 @@ def _deepgram_listener_loop() -> None:
                     )
                     open_kwargs.pop("input_device_index", None)
                     audio_stream = pa.open(**open_kwargs)
+                    _fell_back = True
 
-                active_index = (
-                    device_index
-                    if device_index is not None
-                    else pa.get_default_input_device_info()["index"]
+                # Determine the index that was *actually* opened.
+                if _fell_back or device_index is None:
+                    active_index = pa.get_default_input_device_info()["index"]
+                else:
+                    active_index = device_index
+
+                try:
+                    _dev_name = pa.get_device_info_by_index(active_index)["name"]
+                except Exception:
+                    _dev_name = "unknown"
+
+                _pin_note = (
+                    f"pinned via VOICE_IO_MIC_INDEX={device_index}"
+                    if device_index is not None and not _fell_back
+                    else "system default (no VOICE_IO_MIC_INDEX set)"
+                    if device_index is None
+                    else f"VOICE_IO_MIC_INDEX={device_index} failed, fell back to default"
+                )
+                print(
+                    f"voice_io: mic open  device=#{active_index} (\"{_dev_name}\")  {_pin_note}",
+                    flush=True,
                 )
                 log.info(
-                    "Microphone open on device #%s; streaming to Deepgram.",
-                    active_index,
+                    "Microphone open on device #%s (%s); streaming to Deepgram.",
+                    active_index, _dev_name,
                 )
                 backoff = 1.0
 
@@ -569,6 +766,7 @@ def _deepgram_speak(text: str) -> None:
         chunks = client.speak.v1.audio.generate(
             text=text,
             model=DEEPGRAM_TTS_MODEL,
+            encoding="linear16",  # request PCM; default is MP3 which wave.open() rejects
             container="wav",
         )
         _play_audio_stream(chunks)
@@ -683,8 +881,7 @@ def _play_mp3_stream(chunks) -> None:
 
 
 def _mock_speak(text: str, mode: str) -> None:
-    backend = "ElevenLabs" if mode == "debrief" else "Deepgram"
-    print(f"[SPEAK/{backend}] {text}")
+    print(f"[SPEAK/Deepgram/{mode}] {text}")
     time.sleep(0.05)  # simulate minimal latency so callers aren't surprised
 
 
@@ -709,20 +906,14 @@ def _mock_listener_loop() -> None:
             line = sys.stdin.readline()
             if not line:
                 break
-            text = line.strip().lower()
+            text = line.rstrip("\n")
             if text == "quit":
                 _stop_event.set()
                 break
-            if _mic_paused:
-                print("[VOICE_IO MOCK] Mic paused; ignoring input.")
-                continue
-            match = _COMMAND_PATTERN.search(text)
-            if match:
-                phrase = match.group(1).lower()
-                command = _COMMAND_MAP[phrase]
+            command = _process_transcript_event(text, 1.0, True)
+            if command:
                 print(f"[VOICE_IO MOCK] Command recognised: {command!r}")
-                _fire_command(command)
             else:
-                print(f"[VOICE_IO MOCK] Unmatched: {text!r}")
+                print(f"[VOICE_IO MOCK] Unmatched: {_normalize_transcript(text)!r}")
         except (EOFError, KeyboardInterrupt):
             break
