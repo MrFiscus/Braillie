@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { getToKnowStyles } from '../styles-react-components/mainStyles.tsx'
 import CustomButton from '../styles-react-components/CustomButton.tsx'
 
@@ -21,6 +22,7 @@ export interface GetToKnowProps {
 
 const GetToKnow = ({ onSubmit }: GetToKnowProps) => {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const navigate = useNavigate()
   const styles = getToKnowStyles
 
   const handleCheckboxToggle = (id: string) => {
@@ -32,20 +34,13 @@ const GetToKnow = ({ onSubmit }: GetToKnowProps) => {
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
 
-    // what youre gonna do is iterate through selectedIds. put the numbers they 
-    // selected into supabase as is-for-fun == TRUE etc etc. Boolean values.
-    // there will a whole sequence of web pages for this. If any 
-    //column is false, the page will simply be skipped and the user will not see
-    // it. 
-    const selectedMessage =
-      selectedIds.length > 0 ? selectedIds.join(', ') : 'None'
-
-    // Alert at the top of the screen with Submitted! and selected checkbox IDs
-    alert(`Submitted!\nSelected IDs: ${selectedMessage}`)
-
+    // TODO: persist selectedIds to Supabase before navigating
+    // (iterate selectedIds, write boolean columns is-for-fun, communicate, etc.)
     if (onSubmit) {
       onSubmit(selectedIds)
     }
+
+    navigate('/login')
   }
 
   return (
