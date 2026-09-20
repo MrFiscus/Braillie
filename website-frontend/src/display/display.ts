@@ -1,7 +1,7 @@
 // How the site looks for this person: colours and text size. Kept in this browser (localStorage) and applied as attributes on <html>, which
 // styles-css/braillie.css reads. index.html applies the saved choice before the first paint so the page never flashes the wrong colours.
-export type Scheme = 'auto' | 'light' | 'dark' | 'contrast'
-export type Size = '1' | '2' | '3'
+export type Scheme = 'auto' | 'light' | 'dark' | 'contrast-light' | 'contrast'
+export type Size = '1' | '2' | '3' | '4'
 export interface Prefs {
   scheme: Scheme
   size: Size
@@ -11,21 +11,23 @@ export const SCHEMES: { value: Scheme; label: string }[] = [
   { value: 'auto', label: 'Match my device' },
   { value: 'light', label: 'Light' },
   { value: 'dark', label: 'Dark' },
-  { value: 'contrast', label: 'High contrast' },
+  { value: 'contrast-light', label: 'Black on white' },
+  { value: 'contrast', label: 'Yellow on black' },
 ]
 export const SIZES: { value: Size; label: string }[] = [
   { value: '1', label: 'Standard' },
   { value: '2', label: 'Large' },
-  { value: '3', label: 'Largest' },
+  { value: '3', label: 'Larger' },
+  { value: '4', label: 'Largest' },
 ]
 
 const KEY = 'braillie.display'
 export const DEFAULTS: Prefs = { scheme: 'auto', size: '1' }
 
-/** "Match my device" becomes a real theme: high contrast if the device asks for more contrast, dark if it prefers dark, else light. */
+/** "Match my device" becomes a real theme: the strongest one if the device asks for more contrast (light or dark as it prefers), else dark or light. */
 export function resolveTheme(scheme: Scheme, prefersDark: boolean, prefersMoreContrast: boolean): Exclude<Scheme, 'auto'> {
   if (scheme !== 'auto') return scheme
-  if (prefersMoreContrast) return 'contrast'
+  if (prefersMoreContrast) return prefersDark ? 'contrast' : 'contrast-light'
   return prefersDark ? 'dark' : 'light'
 }
 

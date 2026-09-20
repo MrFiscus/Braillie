@@ -16,8 +16,10 @@ const block = (selector) => {
 const themes = {
   light: block(':root'),
   dark: { ...block(':root'), ...block(":root[data-theme='dark']") },
+  'contrast-light': { ...block(':root'), ...block(":root[data-theme='contrast-light']") },
   contrast: { ...block(':root'), ...block(":root[data-theme='contrast']") },
 }
+const STRONG = new Set(['contrast', 'contrast-light']) // the two themes made for low vision
 
 const rgb = (hex) => {
   assert.match(hex, /^#([0-9a-f]{3}|[0-9a-f]{6})$/i, `not a plain hex colour: ${hex}`)
@@ -61,6 +63,17 @@ for (const [theme, t] of Object.entries(themes)) {
     }
   })
 
+  // Beyond the AAA minimum: the reading text is comfortably above it (low vision needs margin, not just a pass), and in the two strong themes
+  // every text pair is at least 9:1.
+  test(`${theme}: reading text has real margin (ink 12:1, secondary text 10:1${STRONG.has(theme) ? ', every pair 9:1' : ''})`, () => {
+    for (const bg of ['paper', 'card', 'paper-sunk']) {
+      assert.ok(ratio(t.ink, t[bg]) >= 12, `${theme}: ink on ${bg} is ${ratio(t.ink, t[bg]).toFixed(2)}:1`)
+      assert.ok(ratio(t['ink-soft'], t[bg]) >= 10, `${theme}: ink-soft on ${bg} is ${ratio(t['ink-soft'], t[bg]).toFixed(2)}:1`)
+    }
+    if (!STRONG.has(theme)) return
+    for (const [fg, bg, use] of TEXT) assert.ok(ratio(t[fg], t[bg]) >= 9, `${theme}: ${fg} on ${bg} is ${ratio(t[fg], t[bg]).toFixed(2)}:1 (${use})`)
+  })
+
   test(`${theme}: the hovered primary key stays AAA`, () => {
     const hover = mix(t.accent, t.ink, 86)
     assert.ok(ratio(t['on-accent'], hover) >= 7, `${theme}: on-accent on the hovered accent ${hover} is ${ratio(t['on-accent'], hover).toFixed(2)}:1`)
@@ -75,4 +88,18 @@ for (const [theme, t] of Object.entries(themes)) {
 
 test('the QR code is always black on white, whatever the theme', () => {
   assert.match(css, /\.qr \{[^}]*background: #fff/)
+})
+
+test('the strong themes have thicker edges, and no theme has thinner ones than 3px', () => {
+  assert.equal(block(':root')['bw'], '3px')
+  for (const name of ['contrast', 'contrast-light']) assert.equal(block(`:root[data-theme='${name}']`)['bw'], '4px', name)
+})
+
+test('large text switches to one column, because media queries do not follow this page\'s text size', () => {
+  assert.match(css, /:is\(html\[data-size='3'\], html\[data-size='4'\]\) \.page--split/)
+  assert.match(css, /html\[data-size='4'\] \{\s*font-size: 190%/)
+})
+
+test('Windows forced-colours mode is handled', () => {
+  assert.match(css, /@media \(forced-colors: active\)/)
 })

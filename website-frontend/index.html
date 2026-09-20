@@ -13,11 +13,11 @@
       // Apply the saved colours and text size before anything is painted (src/display/display.ts keeps the same rules for the menu).
       try {
         var p = JSON.parse(localStorage.getItem('braillie.display') || '{}');
-        var s = ['auto', 'light', 'dark', 'contrast'].indexOf(p.scheme) >= 0 ? p.scheme : 'auto';
+        var s = ['auto', 'light', 'dark', 'contrast-light', 'contrast'].indexOf(p.scheme) >= 0 ? p.scheme : 'auto';
         var m = function (q) { return window.matchMedia && window.matchMedia(q).matches; };
-        var t = s !== 'auto' ? s : m('(prefers-contrast: more)') ? 'contrast' : m('(prefers-color-scheme: dark)') ? 'dark' : 'light';
+        var t = s !== 'auto' ? s : m('(prefers-contrast: more)') ? (m('(prefers-color-scheme: dark)') ? 'contrast' : 'contrast-light') : m('(prefers-color-scheme: dark)') ? 'dark' : 'light';
         document.documentElement.dataset.theme = t;
-        document.documentElement.dataset.size = ['1', '2', '3'].indexOf(p.size) >= 0 ? p.size : '1';
+        document.documentElement.dataset.size = ['1', '2', '3', '4'].indexOf(p.size) >= 0 ? p.size : '1';
       } catch (e) {}
     </script>
   </head>

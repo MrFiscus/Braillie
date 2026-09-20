@@ -21,42 +21,62 @@
   --body: 'Atkinson Hyperlegible Next', 'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --display: 'Fraunces', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --bw: 3px; /* border width: thicker in the high-contrast themes */
 
-  --paper: #f5eedf;
-  --paper-sunk: #ece3cf;
-  --card: #fcf8ee;
-  --ink: #1b1915;
-  --ink-soft: #453f33;
-  --accent: #82210a;
-  --on-accent: #fff9ef;
-  --good: #175030;
-  --warn: #653a00;
-  --grain: rgba(27, 25, 21, 0.1);
+  --paper: #f6f0e2;
+  --paper-sunk: #e8dec6;
+  --card: #fffdf6;
+  --ink: #0f0d09;
+  --ink-soft: #2b261c;
+  --accent: #7a1c04;
+  --on-accent: #fffaf0;
+  --good: #0f4a22;
+  --warn: #5c3400;
+  --grain: rgba(15, 13, 9, 0.09);
   --camera: #0e0d0a;
   color-scheme: light;
 }
 :root[data-theme='dark'] {
-  --paper: #15130f;
-  --paper-sunk: #0e0d0a;
-  --card: #1f1c15;
-  --ink: #f4eddd;
-  --ink-soft: #cfc6b2;
-  --accent: #ff9b73;
-  --on-accent: #1a0b04;
-  --good: #7fd8a0;
-  --warn: #f2c56b;
-  --grain: rgba(244, 237, 221, 0.09);
+  --paper: #0e0d0a;
+  --paper-sunk: #050504;
+  --card: #1a1812;
+  --ink: #fbf5e6;
+  --ink-soft: #e0d8c4;
+  --accent: #ffb590;
+  --on-accent: #170800;
+  --good: #93f0b3;
+  --warn: #ffd97a;
+  --grain: rgba(251, 245, 230, 0.08);
   --camera: #000;
   color-scheme: dark;
 }
+/* Black on white: the strongest light theme. The accent is blue, which stays apart from black and from the other colours for people who
+   cannot tell red from green. */
+:root[data-theme='contrast-light'] {
+  --bw: 4px;
+  --paper: #ffffff;
+  --paper-sunk: #f2f2f2;
+  --card: #ffffff;
+  --ink: #000000;
+  --ink-soft: #000000;
+  --accent: #0822a8;
+  --on-accent: #ffffff;
+  --good: #00461a;
+  --warn: #5a3000;
+  --grain: transparent;
+  --camera: #000;
+  color-scheme: light;
+}
+/* Yellow on black: the classic low-vision combination. */
 :root[data-theme='contrast'] {
-  --paper: #000;
-  --paper-sunk: #000;
-  --card: #000;
-  --ink: #fff;
-  --ink-soft: #fff;
+  --bw: 4px;
+  --paper: #000000;
+  --paper-sunk: #000000;
+  --card: #000000;
+  --ink: #ffffff;
+  --ink-soft: #ffffff;
   --accent: #ffe14d;
-  --on-accent: #000;
+  --on-accent: #000000;
   --good: #7cffb2;
   --warn: #ffe14d;
   --grain: transparent;
@@ -74,17 +94,21 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 html[data-size='2'] {
-  font-size: 119%;
+  font-size: 125%;
 }
 html[data-size='3'] {
-  font-size: 138%;
+  font-size: 150%;
+}
+html[data-size='4'] {
+  font-size: 190%;
 }
 body {
   margin: 0;
   min-height: 100vh;
   background: var(--paper);
   color: var(--ink);
-  font: 400 1.125rem/1.55 var(--body);
+  font: 400 1.125rem/1.6 var(--body);
+  letter-spacing: 0.01em;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
@@ -140,7 +164,7 @@ code {
 
 /* ---- focus: a thick ring, offset so it can be seen on any surface, in any theme ---- */
 :where(a, button, input, summary, select, textarea, [tabindex]):focus-visible {
-  outline: 4px solid var(--ink);
+  outline: 5px solid var(--ink);
   outline-offset: 4px;
 }
 .btn:focus-visible,
@@ -176,7 +200,7 @@ code {
 
 /* ---- the frame: a masthead like a printed page, then the work ---- */
 .masthead {
-  border-bottom: 3px solid var(--ink);
+  border-bottom: var(--bw) solid var(--ink);
   background: var(--paper);
 }
 .masthead__row {
@@ -220,7 +244,7 @@ code {
   background-position: 19px 19px;
 }
 .colophon {
-  border-top: 3px solid var(--ink);
+  border-top: var(--bw) solid var(--ink);
   padding: 0.7rem clamp(1rem, 4vw, 2.5rem);
   color: var(--ink-soft);
   font-size: 1rem;
@@ -242,7 +266,7 @@ code {
   cursor: pointer;
   font-weight: 700;
   padding: 0.6rem 1rem;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 12px;
   background: var(--card);
   min-height: 2.75rem;
@@ -267,7 +291,7 @@ code {
   gap: 1.25rem;
   padding: 1.25rem;
   background: var(--card);
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 18px;
   box-shadow: 6px 6px 0 var(--ink);
 }
@@ -303,7 +327,7 @@ code {
   justify-content: center;
   min-height: 3.25rem;
   padding: 0.4rem 0.9rem;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 12px;
   font-weight: 600;
   text-align: center;
@@ -318,7 +342,7 @@ code {
   margin-right: 0.45rem;
 }
 .seg input:focus-visible + span {
-  outline: 4px solid var(--ink);
+  outline: 5px solid var(--ink);
   outline-offset: 4px;
 }
 
@@ -365,7 +389,7 @@ code {
 }
 .sheet {
   background: var(--card);
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 22px;
   box-shadow: 8px 8px 0 var(--ink);
   padding: clamp(1rem, 2vw, 1.6rem);
@@ -378,7 +402,7 @@ code {
   gap: 0.6rem;
 }
 .sheet__part + .sheet__part {
-  border-top: 3px dashed var(--ink);
+  border-top: var(--bw) dashed var(--ink);
   padding-top: 1.1rem;
 }
 .sheet h2 {
@@ -404,7 +428,7 @@ code {
   width: 100%;
   padding: 0.6rem 1.2rem;
   margin-bottom: 6px;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 16px;
   background: var(--card);
   color: var(--ink);
@@ -466,7 +490,7 @@ code {
   width: 100%;
   min-height: 3.75rem;
   padding: 0.5rem 1rem;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 14px;
   background: var(--paper);
   color: var(--ink);
@@ -498,7 +522,7 @@ code {
   display: grid;
   gap: 0.5rem;
   padding: 0.8rem 1rem;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 18px;
   background: var(--paper-sunk);
 }
@@ -640,7 +664,7 @@ code {
   place-items: center;
   width: 3rem;
   height: 3rem;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 50%;
   font-family: var(--display);
   font-weight: 700;
@@ -651,7 +675,7 @@ code {
   justify-self: center;
   padding: 0.7rem;
   background: #fff;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 18px;
   box-shadow: 6px 6px 0 var(--ink);
 }
@@ -670,7 +694,7 @@ code {
 .live {
   width: fit-content;
   max-width: 100%;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 18px;
   overflow: hidden;
   background: var(--camera);
@@ -703,7 +727,7 @@ code {
   font: inherit;
   color: var(--ink);
   background: var(--card);
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 22px;
   box-shadow: 8px 8px 0 var(--ink);
   cursor: pointer;
@@ -844,7 +868,7 @@ code {
   font-weight: 700;
   font-size: 1rem;
   background: var(--card);
-  white-space: nowrap;
+  max-width: 100%;
 }
 .badge::before {
   content: '';
@@ -877,7 +901,7 @@ code {
 }
 .card {
   background: var(--card);
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 18px;
   padding: 0.9rem 1.1rem;
   display: grid;
@@ -913,7 +937,7 @@ code {
   min-width: 6.5rem;
   aspect-ratio: 1;
   padding: 0 0.8rem;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 20px;
   background: var(--paper);
   color: var(--accent);
@@ -925,7 +949,7 @@ code {
 }
 .meter {
   height: 1rem;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 999px;
   background: var(--paper);
   overflow: hidden;
@@ -987,7 +1011,7 @@ code {
 .stat {
   text-align: center;
   padding: 0.4rem 0.3rem;
-  border: 3px solid var(--ink);
+  border: var(--bw) solid var(--ink);
   border-radius: 16px;
   background: var(--card);
 }
@@ -1063,4 +1087,83 @@ code {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
   gap: 0.5rem 0.9rem;
+}
+
+/* The strongest themes: heavier text, links that are obviously links, no decoration behind the words. */
+:root[data-theme='contrast'] body,
+:root[data-theme='contrast-light'] body {
+  font-weight: 500;
+}
+:root[data-theme='contrast'] .hint,
+:root[data-theme='contrast-light'] .hint,
+:root[data-theme='contrast'] .lede,
+:root[data-theme='contrast-light'] .lede {
+  color: var(--ink);
+}
+:root[data-theme='contrast'] .btn:disabled,
+:root[data-theme='contrast-light'] .btn:disabled {
+  background: var(--paper);
+  color: var(--ink);
+  opacity: 0.75;
+}
+
+/* Large text: one column, and nothing decorative behind the words. (Media queries count in the browser's own text size, not in this page's,
+   so the two-column layouts have to be switched off here.) */
+:is(html[data-size='3'], html[data-size='4']) .stage {
+  background-image: none;
+}
+:is(html[data-size='3'], html[data-size='4']) .page--split,
+:is(html[data-size='3'], html[data-size='4']) .choices,
+:is(html[data-size='3'], html[data-size='4']) .practice {
+  grid-template-columns: minmax(0, 1fr);
+}
+:is(html[data-size='3'], html[data-size='4']) .practice__side,
+:is(html[data-size='3'], html[data-size='4']) .practice__left {
+  grid-column: auto;
+  grid-row: auto;
+}
+:is(html[data-size='3'], html[data-size='4']) .practice__side {
+  order: -1;
+}
+:is(html[data-size='3'], html[data-size='4']) .choice {
+  grid-template-columns: minmax(0, 1fr); /* the picture above the words, so the words get the whole width */
+  justify-items: start;
+}
+:is(html[data-size='3'], html[data-size='4']) .choice__go {
+  display: none;
+}
+:is(html[data-size='3'], html[data-size='4']) .actions {
+  grid-template-columns: minmax(0, 1fr);
+}
+:is(html[data-size='3'], html[data-size='4']) .live img {
+  max-height: none;
+}
+
+/* Windows "forced colours" (its own high-contrast mode): let the system's colours win, and keep every edge and dot visible. */
+@media (forced-colors: active) {
+  :where(a, button, input, summary, select, textarea, [tabindex]):focus-visible {
+    outline-color: Highlight;
+  }
+  .btn,
+  .choice,
+  .sheet,
+  .card {
+    box-shadow: none;
+  }
+  .cell-dot--on,
+  .cell-dot--accent {
+    fill: CanvasText;
+  }
+  .cell-dot--off,
+  .cell-frame {
+    stroke: CanvasText;
+  }
+  .wave i,
+  .pips i[data-on='true'],
+  .meter > div,
+  .badge::before,
+  .eyebrow::before {
+    background: CanvasText;
+    forced-color-adjust: none;
+  }
 }

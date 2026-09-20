@@ -56,6 +56,7 @@ const DisplayMenu = () => {
               </label>
             ))}
           </div>
+          <p className="hint small">Black on white and Yellow on black are the strongest: thicker edges, heavier text.</p>
         </fieldset>
       </div>
     </details>
