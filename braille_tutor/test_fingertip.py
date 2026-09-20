@@ -199,22 +199,45 @@ class TestFingerTracker(unittest.TestCase):
 
 
 class TestFeedIntegration(unittest.TestCase):
-    def test_tracked_finger_feeds_the_tutor_and_a_click_overrides_it(self):
+    def tracked_feed(self):
+        """A feed with a registered page and a hand in view, so feed.finger() has something of its own to report."""
         import tutor
         feed = tutor.CameraFeed(None, None, None, track_finger=True)
-        H = identity_like()
-        feed.page_src = None
-        feed.H = H
+        feed.page_src, feed.H = None, identity_like()
         for _ in range(3):
-            feed.tracker.update(hand_frame(), H)
+            feed.tracker.update(hand_frame(), feed.H)
+        return feed
+
+    def test_tracked_finger_feeds_the_tutor_and_a_click_stands_in_for_it(self):
+        feed = self.tracked_feed()
         pos = feed.finger()
         self.assertAlmostEqual(pos[0], 80, delta=3)
+        self.assertEqual(feed.finger_source(), "camera")
         feed.set_finger_mm(10, 20)
-        self.assertEqual(feed.finger(), (10, 20))
+        self.assertEqual((feed.finger(), feed.finger_source()), ((10, 20), "posted"))
         feed.clear_finger()
         self.assertAlmostEqual(feed.finger()[0], 80, delta=3)
+        self.assertEqual(feed.finger_source(), "camera")
         feed.H = None
         self.assertIsNone(feed.finger())
+        self.assertIsNone(feed.finger_source())
+
+    def test_a_click_hands_the_finger_back_to_the_camera_instead_of_pinning_it_for_ever(self):
+        """The reported bug: one stray tap on the video and the tutor named the clicked cell for every letter touched after it."""
+        import tutor
+        feed = self.tracked_feed()
+        feed.set_finger_mm(10, 20)
+        self.assertEqual(feed.finger(), (10, 20))
+        feed.finger_posted -= tutor.POSTED_FINGER_SECONDS + 0.1  # as if the click were that long ago
+        self.assertAlmostEqual(feed.finger()[0], 80, delta=3, msg="a stale click must not outrank the camera")
+        self.assertEqual(feed.finger_source(), "camera")
+        feed.set_finger_mm(30, 40)  # clicking again is how you keep pointing
+        self.assertEqual(feed.finger(), (30, 40))
+
+    def test_a_stale_click_outlives_a_rest_that_counts_as_an_answer(self):
+        """It has to last: the learner clicks, the tutor waits for the finger to settle, and only then is it an answer."""
+        import tutor
+        self.assertGreater(tutor.POSTED_FINGER_SECONDS, tutor.DWELL_SECONDS * 2)
 
     def test_tracking_is_off_unless_asked_for(self):
         import tutor

@@ -36,7 +36,7 @@ from llm import Coach, LLMClient, Pending
 import phonelink
 from earcons import Earcons
 from fingertip import FingerTracker
-from learn import Dwell, Journey
+from learn import DWELL_SECONDS, Dwell, Journey
 from page import to_image, to_page
 from progress import Progress, progress_path
 from sheets import Symbol, get_sheet, letter_symbol
@@ -150,6 +150,12 @@ SCENE_CHANGE = 6.0  # mean brightness difference (0-255) of a small copy of the 
 SHEET_SPOKEN = {"alphabet": "the alphabet sheet", "words": "the words sheet", "numbers": "the numbers and signs sheet",
                 "lookalikes": "the look-alikes sheet"}
 EXPLORE_MARGIN_MM = 3.0  # after a cell is announced, stay quiet until the finger is this far outside it
+
+# How long a point posted to /api/finger (a click or tap on the video) stands in for the camera's own fingertip tracking.
+# It must outlast a rest that counts as an answer (DWELL_SECONDS, plus time to say "found it"), and it must expire: a single
+# stray tap used to pin the finger to one cell for the rest of the session, and the tutor then insisted, letter after letter,
+# that the finger was on whatever had been clicked.
+POSTED_FINGER_SECONDS = 10.0
 
 
 def _and(items: list) -> str:
@@ -985,7 +991,7 @@ class CameraFeed:
     """Newest camera frame + page registration + a 'finger'; shared by the window app and the web server.
 
     The finger is the tracked fingertip (fingertip.py) when `track_finger` is on; a click on the video or a position set in page
-    mm overrides it until cleared, so a demo can always fall back to pointing with the mouse."""
+    mm stands in for it for POSTED_FINGER_SECONDS (or until cleared), so a demo can always fall back to pointing with the mouse."""
 
     def __init__(self, page_src, overlay_cells: Optional[list] = None, labels: Optional[dict] = None, detector=None,
                  always_reading: bool = False, track_finger: bool = False, observe_sheet: Optional[list] = None,
@@ -996,6 +1002,7 @@ class CameraFeed:
         self.message, self.page_ok = "waiting for the camera", False
         self.finger_px: Optional[tuple] = None
         self.finger_mm: Optional[tuple] = None
+        self.finger_posted = 0.0  # when, so a click stands in for the fingertip only while it is fresh
         self.tracker = FingerTracker() if track_finger else None
         self.observe_sheet = observe_sheet  # a known sheet's cells: scan() then reports the dots the camera SEES on them
         # ...and (show_reading) that reading runs continuously, is locked in cell by cell as it proves steady, and is drawn on the
@@ -1121,23 +1128,41 @@ class CameraFeed:
                 self.stable = self.locker.update_known(self.reader.observed, self.observe_sheet)
 
     def set_finger_px(self, x: float, y: float) -> None:
-        self.finger_px, self.finger_mm = (float(x), float(y)), None
+        self.finger_px, self.finger_mm, self.finger_posted = (float(x), float(y)), None, time.monotonic()
 
     def set_finger_mm(self, x: float, y: float) -> None:
-        self.finger_mm, self.finger_px = (float(x), float(y)), None
+        self.finger_mm, self.finger_px, self.finger_posted = (float(x), float(y)), None, time.monotonic()
 
     def clear_finger(self) -> None:
         self.finger_px = self.finger_mm = None
+        self.finger_posted = 0.0
 
-    def finger(self) -> Optional[tuple]:
-        """The fingertip's page position in mm, or None if unknown or the page isn't registered."""
+    def _posted_finger(self) -> Optional[tuple]:
+        """The point last posted to /api/finger, in page mm, while it is still fresh (see POSTED_FINGER_SECONDS)."""
+        if time.monotonic() - self.finger_posted > POSTED_FINGER_SECONDS:
+            return None
         if self.finger_mm is not None:
             return self.finger_mm
-        if self.finger_px is None:
-            return self.tracker.position if self.tracker is not None and self.H is not None else None
-        if self.H is None:
-            return None
-        return to_page(self.H, *self.finger_px)
+        if self.finger_px is not None and self.H is not None:
+            return to_page(self.H, *self.finger_px)
+        return None
+
+    def finger(self) -> Optional[tuple]:
+        """The fingertip's page position in mm, or None if unknown or the page isn't registered.
+
+        A posted point wins while it is fresh, then the camera has it back: whoever clicked meant "it is here, now", not
+        "it is here for the rest of the session", and a click nobody remembers making is indistinguishable from a tutor
+        that has decided every letter is the same one."""
+        posted = self._posted_finger()
+        if posted is not None:
+            return posted
+        return self.tracker.position if self.tracker is not None and self.H is not None else None
+
+    def finger_source(self) -> Optional[str]:
+        """Where the position now comes from: "posted" (a click is standing in), "camera", or None if there is none."""
+        if self._posted_finger() is not None:
+            return "posted"
+        return "camera" if self.finger() is not None else None
 
     def scan(self) -> list:
         """A FRESH detection on the newest frame (used by the word modes); [] if there is no registered page."""
@@ -1177,7 +1202,7 @@ class CameraFeed:
             draw_detections(view, self.detector.boxes)  # what the camera reads, shown even when the page isn't registered
         if H is not None and hasattr(self.page_src, "size_mm"):  # outline the page the edge finder found
             draw_page_outline(view, H, *self.page_src.size_mm, self.page_src.origin)
-        if self.finger_px is not None:
+        if self.finger_px is not None and self._posted_finger() is not None:  # the orange ring goes when the click stops counting
             cv2.circle(view, (int(self.finger_px[0]), int(self.finger_px[1])), 10, (255, 128, 0), 3)
         elif self.tracker is not None and self.tracker.position is not None and H is not None:
             x, y = to_image(H, *self.tracker.position)  # drawn from the smoothed page position: what the tutor is really using

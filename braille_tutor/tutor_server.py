@@ -140,7 +140,8 @@ class TutorRuntime:
                 "camera": {"ok": self.camera_ok, "frames": feed.frames}, "phone": self.phone_info(),
                 "page": {"ok": feed.page_ok, "message": feed.message},
                 "tutor": session.status(),
-                "finger": {"page_mm": None if pos is None else [round(pos[0], 1), round(pos[1], 1)], "cell": cell},
+                "finger": {"page_mm": None if pos is None else [round(pos[0], 1), round(pos[1], 1)], "cell": cell,
+                           "source": feed.finger_source()},
                 "said": list(self.voice.said)[-15:], "debrief": session.last_debrief or self.voice.debrief}
 
     def hub_request(self, path: str, body: dict) -> tuple:
