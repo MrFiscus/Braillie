@@ -67,6 +67,11 @@ def homography_from_marker_corners(seen: dict) -> Optional[np.ndarray]:
     src = np.concatenate([seen[i] for i in ids]).astype(np.float32)
     dst = np.concatenate([_marker_corners_mm(i) for i in ids]).astype(np.float32)
     H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 3.0)
+    if H is None or not np.isfinite(H).all():
+        # A near-degenerate corner spread (markers nearly collinear from this angle, say) can fit a singular
+        # matrix that findHomography's own checks don't catch. Using it would divide by ~0 in to_page/to_image
+        # later and crash whatever called them, so it is rejected here at the source, same as too few markers.
+        return None
     return H
 
 
