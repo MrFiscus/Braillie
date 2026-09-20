@@ -76,6 +76,13 @@ def load_env_files(paths: Optional[list] = None) -> list:
     return loaded
 
 
+def _speech_uses_elevenlabs(voice) -> bool:
+    """Does voice_io's speak() actually CALL ElevenLabs? Read from the names its code uses, not its text, so a docstring or comment
+    that merely mentions ElevenLabs ("retained but not called") does not count, and it stays true if the routing changes."""
+    code = getattr(getattr(voice, "speak", None), "__code__", None)
+    return code is not None and "_elevenlabs_speak" in code.co_names
+
+
 def voice_check(voice) -> dict:
     """Will speech actually be HEARD? {"mode": "mock"|"live", "ok": bool, "problems": [...], "warnings": [...]}.
 
@@ -93,10 +100,11 @@ def voice_check(voice) -> dict:
     for module, why in (("pyaudio", "plays the speech and listens to the microphone"), ("deepgram", "the Deepgram speech client (pip install deepgram-sdk==7.9.0)")):
         if importlib.util.find_spec(module) is None:
             problems.append(f"the Python package {module!r} is not installed: {why}")
-    if not getattr(voice, "ELEVENLABS_API_KEY", ""):
-        warnings.append("ELEVENLABS_API_KEY is not set: the end-of-session debrief will not be spoken")
-    elif importlib.util.find_spec("pydub") is None or shutil.which("ffmpeg") is None:
-        warnings.append("the debrief voice needs pydub and the ffmpeg program: the debrief will not be spoken")
+    if _speech_uses_elevenlabs(voice):  # older voice_io sent the debrief to ElevenLabs; the current one uses Deepgram for everything
+        if not getattr(voice, "ELEVENLABS_API_KEY", ""):
+            warnings.append("ELEVENLABS_API_KEY is not set: the end-of-session debrief will not be spoken")
+        elif importlib.util.find_spec("pydub") is None or shutil.which("ffmpeg") is None:
+            warnings.append("the debrief voice needs pydub and the ffmpeg program: the debrief will not be spoken")
     return {"mode": "live", "ok": not problems, "problems": problems, "warnings": warnings}
 
 

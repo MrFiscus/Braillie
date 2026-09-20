@@ -569,8 +569,15 @@ class EnvAndVoiceCheckTests(unittest.TestCase):
                 for k in ("BRAILLIE_T1", "BRAILLIE_T2"):
                     os.environ.pop(k, None)
 
-    def voice(self, **kw):
-        return type("V", (), {"MOCK_MODE": False, "DEEPGRAM_API_KEY": "k", "ELEVENLABS_API_KEY": "", **kw})
+    def voice(self, elevenlabs=False, **kw):
+        """A voice module; `elevenlabs` makes its speak() call ElevenLabs for the debrief, as the older voice_io did."""
+        if elevenlabs:
+            def speak(text, mode="normal"):
+                return _elevenlabs_speak(text)  # noqa: F821
+        else:
+            def speak(text, mode="normal"):
+                return None
+        return type("V", (), {"MOCK_MODE": False, "DEEPGRAM_API_KEY": "k", "ELEVENLABS_API_KEY": "", "speak": staticmethod(speak), **kw})
 
     def test_mock_voice_is_reported_as_silent(self):
         c = tutor.voice_check(self.voice(MOCK_MODE=True))
@@ -588,9 +595,23 @@ class EnvAndVoiceCheckTests(unittest.TestCase):
         self.assertFalse(c["ok"])
         self.assertTrue(any("pyaudio" in p for p in c["problems"]))
         with mock.patch("importlib.util.find_spec", return_value=object()):
-            c = tutor.voice_check(self.voice())
+            c = tutor.voice_check(self.voice(elevenlabs=True))  # a voice module that really does use ElevenLabs
         self.assertTrue(c["ok"])
         self.assertTrue(any("ELEVENLABS_API_KEY" in w for w in c["warnings"]))
+
+    def test_no_elevenlabs_warning_when_the_voice_module_only_uses_deepgram(self):
+        """The current voice_io speaks everything through Deepgram: a missing ElevenLabs key is not worth a warning."""
+        with mock.patch("importlib.util.find_spec", return_value=object()):
+            c = tutor.voice_check(self.voice(elevenlabs=False))
+        self.assertEqual((c["ok"], c["warnings"]), (True, []))
+
+    def test_a_docstring_that_only_mentions_elevenlabs_is_not_a_use_of_it(self):
+        """The current voice_io says 'ElevenLabs code is retained in _elevenlabs_speak() but is not called': that must not warn."""
+        def speak(text, mode="normal"):
+            """Routes through Deepgram. ElevenLabs code is retained in _elevenlabs_speak() but is not called from this path."""
+            return None
+        self.assertFalse(tutor._speech_uses_elevenlabs(type("V", (), {"speak": staticmethod(speak)})))
+        self.assertFalse(tutor._speech_uses_elevenlabs(object()), "no speak() at all")
 
     def test_report_is_loud_when_silent_and_quiet_when_fine(self):
         import contextlib

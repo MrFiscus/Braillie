@@ -71,7 +71,7 @@ python tutor.py --mock --mode read --auto-page 280 292  # "found it" reads the w
 python tutor.py --mock --mode word-quiz --words cap cat # "find the word cap"
 ```
 
-Drop `--mock` to use the real Deepgram / ElevenLabs voices (needs their API keys, see `voice_io.py`). Voice commands: start quiz,
+Drop `--mock` to use the real Deepgram voice (needs `DEEPGRAM_API_KEY`, see `voice_io.py`). Voice commands: start quiz,
 repeat, hint, found it, next, next page, stop. The same things are on the window keys s r h f n p x (q quits).
 
 - **Next page** (say "next page", "new page" or "another page"; window key `p`; `POST /api/command {"command": "next page"}`): forgets the
@@ -221,14 +221,14 @@ the camera SEES there, with the dots, so a blind learner can feel the pattern wh
   this same reading. `--hide-detections` turns the boxes off. On the phone flow the boxes appear the moment the page is in view.
 - Only sheets so far. On a real book page the cell is described by its dots and its plain-letter reading; contractions are not spoken.
 
-### Voice setup (Deepgram / ElevenLabs, `voice_io.py`)
+### Voice setup (Deepgram, `voice_io.py`)
 
 The tutor reads API keys from a **git-ignored `.env` file** at the repo root (`*.env` is in `.gitignore`), never from source or
 `.gitignore` itself (that file is committed, so a key put in it would be published):
 
 ```
 DEEPGRAM_API_KEY=...          # speech for everything the tutor says
-ELEVENLABS_API_KEY=...        # optional: the richer end-of-session debrief voice (also needs pydub and the ffmpeg program)
+# (no ElevenLabs key needed: the current voice_io speaks everything, the end-of-session debrief included, through Deepgram)
 ```
 
 Packages: `pip install deepgram-sdk==7.9.0 pydub pyaudio`. On a Mac without Homebrew `pyaudio` cannot build; PortAudio can be built
@@ -262,7 +262,7 @@ button and one status line, built for VoiceOver and TalkBack. The laptop announc
 
 **Sound on the phone** (`--sound phone`, the default with `--phone-camera`; `--sound laptop` keeps it on the laptop): the person is
 next to the phone, not the laptop, so the tutor's voice plays there. The laptop still makes the speech with your friend's Deepgram
-voice (and the ElevenLabs debrief), then sends the finished audio to the phone page, which plays it and reports back; the laptop
+voice, then sends the finished audio to the phone page, which plays it and reports back; the laptop
 waits for that, so lines never overlap and the microphone stays muted while it talks. The one thing the user does: **tap the big
 button on the phone once** (phones refuse to play sound until a tap; the same tap starts the camera). Until the phone has done that,
 and whenever it drops off, speech plays on the laptop as before, so nothing is ever silent (the opening instructions are spoken
