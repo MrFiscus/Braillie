@@ -52,10 +52,23 @@ HUB_MODES = {"learn": {"mode": "learn", "sheet": "alphabet", "title": "Learn"},
              "read": {"mode": "read", "sheet": "words", "title": "Read"},
              "quiz": {"mode": "letters", "sheet": "lookalikes", "title": "Quiz"}}
 MENU_LINE = "You can say learn, read, or quiz."
-PROMPTS = {  # canned things the website may ask the tutor to say (it cannot make the tutor say anything else)
-    "welcome": "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. Use the tab key to move "
-               "between the options. If you sign in, your progress is remembered. If you continue without an account, it is not.",
+PROMPTS = {  # canned things the website may ask the tutor to say (it cannot make the tutor say anything else; {name} is a cleaned first name)
+    "welcome": "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. To sign in, say Google. "
+               "To carry on without an account, say guest. Or use the tab key to move between the options. If you sign in, your progress "
+               "is remembered. If you continue without an account, it is not.",
+    "welcome_back": "Welcome back, {name}. Say continue to carry on as {name}, or say switch to choose another way.",
+    "retry_back": "Sorry, I did not catch that. Say continue, or say switch.",
+    "again_name": "Okay. Please say your first name again, or say skip.",
+    "retry_choice": "Sorry, I did not catch that. Say Google to sign in, or say guest to continue without an account.",
+    "ask_name": "Okay, without an account. Your progress will not be saved. What is your first name? Or say skip.",
+    "confirm_name": "Is your name {name}? Say yes, or say your name again.",
+    "retry_name": "Sorry, I did not catch that. Please say your first name, or say skip.",
+    "go_guest": "Nice to meet you, {name}. Let us connect your phone.",
+    "go_guest_anon": "Okay. Let us connect your phone.",
+    "go_google": "Opening Google. From here, use your keyboard or screen reader on the Google page.",
+    "give_up": "I will stop listening now. You can use the buttons on the screen: press tab to move between them.",
 }
+DIALOGUE_SECONDS = 30.0  # the sign-in page keeps the conversation open by pinging; if it stops (tab closed) the tutor goes back to normal
 
 
 def clean_name(name) -> str:
@@ -267,6 +280,7 @@ class TutorSession:
         self.rng, self.lock, self.finished = rng or random.Random(), threading.RLock(), threading.Event()
         self.state, self.items, self.index, self.tries, self.hints = "idle", [], 0, 0, 0
         self.asked, self.correct, self.slips = 0, 0, {}
+        self._dialogue_at = -1e9
         self._speech = threading.Lock()  # one voice at a time: the explore loop, commands and the phone announcer never talk over each other
         self._heard, self._last_said, self._ex = set(), "", None
         self.voice_status: Optional[dict] = None  # set by the apps from voice_check(): whether speech will actually be heard
@@ -298,6 +312,8 @@ class TutorSession:
         """Register the voice commands. Each one plays a tiny sound first, so a learner who cannot see the screen knows they were heard."""
         def heard(handler):
             def run() -> None:
+                if self.dialogue_active():  # someone is answering the sign-in page: a name must not start a lesson
+                    return
                 self.earcons.play("locked")
                 handler()
             return run
@@ -349,6 +365,8 @@ class TutorSession:
         return (status() or {}).get("heard")
 
     def _listening_state(self) -> bool:
+        if self.dialogue_active():
+            return False
         return self.state in ("menu", "learning", "exploring", "asking", "reading")
 
     def _activity_running(self) -> bool:
@@ -467,6 +485,7 @@ class TutorSession:
             if self.journey is not None:
                 self.journey.progress = self.progress
             self._greeted_for = None
+            self._dialogue_at = -1e9
         threading.Thread(target=self._maybe_greet, daemon=True, name="greet").start()
 
     def on_phone_ready(self) -> None:
@@ -493,10 +512,20 @@ class TutorSession:
                 "user": None if u is None else {"name": u["name"], "kind": u["kind"], "saves": u["kind"] == "google"},
                 "greeted": self._greeted_for is not None}
 
-    def speak_prompt(self, name: str) -> None:
+    def speak_prompt(self, name: str, who=None) -> None:
         text = PROMPTS.get(name)
         if text:
-            self.say(text)
+            self.say(text.replace("{name}", clean_name(who)))
+
+    def dialogue(self, open_: bool) -> None:
+        """The sign-in page is talking with the user (or has finished). While it is: no "I did not catch that", and no voice command runs."""
+        self._dialogue_at = time.time() if open_ else -1e9
+
+    def dialogue_active(self) -> bool:
+        return time.time() - self._dialogue_at < DIALOGUE_SECONDS
+
+    def is_speaking(self) -> bool:
+        return self._speech.locked()
 
     def on_mode(self, mode: str) -> None:
         """"Learn", "read", "quiz" or "menu" (by voice or from the website)."""

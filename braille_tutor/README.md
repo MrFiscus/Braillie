@@ -358,6 +358,25 @@ as `profile`; a guest never saves), `POST /api/mode {"mode": "learn"|"read"|"qui
 (added). What is tested: the tutor side (`test_hub.py`), the user model (`node --test "tests/*.test.mjs"`), and the whole path in real Chrome
 against a running tutor with a simulated phone. NOT tested: Google sign-in past Google's own page, and a real phone and hand.
 
+### The sign-in page talks (voice on the first page)
+
+The first page can be used entirely by voice. With the tutor running (`tutor_server.py`, Deepgram voice and microphone) it starts by itself: it
+says the welcome, listens, and understands "Google" (opens Google sign-in) or "guest", then asks for a first name, repeats it back ("Is your name
+Sam?") and continues on "yes" (or "skip" for no name; "no" or a different name to correct it). Someone who is already known is asked to "continue"
+or "switch". Not understood three times in a row and it stops asking and points at the buttons; it never guesses. While this goes on the tutor
+ignores voice commands (a name that sounds like "read" must not start a lesson) and does not say "I didn't catch that" (`POST /api/dialogue`).
+Without the tutor, the page uses the browser's own speech and speech recognition (Chrome, Edge, Safari): press "Use my voice", allow the
+microphone once. "Turn voice off" is remembered in this browser. Every spoken choice is also a button, and the keyboard and screen reader work
+throughout. The rules for what is understood are in `website-frontend/src/voice/loginDialogue.ts` (tested in `tests/loginDialogue.test.mjs`).
+
+### The look of the website
+
+"Paper and ink": warm paper, black ink, one accent, hard offset shadows, dots as the only decoration (the name written in braille; each mode
+drawn as its own first letter). Fraunces and Atkinson Hyperlegible (made for low vision) are bundled in `public/fonts`. The **Display** menu in
+the top bar sets text size (three steps) and colours (match my device, light, dark, high contrast) and is remembered. Every colour pair is
+checked to WCAG AAA (7:1) by `tests/contrast.test.mjs`; all styling is in `src/styles-css/braillie.css`.
+
+
 ## Phone as the camera: scan a QR code (`--phone-camera`)
 
 ```

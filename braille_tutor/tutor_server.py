@@ -136,10 +136,11 @@ class TutorRuntime:
                 "page": {"ok": feed.page_ok, "message": feed.message},
                 "tutor": session.status(),
                 "finger": {"page_mm": None if pos is None else [round(pos[0], 1), round(pos[1], 1)], "cell": cell},
+                "speaking": session.is_speaking(), "heard": session._voice_heard(),
                 "said": list(self.voice.said)[-15:], "debrief": session.last_debrief or self.voice.debrief}
 
     def hub_request(self, path: str, body: dict) -> tuple:
-        """/api/session, /api/mode and /api/prompt: returns (status, json). Speech and mode changes run in a thread so the answer is quick."""
+        """/api/session, /api/mode, /api/prompt and /api/dialogue: returns (status, json). Speech and mode changes run in a thread so the answer is quick."""
         session = self.session
         if path == "/api/session":
             kind, name, profile = body.get("kind"), body.get("name"), body.get("profile")
@@ -157,10 +158,15 @@ class TutorRuntime:
                 raise ValueError(f'"mode" must be one of: menu, {", ".join(tutor.HUB_MODES)}')
             threading.Thread(target=session.set_mode, args=(mode,), daemon=True).start()
             return 202, {"accepted": mode}
+        if path == "/api/dialogue":
+            if not isinstance(body.get("open"), bool):
+                raise ValueError('"open" must be true or false')
+            session.dialogue(body["open"])
+            return 200, {"open": session.dialogue_active()}
         name = str(body.get("name", ""))
         if name not in tutor.PROMPTS:
             raise ValueError(f'"name" must be one of: {", ".join(tutor.PROMPTS)}')
-        threading.Thread(target=session.speak_prompt, args=(name,), daemon=True).start()
+        threading.Thread(target=session.speak_prompt, args=(name, body.get("who")), daemon=True).start()
         return 202, {"accepted": name}
 
     def merge_progress(self, data) -> None:
@@ -309,7 +315,7 @@ def make_handler(rt: TutorRuntime):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt", "/api/settings"):
+            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt", "/api/dialogue", "/api/settings"):
                 return self._json(404, {"error": "not found"})
             body = self._read_json()
             if body is None:
@@ -319,7 +325,7 @@ def make_handler(rt: TutorRuntime):
                     return self._json(200, rt.session.apply_settings(body))
                 except (ValueError, TypeError) as e:
                     return self._json(400, {"error": str(e)})
-            if path in ("/api/session", "/api/mode", "/api/prompt"):
+            if path in ("/api/session", "/api/mode", "/api/prompt", "/api/dialogue"):
                 if not rt.session.hub:
                     return self._json(404, {"error": "these belong to the menu-driven tutor (start tutor_server.py without --mode)"})
                 try:
