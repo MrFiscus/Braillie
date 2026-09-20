@@ -1,4 +1,6 @@
 """Tests for tutor_server.py: the HTTP API a browser frontend uses. Run: python -m unittest test_server -v"""
+import contextlib
+import io
 import json
 import os
 import random
@@ -170,6 +172,51 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.fake.debriefs[-1], (1.0, []))  # and it really went to the voice module
         self.assertEqual(http(self.base + "/api/finger", {"clear": True})[0], 200)
         self.wait_for(lambda s: s["finger"]["page_mm"] is None)
+
+
+class _Cap:
+    """A camera that hands out the same frame for ever."""
+
+    def __init__(self):
+        self.frame = np.zeros((48, 64, 3), np.uint8)
+
+    def read(self):
+        return True, self.frame
+
+
+class _BrittleFeed:
+    """A feed that cannot cope with the first few frames (as a page registration that collapses makes it)."""
+
+    def __init__(self, bad=3):
+        self.bad, self.frames, self.seen = bad, 0, 0
+
+    def update(self, frame):
+        self.seen += 1
+        if self.seen <= self.bad:
+            raise ValueError("this frame places the page nowhere")
+        self.frames += 1  # the real feed counts a frame once it has registered the page on it
+
+    def render(self):
+        return np.zeros((48, 64, 3), np.uint8)
+
+
+class CameraLoopTests(unittest.TestCase):
+    """The video froze for good once: an exception in the camera thread ended it, and nothing was left to restart it."""
+
+    def test_a_frame_it_cannot_handle_is_dropped_and_the_next_one_is_not(self):
+        feed = _BrittleFeed(bad=3)
+        rt = tutor_server.TutorRuntime(_Cap(), feed, None, None)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rt.start()
+            end = time.time() + 10
+            while time.time() < end and feed.frames < 2:
+                time.sleep(0.02)
+            rt.stop()
+        self.assertGreaterEqual(feed.frames, 2, "the camera thread died with the frame that failed")
+        self.assertEqual(rt.frame_errors, 3)
+        self.assertGreater(rt.seq, 0, "frames should reach the video stream again after the bad ones")
+        self.assertIn("this frame places the page nowhere", err.getvalue(), "and the reason must be findable in the terminal")
 
 
 if __name__ == "__main__":

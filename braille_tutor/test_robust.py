@@ -5,6 +5,7 @@ marker registration everything stops at once.
 """
 import time
 import unittest
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -12,7 +13,7 @@ import numpy as np
 import make_sheet
 import page
 import sheets
-from tracker import RobustPage
+from tracker import PageTracker, RobustPage
 
 SHEET = cv2.cvtColor(make_sheet.render_flat_test("alphabet"), cv2.COLOR_GRAY2BGR)
 CELLS = sheets.get_sheet("alphabet").cells
@@ -108,6 +109,57 @@ class RobustPageTests(unittest.TestCase):
                     for x, y in ((0, 0), (page.PAGE_W_MM, 0), (page.PAGE_W_MM, page.PAGE_H_MM), (0, page.PAGE_H_MM)))
         print(f"\n  markers hidden: corners moved at most {worst:.1f} px")
         self.assertLess(worst, 8.0)
+
+
+FLAT = [[300, 500], [700, 500], [1000, 500], [280, 500]]  # four "marker centres" in one line: the whole page onto a line
+
+
+class DegenerateFitTests(unittest.TestCase):
+    """A fit that squashes the page onto a line or a point must be turned down where it is made.
+
+    It reads as a perfectly ordinary 3x3 matrix, and every use of it afterwards divides by ~0: positions in the millions,
+    or NaN, and then an exception from inside OpenCV or numpy in whichever thread was unlucky enough to ask.
+    """
+
+    def test_a_real_registration_is_accepted_and_a_flattened_one_is_not(self):
+        self.assertTrue(page.usable_homography(page.page_homography(view(BASE))))
+        self.assertFalse(page.usable_homography(None))
+        self.assertFalse(page.usable_homography(np.full((3, 3), np.nan)))
+        self.assertFalse(page.usable_homography(np.zeros((3, 3))))
+        self.assertIsNone(page._homography_from_centers(dict(enumerate(FLAT))))
+        self.assertIsNone(page.homography_from_corners(FLAT, page.PAGE_W_MM, page.PAGE_H_MM))
+
+    def test_markers_that_place_the_page_nowhere_leave_it_not_found(self):
+        rp = RobustPage()
+        with mock.patch("page.visible_markers", return_value=dict(enumerate(np.float32(FLAT)))):
+            self.assertIsNone(rp.homography(view(BASE)), "a flattened fit must not be handed out as a position")
+        self.assertEqual(rp.source, "none")
+
+    def test_markers_that_place_the_page_nowhere_fall_back_to_following_the_sheet(self):
+        rp = RobustPage()
+        img = view(BASE)
+        self.assertIsNotNone(rp.homography(img))  # registered properly first, so there is a reference to follow
+        with mock.patch("page.visible_markers", return_value=dict(enumerate(np.float32(FLAT)))):
+            H = rp.homography(img)
+        self.assertIsNotNone(H, rp.status)
+        self.assertEqual(rp.source, "tracking")
+        self.assertLess(dot_error(img, H), 4.0)
+
+    def test_a_flattened_tracking_fit_keeps_the_last_position_instead(self):
+        img = view(BASE)
+        H_ref = page.page_homography(img)
+        tracker = PageTracker(img, H_ref)
+        good = tracker.homography(img)
+        self.assertTrue(page.usable_homography(good))
+
+        def flat_fit(src, dst, method, thresh):  # RANSAC agreeing on a mapping that collapses the page
+            return np.array([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [0.0, 0.0, 1.0]]), np.ones((len(src), 1), np.uint8)
+
+        with mock.patch("cv2.findHomography", side_effect=flat_fit):
+            held = tracker.homography(img)
+        np.testing.assert_allclose(held, good, err_msg="should hold the last good position")
+        self.assertIn("no usable position", tracker.reason)
+        self.assertIn("tracking LOST", tracker.status)
 
 
 if __name__ == "__main__":

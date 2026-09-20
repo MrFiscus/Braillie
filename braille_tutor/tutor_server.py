@@ -22,6 +22,7 @@ import random
 import re
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -41,6 +42,7 @@ COMMANDS = {"start quiz": "on_start", "repeat": "on_repeat", "hint": "on_hint", 
             "help": "on_help", "slower": "on_slower", "faster": "on_faster", "relaxed": "on_relaxed", "normal": "on_normal", "stop": "on_stop"}
 LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
 FPS, STREAM_WIDTH = 15, 960
+ERROR_REPORT_EVERY = 5.0  # seconds: a frame that fails usually means the next few do too, and 15 tracebacks a second help nobody
 
 
 class RecordingVoice:
@@ -72,6 +74,7 @@ class TutorRuntime:
         self.phone = phone  # when the camera is a phone: its link, so the page can show the QR code and tell the phone what we see
         self.cond, self.jpeg, self.seq, self.stopped = threading.Condition(), None, 0, False
         self.camera_ok = True
+        self.frame_errors, self.reported_error = 0, 0.0
 
     def start(self) -> None:
         threading.Thread(target=self._loop, daemon=True, name="camera").start()
@@ -93,18 +96,32 @@ class TutorRuntime:
                 time.sleep(0.5)
                 continue
             self.camera_ok = True
-            self.feed.update(frame)
-            if self.phone is not None:  # the phone speaks this to whoever is holding it ("page found", "hold the phone higher")
-                self.phone.status = {"page_ok": bool(self.feed.page_ok and self.phone.connected), "message": self.feed.message}
-            view = self.feed.render()
-            if view.shape[1] > STREAM_WIDTH:
-                view = cv2.resize(view, (STREAM_WIDTH, int(view.shape[0] * STREAM_WIDTH / view.shape[1])))
-            ok, buf = cv2.imencode(".jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            if ok:
-                with self.cond:
-                    self.jpeg, self.seq = buf.tobytes(), self.seq + 1
-                    self.cond.notify_all()
+            try:
+                self._handle(frame)
+            except Exception:
+                # Whatever one frame manages to break, the next frame gets a turn. Letting it out of here would end the
+                # thread, and nothing restarts it: the video would freeze for good, with the page still answering requests
+                # as if all were well. That is the one failure mode nobody can recover from at a desk.
+                self.frame_errors += 1
+                if time.time() - self.reported_error > ERROR_REPORT_EVERY:
+                    self.reported_error = time.time()
+                    print(f"camera: dropped a frame ({self.frame_errors} so far)", flush=True)
+                    traceback.print_exc()
             time.sleep(max(0.0, 1 / FPS - (time.time() - t0)))
+
+    def _handle(self, frame) -> None:
+        """One frame: register the page on it, tell the phone what we see, and publish the annotated JPEG."""
+        self.feed.update(frame)
+        if self.phone is not None:  # the phone speaks this to whoever is holding it ("page found", "hold the phone higher")
+            self.phone.status = {"page_ok": bool(self.feed.page_ok and self.phone.connected), "message": self.feed.message}
+        view = self.feed.render()
+        if view.shape[1] > STREAM_WIDTH:
+            view = cv2.resize(view, (STREAM_WIDTH, int(view.shape[0] * STREAM_WIDTH / view.shape[1])))
+        ok, buf = cv2.imencode(".jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if ok:
+            with self.cond:
+                self.jpeg, self.seq = buf.tobytes(), self.seq + 1
+                self.cond.notify_all()
 
     def wait_frame(self, last_seq: int, timeout: float = 2.0) -> tuple:
         """Block until a frame newer than last_seq exists; returns (jpeg or None, seq)."""
@@ -132,7 +149,7 @@ class TutorRuntime:
                 "hub": session.hub_status(),
                 "learning": session.learning_status(),
                 "progress": session.progress.summary() if session.journey is not None else None,
-                "camera": {"ok": self.camera_ok, "frames": feed.frames}, "phone": self.phone_info(),
+                "camera": {"ok": self.camera_ok, "frames": feed.frames, "dropped": self.frame_errors}, "phone": self.phone_info(),
                 "page": {"ok": feed.page_ok, "message": feed.message},
                 "tutor": session.status(),
                 "finger": {"page_mm": None if pos is None else [round(pos[0], 1), round(pos[1], 1)], "cell": cell},

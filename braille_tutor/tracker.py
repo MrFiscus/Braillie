@@ -8,7 +8,7 @@ from typing import Optional, Union
 import cv2
 import numpy as np
 
-from page import load_homography
+from page import load_homography, usable_homography
 
 WORK_W = 960  # features are found on a copy this wide, to keep it fast on a CPU
 
@@ -63,7 +63,13 @@ class PageTracker:
         if M is None or self.inliers < self.min_inliers:
             self.reason = f"matches to the reference photo are inconsistent ({self.inliers} agree, need {self.min_inliers})"
             return self.last
-        self.last = self.H_ref @ np.linalg.inv(self.ref_S) @ M @ S  # frame px -> frame small -> ref small -> ref px -> mm
+        candidate = self.H_ref @ np.linalg.inv(self.ref_S) @ M @ S  # frame px -> frame small -> ref small -> ref px -> mm
+        if not usable_homography(candidate):
+            # Matches bunched along one edge can agree with each other and still fit a mapping that collapses the page.
+            # RANSAC is happy with it; everything downstream is not, so it is turned down here like any other bad fit.
+            self.reason = "matches to the reference photo fit no usable position for the page"
+            return self.last
+        self.last = candidate
         return self.last
 
 
@@ -119,8 +125,8 @@ class RobustPage:
 
         now = time.time()
         centers = visible_markers(frame)
-        if len(centers) >= self.min_markers:
-            H = _homography_from_centers(centers)
+        H = _homography_from_centers(centers) if len(centers) >= self.min_markers else None
+        if H is not None:  # (None with markers in view means they place the page nowhere usable: follow the sheet instead)
             self.last_H, self.last_good, self.source, self.detail = H, now, "markers", ""
             if now - self.last_ref > self.refresh:  # keep the reference fresh so tracking starts from a recent view
                 self.tracker, self.last_ref = PageTracker(frame, H), now
