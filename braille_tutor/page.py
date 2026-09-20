@@ -13,6 +13,11 @@ import numpy as np
 PAGE_W_MM = 150.0
 PAGE_H_MM = 237.0
 
+# The printed sheets are A4, and the marker rectangle sits centred on it, so paper coordinates and page coordinates differ
+# by a fixed shift: the top-left marker's centre is SHEET_ORIGIN_MM in from the paper's top-left corner.
+A4_MM = (210.0, 297.0)
+SHEET_ORIGIN_MM = ((A4_MM[0] - PAGE_W_MM) / 2, (A4_MM[1] - PAGE_H_MM) / 2)
+
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 # id 0 top left, 1 top right, 2 bottom right, 3 bottom left -> page coordinates (mm), y down.
 MARKER_POS_MM = {0: (0.0, 0.0), 1: (PAGE_W_MM, 0.0), 2: (PAGE_W_MM, PAGE_H_MM), 3: (0.0, PAGE_H_MM)}

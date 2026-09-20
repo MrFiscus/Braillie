@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Braillie tutor console</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1a1a1a; --card:#f2f2f2; --line:#ccc; --good:#0a7d33; --bad:#b3261e; --warn:#a15c00; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111; --fg:#eee; --card:#1e1e1e; --line:#444; --good:#5bd382; --bad:#ff8a80; --warn:#ffb74d; } }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui, sans-serif; }
+  main { max-width:1100px; margin:auto; display:grid; gap:16px; grid-template-columns: minmax(0,3fr) minmax(0,2fr); }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  h1 { font-size:20px; margin:0 0 12px; grid-column:1/-1; }
+  h2 { font-size:14px; margin:0 0 8px; text-transform:uppercase; letter-spacing:.05em; opacity:.7; }
+  #video { width:100%; display:block; border-radius:6px; cursor:crosshair; background:#000; min-height:120px; }
+  .hint { font-size:13px; opacity:.7; margin-top:6px; }
+  #prompt { font-size:26px; font-weight:600; min-height:1.4em; }
+  .ok { color:var(--good); } .no { color:var(--bad); } .warn { color:var(--warn); }
+  button { font:inherit; padding:8px 12px; margin:0 6px 6px 0; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); cursor:pointer; }
+  button:hover { border-color:var(--fg); }
+  #log { list-style:none; margin:0; padding:0; max-height:220px; overflow:auto; font-size:14px; }
+  #log li { padding:4px 0; border-bottom:1px solid var(--line); }
+  #log li.debrief { font-weight:600; }
+  dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:2px 12px; font-size:14px; } dt { opacity:.7; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Braillie tutor console</h1>
+  <section class="card">
+    <h2>Camera</h2>
+    <img id="video" alt="camera view" src="/api/video">
+    <div class="hint">Click the video where the fingertip is (there is no fingertip tracker yet).</div>
+  </section>
+  <section class="card">
+    <h2>Tutor</h2>
+    <div id="prompt">Say or press "start quiz"</div>
+    <p id="progress"></p>
+    <div id="buttons"></div>
+    <dl>
+      <dt>Page</dt><dd id="page">-</dd>
+      <dt>Finger</dt><dd id="finger">-</dd>
+      <dt>Mode</dt><dd id="mode">-</dd>
+    </dl>
+  </section>
+  <section class="card" style="grid-column:1/-1">
+    <h2>What the tutor said</h2>
+    <ul id="log"></ul>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+$("video").addEventListener("click", (e) => {
+  const r = e.target.getBoundingClientRect();
+  post("/api/finger", { u: (e.clientX - r.left) / r.width, v: (e.clientY - r.top) / r.height });
+});
+
+let built = false;
+function render(s) {
+  if (!built) {
+    for (const c of s.config.commands) {
+      const b = document.createElement("button");
+      b.textContent = c;
+      b.onclick = () => post("/api/command", { command: c });
+      $("buttons").appendChild(b);
+    }
+    built = true;
+  }
+  const t = s.tutor;
+  $("prompt").textContent = t.prompt || (t.state === "done" ? "Session finished" : t.state === "reading" ? "Read mode: put a finger on a word" : 'Say or press "start quiz"');
+  $("progress").textContent = t.total ? `Question ${Math.max(t.question, 1)} of ${t.total} · ${t.correct} correct of ${t.asked} answered` : "";
+  $("page").textContent = s.page.message;
+  $("page").className = s.page.ok ? "ok" : "no";
+  const f = s.finger;
+  $("finger").textContent = f.page_mm ? `${f.page_mm[0]}, ${f.page_mm[1]} mm` + (f.cell ? ` on ${f.cell.name || (f.cell.letter ? "the letter " + f.cell.letter.toUpperCase() : "a mark")} (dots ${f.cell.dots.join("")})` : " (not on a cell)") : "unknown";
+  $("mode").textContent = s.config.mode;
+  const log = $("log");
+  log.replaceChildren(...s.said.slice().reverse().map((m) => {
+    const li = document.createElement("li");
+    li.textContent = m.text;
+    if (m.kind === "debrief") li.className = "debrief";
+    return li;
+  }));
+}
+const es = new EventSource("/api/events");
+es.onmessage = (e) => render(JSON.parse(e.data));
+es.onerror = () => { $("page").textContent = "lost connection to the server"; $("page").className = "no"; };
+</script>
+</body>
+</html>

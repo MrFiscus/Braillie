@@ -188,10 +188,12 @@ class PageFinderTests(unittest.TestCase):
     QUAD = [[260, 90], [980, 120], [1010, 860], [230, 840]]
 
     @staticmethod
-    def scene(desk=60, quad=None, page=True, hand=None):
+    def scene(desk=60, quad=None, page=True, hand=None, receipt_behind=None):
         content = TrackerTests.textured_page()  # 1600 x 1200 px "page" with texture
         rng = np.random.default_rng(3)
         out = cv2.GaussianBlur(np.full((960, 1280, 3), desk, np.float32) + rng.normal(0, 6, (960, 1280, 1)), (0, 0), 2).astype(np.uint8)
+        if receipt_behind:  # a bright slip of paper lying UNDER the page, poking out past one corner
+            cv2.rectangle(out, receipt_behind[0], receipt_behind[1], (225, 225, 225), -1)
         if page:
             ch, cw = content.shape[:2]
             T = cv2.getPerspectiveTransform(np.float32([[0, 0], [cw, 0], [cw, ch], [0, ch]]), np.float32(quad or PageFinderTests.QUAD))
@@ -223,6 +225,14 @@ class PageFinderTests(unittest.TestCase):
             self.assertLess(np.abs(q - np.float32(self.QUAD)).max(), 6.0)
         else:
             self.assertIn("edge", why)
+
+    def test_bright_slip_lying_under_a_page_corner_does_not_fool_the_finder(self):
+        """The real overview photo had a white receipt behind the page's top-left corner; the corner must stay the page's."""
+        import pagefind
+        for slip in (((150, 30), (420, 150)), ((230, 20), (480, 130)), ((180, 60), (330, 200))):
+            q, why = pagefind.find_page(self.scene(receipt_behind=slip), self.W_MM, self.H_MM)
+            self.assertIsNotNone(q, (slip, why))
+            self.assertLess(np.abs(q - np.float32(self.QUAD)).max(), 6.0, slip)
 
     def test_darker_rectangle_is_not_the_page(self):
         """A dark folder on a lighter table must not be mistaken for the (white) page."""

@@ -4,6 +4,7 @@ Assumes the page sits upright in the picture (top of the page towards the top of
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import cv2
@@ -16,6 +17,7 @@ WORK_W = 640  # detection runs on a copy this wide
 MIN_AREA = 0.10  # the page must cover at least this fraction of the frame
 ASPECT_TOL = 0.40  # allowed relative error of the page's width/height ratio (perspective squeezes it a little)
 MIN_CONTRAST = 25  # gray levels (0-255) between the page and the desk around it
+MIN_SIDE_CONTRAST = 6  # along every side, the paper just inside must be this much brighter than the desk just outside
 MIN_EDGE_SUPPORT = 0.4  # each page side must have this fraction of its length on a clean straight edge
 STEADY_FRAMES = 5  # edges must hold still this many frames before we lock on
 
@@ -95,8 +97,8 @@ def _refine(gray: np.ndarray, q: np.ndarray, search: float, samples: int = 40) -
     return (out, support) if np.abs(out - q).max() < 2 * R else (q, support)
 
 
-def find_page(frame: np.ndarray, w_mm: float, h_mm: float) -> tuple:
-    """(corners, reason): the page's four corners in image pixels (TL, TR, BR, BL), or (None, why not)."""
+def _find_page_by_regions(frame: np.ndarray, w_mm: float, h_mm: float) -> tuple:
+    """Strategy 1: find the page as a bright region and approximate its outline by four corners."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
     s = WORK_W / gray.shape[1]
     small = cv2.resize(gray, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
@@ -161,32 +163,189 @@ def find_page(frame: np.ndarray, w_mm: float, h_mm: float) -> tuple:
     return None, "no large page-shaped region: page out of view, or too little contrast with the desk."
 
 
-def find_page_homography(frame: np.ndarray, w_mm: float, h_mm: float) -> tuple:
-    """(H, reason): image px -> page mm (top-left page corner = 0, 0), or (None, why not)."""
+def _canonical_lines(edges: np.ndarray, width: int) -> tuple:
+    """Straight lines in an edge map, as (nx, ny, rho, votes): horizontal-ish ones and vertical-ish ones, near-duplicates merged.
+
+    Each line is n . p = rho with the normal n pointing down (horizontal-ish) or right (vertical-ish)."""
+    found = cv2.HoughLines(edges, 1, np.pi / 360, int(0.14 * width))  # half-degree steps: tilted edges keep their votes together
+    horizontal, vertical = [], []
+    if found is None:
+        return horizontal, vertical
+    for rho, theta in found[:, 0][:250]:
+        nx, ny = float(np.cos(theta)), float(np.sin(theta))
+        family, ok = (horizontal, abs(nx) < 0.5) if abs(ny) >= abs(nx) else (vertical, abs(ny) < 0.5)
+        if not ok:
+            continue
+        if (family is horizontal and ny < 0) or (family is vertical and nx < 0):
+            nx, ny, rho = -nx, -ny, -float(rho)
+        angle = np.arctan2(ny, nx)
+        if all(abs(rho - r2) > 0.02 * width or abs(angle - a2) > np.radians(6) for _, _, r2, a2 in family):
+            family.append((nx, ny, float(rho), angle))
+    return [(nx, ny, r) for nx, ny, r, _ in horizontal[:6]], [(nx, ny, r) for nx, ny, r, _ in vertical[:6]]
+
+
+def _find_page_by_lines(gray: np.ndarray, small: np.ndarray, s: float, want: float) -> Optional[np.ndarray]:
+    """Strategy 2: fit the page's four straight edges directly. Survives an object hiding part of an edge or a corner,
+    because each edge is judged by how much of it is really there, not by a blob outline."""
+    H_s, W_s = small.shape
+    blur = cv2.GaussianBlur(small, (11, 11), 0)  # smooth away the page's own texture, keep its outline
+    horizontal, vertical = _canonical_lines(cv2.Canny(blur, 30, 90), W_s)
+    if len(horizontal) < 2 or len(vertical) < 2:
+        return None
+
+    def y_at_centre(line):
+        return (line[2] - line[0] * W_s / 2) / line[1]
+
+    def x_at_centre(line):
+        return (line[2] - line[1] * H_s / 2) / line[0]
+
+    def meet(h, v):
+        x, y = np.linalg.solve([[h[0], h[1]], [v[0], v[1]]], [h[2], v[2]])
+        return [x, y]
+
+    horizontal.sort(key=y_at_centre)
+    vertical.sort(key=x_at_centre)
+    found = []
+    for i, top in enumerate(horizontal):
+        for bottom in horizontal[i + 1:]:
+            if y_at_centre(bottom) - y_at_centre(top) < 0.3 * H_s:
+                continue
+            for j, left in enumerate(vertical):
+                for right in vertical[j + 1:]:
+                    if x_at_centre(right) - x_at_centre(left) < 0.3 * W_s:
+                        continue
+                    try:
+                        q = np.float32([meet(top, left), meet(top, right), meet(bottom, right), meet(bottom, left)])
+                    except np.linalg.LinAlgError:
+                        continue
+                    if not (q[:, 0].min() > 2 and q[:, 1].min() > 2 and q[:, 0].max() < W_s - 3 and q[:, 1].max() < H_s - 3):
+                        continue
+                    area = cv2.contourArea(q)
+                    w_px = (np.linalg.norm(q[1] - q[0]) + np.linalg.norm(q[2] - q[3])) / 2
+                    h_px = (np.linalg.norm(q[3] - q[0]) + np.linalg.norm(q[2] - q[1])) / 2
+                    if (area < MIN_AREA * small.size or not cv2.isContourConvex(q.reshape(-1, 1, 2))
+                            or abs(w_px / max(h_px, 1e-6) / want - 1) > ASPECT_TOL):
+                        continue
+                    contrast = _contrast(small, q)
+                    if contrast >= MIN_CONTRAST and min(_side_contrasts(small, q)) >= MIN_SIDE_CONTRAST:
+                        found.append((area * contrast, q))
+    best, best_score = None, 0.0
+    for _, q in sorted(found, key=lambda f: -f[0])[:8]:  # the biggest, brightest few are checked edge by edge
+        q, support = q / s, None
+        for search in (0.04, 0.015):
+            q, support = _refine(gray, q, search)
+        if min(support) < MIN_EDGE_SUPPORT:
+            continue
+        score = cv2.contourArea(q * s) * _contrast(small, q * s) * min(support) * _fill(small, q * s) ** 10
+        if score > best_score:
+            best, best_score = q, score
+    return best
+
+
+def _side_contrasts(gray: np.ndarray, quad: np.ndarray, samples: int = 40) -> list:
+    """For each side of the quad (top, right, bottom, left): mean brightness just inside minus just outside it."""
+    h, w = gray.shape
+    k = max(3.0, 0.012 * w)
+    out = []
+    for i in range(4):
+        a, b = np.float32(quad[i]), np.float32(quad[(i + 1) % 4])
+        d = b - a
+        inward = np.float32([-d[1], d[0]]) / max(float(np.linalg.norm(d)), 1e-6)  # the quad is ordered clockwise on screen
+        t = np.linspace(0.1, 0.9, samples, dtype=np.float32)[:, None]
+        pts = a + d * t
+        def sample(offset):
+            p = pts + inward * offset
+            x = np.clip(p[:, 0], 0, w - 1).astype(int)
+            y = np.clip(p[:, 1], 0, h - 1).astype(int)
+            return gray[y, x].astype(np.float32)
+        out.append(float(np.mean(sample(k) - sample(-k))))
+    return out
+
+
+def _fill(gray: np.ndarray, quad: np.ndarray) -> float:
+    """Fraction of the quad's interior that is as bright as the page itself (1.0 = uniformly paper; a strip of dark desk
+    inside the quad lowers it). Braille shadows are tiny, so a true page stays above about 0.9."""
+    inside = np.zeros(gray.shape, np.uint8)
+    cv2.fillConvexPoly(inside, np.int32(quad), 255)
+    values = gray[cv2.erode(inside, np.ones((5, 5), np.uint8)) > 0]
+    if values.size == 0:
+        return 0.0
+    page_level = float(np.percentile(values, 60))  # a typical paper pixel, whatever the exposure
+    return float((values > 0.6 * page_level).mean())
+
+
+def _quality(gray: np.ndarray, small: np.ndarray, s: float, q: np.ndarray) -> float:
+    """How page-like a quad (full-resolution corners) is: 0 if it fails a check, else a score that rewards a big, bright,
+    uniformly paper-filled area whose four sides each sit on a clean straight edge."""
+    qs = q * s
+    contrast = _contrast(small, qs)
+    _, support = _refine(gray, q, 0.015)
+    if contrast < MIN_CONTRAST or min(_side_contrasts(small, qs)) < MIN_SIDE_CONTRAST or min(support) < MIN_EDGE_SUPPORT:
+        return 0.0
+    return cv2.contourArea(qs) * contrast * min(support) * _fill(small, qs) ** 10
+
+
+def find_page(frame: np.ndarray, w_mm: float, h_mm: float) -> tuple:
+    """(corners, reason): the page's four corners in image pixels (TL, TR, BR, BL), or (None, why not).
+
+    Two strategies run: one finds the page as a bright region and approximates its outline; the other fits the four edge
+    lines directly (which survives something hiding part of an edge or a corner). The better quad, by one shared quality
+    score, wins; if neither is clean the region strategy's explanation is returned."""
+    q_region, why = _find_page_by_regions(frame, w_mm, h_mm)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    s = WORK_W / gray.shape[1]
+    small = cv2.resize(gray, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    q_lines = _find_page_by_lines(gray, small, s, w_mm / h_mm)
+    scored = [(_quality(gray, small, s, q), q) for q in (q_region, q_lines) if q is not None]
+    scored = [(score, q) for score, q in scored if score > 0]
+    return (max(scored, key=lambda sq: sq[0])[1], "") if scored else (None, why)
+
+
+def find_page_homography(frame: np.ndarray, w_mm: float, h_mm: float, origin: tuple = (0.0, 0.0)) -> tuple:
+    """(H, reason): image px -> page mm, or (None, why not). The page's top-left corner sits at `origin` (default 0, 0)."""
     q, why = find_page(frame, w_mm, h_mm)
-    return (None, why) if q is None else (homography_from_corners(q, w_mm, h_mm), "")
+    return (None, why) if q is None else (homography_from_corners(q, w_mm, h_mm, origin), "")
 
 
 class AutoPage:
-    """Page source for `--auto-page`: looks for the page edges, locks on once they hold steady, then tracks the page."""
+    """Page source for `--auto-page` / `--paper`: finds the page edges, then either tracks the page or keeps re-finding it.
 
-    def __init__(self, w_mm: float, h_mm: float):
-        self.size_mm, self.tracker, self.prev, self.steady, self.reason = (w_mm, h_mm), None, None, 0, ""
+    track=True   lock on once the edges hold steady, then follow the page's texture (good for a page full of braille)
+    track=False  keep re-finding the edges about 3 times a second and hold the last good position while they are hidden
+                 (good for a sparse printed sheet, where texture tracking has too little to lock onto)
+    origin       where the page's top-left corner sits in page mm (the printed sheets use -SHEET_ORIGIN_MM)
+    """
+
+    def __init__(self, w_mm: float, h_mm: float, origin: tuple = (0.0, 0.0), track: bool = True,
+                 refresh_seconds: float = 0.3, hold_seconds: float = 5.0):
+        self.size_mm, self.origin, self.track = (w_mm, h_mm), origin, track
+        self.refresh, self.hold = refresh_seconds, hold_seconds
+        self.tracker, self.prev, self.steady, self.reason = None, None, 0, ""
+        self.last_H: Optional[np.ndarray] = None
+        self.last_seen, self.last_try = 0.0, 0.0
 
     def unlock(self) -> None:
         """Forget the current page and look for the edges again (bound to the r key)."""
-        self.tracker, self.prev, self.steady = None, None, 0
+        self.tracker, self.prev, self.steady, self.last_H, self.last_seen, self.last_try = None, None, 0, None, 0.0, 0.0
 
     @property
     def status(self) -> str:
         if self.tracker is not None:
             return self.tracker.status
+        if not self.track:
+            if self.last_H is None:
+                return f"looking for the page edges: {self.reason}"
+            if self.reason:
+                return f"page edges hidden, holding the last position ({self.reason})"
+            return "page edges found"
         if self.steady:
             return f"page edges found, holding steady ({self.steady}/{STEADY_FRAMES})"
         return f"looking for the page edges: {self.reason}"
 
     def homography(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """Image px -> page mm for this frame, or None while no page has been found."""
+        if not self.track:
+            return self._edges_only(frame)
         if self.tracker is not None:
             return self.tracker.homography(frame)
         q, self.reason = find_page(frame, *self.size_mm)
@@ -195,7 +354,21 @@ class AutoPage:
             return None
         moved = self.prev is None or np.abs(q - self.prev).max() > 4
         self.steady, self.prev = 1 if moved else self.steady + 1, q
-        H = homography_from_corners(q, *self.size_mm)
+        H = homography_from_corners(q, *self.size_mm, self.origin)
         if self.steady >= STEADY_FRAMES:
             self.tracker = PageTracker(frame, H)  # from now on follow the page's texture, not its edges
         return H
+
+    def _edges_only(self, frame: np.ndarray) -> Optional[np.ndarray]:
+        now = time.time()
+        if self.last_H is not None and now - self.last_try < self.refresh:
+            return self.last_H
+        self.last_try = now
+        q, self.reason = find_page(frame, *self.size_mm)
+        if q is not None:
+            self.last_H, self.last_seen = homography_from_corners(q, *self.size_mm, self.origin), now
+            return self.last_H
+        if self.last_H is not None and now - self.last_seen < self.hold:
+            return self.last_H  # hidden for a moment (a hand over an edge): keep the last good position
+        self.last_H = None
+        return None

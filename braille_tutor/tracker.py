@@ -1,6 +1,7 @@
 """Marker-free page tracking: match each camera frame to a reference photo so the calibration follows the camera."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Optional, Union
 
@@ -71,3 +72,75 @@ def load_calibration(path: str) -> Union[PageTracker, FixedPage]:
     H, ref = load_homography(path), Path(path).with_suffix(".png")
     img = cv2.imread(str(ref)) if ref.exists() else None
     return PageTracker(img, H) if img is not None else FixedPage(H)
+
+
+class RobustPage:
+    """Markers when they are visible; keeps working from the sheet's own appearance when they are not.
+
+    Marker registration is exact but brittle: one marker leaving the frame, a hand across it or motion blur loses the page
+    outright. This keeps the last marker-registered frame as a reference and, whenever fewer than four markers are readable,
+    matches the current frame to it, so a sheet can be moved, tilted or partly covered without the page being lost.
+
+    paper_fallback: an optional AutoPage (from --paper) used if even matching fails.
+    """
+
+    def __init__(self, hold_seconds: float = 4.0, refresh_seconds: float = 1.5, paper_fallback=None,
+                 min_markers: int = 4):
+        from page import MARKER_POS_MM
+
+        self.marker_pos, self.hold, self.refresh = MARKER_POS_MM, hold_seconds, refresh_seconds
+        self.paper_fallback, self.min_markers = paper_fallback, min_markers
+        self.tracker: Optional[PageTracker] = None
+        self.last_H: Optional[np.ndarray] = None
+        self.last_good, self.last_ref, self.source, self.detail = 0.0, 0.0, "none", ""
+
+    @property
+    def status(self) -> str:
+        if self.source == "markers":
+            return "page OK (4 markers)"
+        if self.source == "tracking":
+            return f"page OK - markers hidden, following the sheet ({self.detail})"
+        if self.source == "paper":
+            return "page OK - markers hidden, using the sheet's edges"
+        if self.source == "holding":
+            return f"markers hidden and the sheet cannot be followed; holding its last position ({self.detail})"
+        return f"PAGE NOT FOUND: {self.detail or 'no markers and nothing to follow yet'}"
+
+    def unlock(self) -> None:
+        """Forget everything and re-register from scratch."""
+        self.tracker, self.last_H, self.last_good, self.last_ref = None, None, 0.0, 0.0
+        self.source, self.detail = "none", ""
+        if self.paper_fallback is not None:
+            self.paper_fallback.unlock()
+
+    def homography(self, frame: np.ndarray) -> Optional[np.ndarray]:
+        """Image px -> page mm for this frame, or None if the page cannot be placed at all."""
+        from page import _homography_from_centers, visible_markers
+
+        now = time.time()
+        centers = visible_markers(frame)
+        if len(centers) >= self.min_markers:
+            H = _homography_from_centers(centers)
+            self.last_H, self.last_good, self.source, self.detail = H, now, "markers", ""
+            if now - self.last_ref > self.refresh:  # keep the reference fresh so tracking starts from a recent view
+                self.tracker, self.last_ref = PageTracker(frame, H), now
+            return H
+        if self.tracker is not None:
+            H = self.tracker.homography(frame)
+            if H is not None and not self.tracker.reason:
+                self.last_H, self.last_good = H, now
+                self.source, self.detail = "tracking", f"{self.tracker.inliers} matches"
+                return H
+        if self.paper_fallback is not None:
+            H = self.paper_fallback.homography(frame)
+            if H is not None:
+                self.last_H, self.last_good, self.source, self.detail = H, now, "paper", ""
+                return H
+        if self.last_H is not None and now - self.last_good < self.hold:
+            self.source, self.detail = "holding", f"{len(centers)}/4 markers, {now - self.last_good:.0f}s"
+            return self.last_H
+        from page import diagnose_markers
+
+        self.source = "none"
+        self.detail = diagnose_markers(frame)[1] or "no markers in view"  # the detailed reason, for the person aiming
+        return None

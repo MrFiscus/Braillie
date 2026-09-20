@@ -6,7 +6,7 @@ from collections import deque
 
 import numpy as np
 
-from detect import Cell, _assign_grid, _make_cell
+from detect import Cell, _assign_grid, _make_cell, dots_to_char
 
 
 def keep_inside(cells: list, w_mm: float, h_mm: float) -> list:
@@ -68,3 +68,106 @@ class CellVoter:
                                   float(np.mean([c["w"] for _, c in cl])), float(np.mean([c["h"] for _, c in cl])),
                                   label, conf))
         return _assign_grid(out)
+
+
+class CellLocker:
+    """Latches each cell's reading once it can be trusted, so camera shake and blurry frames cannot flicker it.
+
+    Voting smooths a reading over a sliding window, so a run of bad frames still wins eventually. Locking is different: a cell
+    that has been read right is HELD, and one wrong or missing reading does nothing. It only lets go if a different reading
+    persists for `unlock_after` scans in a row (the sheet really changed: a dot was added, another sheet was put down).
+
+    Two ways to decide a reading is trustworthy:
+      known sheet    the expected pattern is given (update_known): a cell locks as soon as it reads as expected `lock_after` scans
+                     running. This is "we know it is correct", the way the four markers used to hold the page.
+      unknown page   (update): a cell locks once the same reading has made up `agree` of its recent scans, at least `lock_after` times.
+    Cells are matched by position in page millimetres, so they stay put when the camera moves.
+    """
+
+    def __init__(self, lock_after: int = 2, unlock_after: int = 6, window: int = 10, agree: float = 0.7):
+        self.lock_after, self.unlock_after, self.window, self.agree = lock_after, unlock_after, window, agree
+        self.slots: list = []
+
+    def reset(self) -> None:
+        """Forget everything and read from scratch (the u key)."""
+        self.slots = []
+
+    def prelock(self, cells: list) -> None:
+        """Start with these cells already locked, for example a first line someone has checked by eye against the page."""
+        self.reset()
+        for c in cells:
+            self.slots.append(self._new(c, c["label"], locked=True))
+
+    def _new(self, cell: dict, expected: Optional[str] = None, locked: bool = False) -> dict:
+        return {"cell": cell, "hist": collections.deque(maxlen=self.window), "locked": cell["label"] if locked else None,
+                "expected": expected, "run": 0, "other": None, "other_run": 0, "unseen": 0}
+
+    def _follow(self, slot: dict, label: Optional[str]) -> None:
+        """Move a slot's lock state on by one scan, given what was read (None = nothing seen)."""
+        slot["unseen"] = 0 if label is not None else slot["unseen"] + 1
+        if label is None:
+            return  # a dropout says nothing: a locked cell stays locked
+        slot["hist"].append(label)
+        if slot["locked"] is not None:
+            if label == slot["locked"]:
+                slot["other"], slot["other_run"] = None, 0
+                return
+            slot["other_run"] = slot["other_run"] + 1 if slot["other"] == label else 1
+            slot["other"] = label
+            if slot["other_run"] >= self.unlock_after:  # a different reading, again and again: the page really changed
+                slot["locked"], slot["other"], slot["other_run"], slot["run"] = None, None, 0, 0
+            return
+        if slot["expected"] is not None:  # known sheet: lock as soon as it reads as the sheet says
+            slot["run"] = slot["run"] + 1 if label == slot["expected"] else 0
+            if slot["run"] >= self.lock_after:
+                slot["locked"] = label
+            return
+        top, count = collections.Counter(slot["hist"]).most_common(1)[0]  # unknown page: lock on a steady majority
+        if count >= self.lock_after and count >= self.agree * len(slot["hist"]):
+            slot["locked"] = top
+
+    def update_known(self, observed: list, expected: list) -> list:
+        """Add one scan of a known sheet: `observed` and `expected` are lists of Cells in the same order."""
+        if not self.slots or len(self.slots) != len(expected):
+            self.slots = [self._new(e, e["label"]) for e in expected]
+        for slot, o in zip(self.slots, observed):
+            slot["cell"] = {**slot["cell"], **{k: o[k] for k in ("dots", "label", "char", "confidence", "x", "y") if k in o}}  # x, y: where the dots really are
+            self._follow(slot, o["label"])
+        return self.result()
+
+    def update(self, cells: list) -> list:
+        """Add one scan of an unknown page (Cells in page mm)."""
+        if not cells:
+            return self.result()
+        radius = 0.4 * float(np.median([c["w"] for c in cells]))
+        seen = set()
+        for c in cells:
+            free = [(np.hypot(c["x"] - s["cell"]["x"], c["y"] - s["cell"]["y"]), i) for i, s in enumerate(self.slots) if i not in seen]
+            dist, i = min(free, default=(np.inf, -1))
+            if dist > radius:
+                self.slots.append(self._new(c))
+                i = len(self.slots) - 1
+            seen.add(i)
+            slot = self.slots[i]
+            slot["cell"] = {**c, "x": 0.5 * (slot["cell"]["x"] + c["x"]), "y": 0.5 * (slot["cell"]["y"] + c["y"])}
+            self._follow(slot, c["label"])
+        for i, slot in enumerate(self.slots):
+            if i not in seen:
+                self._follow(slot, None)
+        self.slots = [s for s in self.slots if s["locked"] is not None or s["unseen"] <= self.window]  # unlocked ghosts age out
+        return self.result()
+
+    def result(self) -> list:
+        """Every cell as it should be shown now: locked cells with their held reading (flag `locked`), others as last read."""
+        out = []
+        for s in self.slots:
+            cell = {**s["cell"], "locked": s["locked"] is not None}
+            if s["locked"] is not None:
+                dots = frozenset(i + 1 for i, ch in enumerate(s["locked"]) if ch == "1")
+                cell = {**cell, "label": s["locked"], "dots": dots, "char": dots_to_char(dots), "confidence": 1.0}
+            out.append(cell)
+        return out
+
+    @property
+    def locked_count(self) -> int:
+        return sum(s["locked"] is not None for s in self.slots)

@@ -3,7 +3,7 @@
 Click the four corners of a rectangle whose real size you measured with a ruler, in this order: top left,
 top right, bottom right, bottom left (e.g. an index card on the page, or four marks on the board).
 Run: python calibrate.py --width 120 --height 60 [--camera N | --image photo.jpg] [--no-track]
-For the A-Z sheet: python calibrate.py --sheet --no-track   (click the four corners of the paper)
+For any printed sheet: python calibrate.py --sheet --no-track   (click the four corners of the paper)
 Keys: space = freeze the live view, y = save, r = redo the clicks, q = quit.
 The frozen frame is also saved as a reference photo, so later runs can follow the camera as it moves (tracker.py).
 This needs a page with plenty of texture; with a blank or sparse page, keep the camera still or use the markers.
@@ -36,7 +36,7 @@ def main() -> None:
     ap.add_argument("--height", type=float, help="mm between the top-left and bottom-left clicks")
     ap.add_argument("--origin", type=float, nargs=2, default=(0.0, 0.0), metavar=("X", "Y"),
                     help="page position (mm) of the top-left click; default 0 0")
-    ap.add_argument("--sheet", action="store_true", help="the A-Z sheet: click the four corners of the A4 paper")
+    ap.add_argument("--sheet", action="store_true", help="a printed sheet (any of them, same A4 layout): click the four corners of the A4 paper")
     ap.add_argument("--no-track", action="store_true", help="do not save a reference photo (fixed calibration only)")
     ap.add_argument("--camera", default=None)
     ap.add_argument("--image", help="calibrate on a photo instead of the camera")
