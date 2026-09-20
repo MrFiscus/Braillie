@@ -244,6 +244,23 @@ of playing it: without `--mock` and with a key, speech is played.
 Bug fixed in `voice_io.py` on the way: it asked Deepgram for `container="wav"` without `encoding="linear16"`; Deepgram then
 defaults to mp3 and answers HTTP 400 ("container is not applicable when encoding=mp3"), so no speech ever played. One added argument.
 
+## The website flow (React frontend)
+
+With the tutor running (`python tutor_server.py --mode explore --sheet alphabet --paper`, add `--phone-camera` for a phone) and the site
+running (`cd website-frontend && npm run dev`), the flow after sign-in is:
+
+1. **Get to Know** (`/user-information`), then **Next** goes to
+2. **Connect your camera** (`/connect-phone`): a QR code and the typed address + code when the tutor was started with `--phone-camera`
+   (Continue unlocks once the phone's video arrives, and a plain-words hint says where a phone got stuck); with the laptop camera it says
+   so and Continue is available at once. Then
+3. **Practice** (`/practice`): the live camera with a box on every detected cell (red dots = what it sees, letter above, green = locked in),
+   a status line ("All 26 cells read. Rest a finger on a cell to hear it."), the sheet, what the finger is on, buttons for the voice
+   commands (next page, repeat, hint, found it, stop), and what the tutor said. A warning box explains if speech will not be heard.
+   Clicking the video stands in for the fingertip. The tutor itself does the speaking.
+
+The pages talk to the tutor on `http://127.0.0.1:8000` (`VITE_TUTOR_API` overrides it); shared code is in `website-frontend/src/tutor/`.
+The site needs `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_GOOGLE_CLIENT_ID` in a git-ignored `website-frontend/.env` to log in.
+
 ## Phone as the camera: scan a QR code (`--phone-camera`)
 
 ```
