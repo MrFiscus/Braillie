@@ -304,7 +304,10 @@ def find_page(frame: np.ndarray, w_mm: float, h_mm: float) -> tuple:
 def find_page_homography(frame: np.ndarray, w_mm: float, h_mm: float, origin: tuple = (0.0, 0.0)) -> tuple:
     """(H, reason): image px -> page mm, or (None, why not). The page's top-left corner sits at `origin` (default 0, 0)."""
     q, why = find_page(frame, w_mm, h_mm)
-    return (None, why) if q is None else (homography_from_corners(q, w_mm, h_mm, origin), "")
+    if q is None:
+        return None, why
+    H = homography_from_corners(q, w_mm, h_mm, origin)
+    return (H, "") if H is not None else (None, "the edges found are too squashed to place the page: face the sheet more squarely")
 
 
 class AutoPage:
@@ -352,9 +355,12 @@ class AutoPage:
         if q is None:
             self.prev, self.steady = None, 0
             return None
+        H = homography_from_corners(q, *self.size_mm, self.origin)
+        if H is None:  # edges in a line, or nearly: no better than not having found them
+            self.prev, self.steady, self.reason = None, 0, "the edges found are too squashed to place the page"
+            return None
         moved = self.prev is None or np.abs(q - self.prev).max() > 4
         self.steady, self.prev = 1 if moved else self.steady + 1, q
-        H = homography_from_corners(q, *self.size_mm, self.origin)
         if self.steady >= STEADY_FRAMES:
             self.tracker = PageTracker(frame, H)  # from now on follow the page's texture, not its edges
         return H
@@ -365,9 +371,12 @@ class AutoPage:
             return self.last_H
         self.last_try = now
         q, self.reason = find_page(frame, *self.size_mm)
-        if q is not None:
-            self.last_H, self.last_seen = homography_from_corners(q, *self.size_mm, self.origin), now
+        H = homography_from_corners(q, *self.size_mm, self.origin) if q is not None else None
+        if H is not None:
+            self.last_H, self.last_seen = H, now
             return self.last_H
+        if q is not None:
+            self.reason = "the edges found are too squashed to place the page"
         if self.last_H is not None and now - self.last_seen < self.hold:
             return self.last_H  # hidden for a moment (a hand over an edge): keep the last good position
         self.last_H = None

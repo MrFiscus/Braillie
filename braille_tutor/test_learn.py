@@ -44,6 +44,7 @@ class Host:
         self.said, self.tones, self.requests, self.explore_ticks, self.explore_resets, self.finished = [], [], [], 0, 0, False
         self.finger_pos, self.sheet = None, sheet
         self.sheets = {"alphabet": ALPHABET, "lookalikes": LOOKALIKES}
+        self.reading = None  # what the camera makes of the sheet right now, when that differs from what is printed on it
 
     # -- the host interface --
     def say(self, text):
@@ -56,6 +57,9 @@ class Host:
         return self.finger_pos
 
     def cells(self):
+        return self.known_cells() if self.reading is None else self.reading
+
+    def known_cells(self):
         return self.sheets[self.sheet].cells
 
     def sheet_name(self):
@@ -75,8 +79,12 @@ class Host:
 
     # -- helpers for the tests --
     def pos(self, letter):
-        c = next(c for c in self.cells() if frozenset(c["dots"]) == DOTS[letter])
+        c = next(c for c in self.known_cells() if frozenset(c["dots"]) == DOTS[letter])
         return c["x"], c["y"]
+
+    def hand_over(self, letter, reads_as=frozenset({1, 2, 3, 4, 5, 6})):
+        """A hand resting on `letter` spoils the camera's reading of that cell: it comes back as dots that are not there."""
+        self.reading = [{**c, "dots": reads_as} if frozenset(c["dots"]) == DOTS[letter] else c for c in self.known_cells()]
 
     def last(self, n=1):
         return " | ".join(self.said[-n:])
@@ -326,6 +334,51 @@ class WrongAnswerTests(unittest.TestCase):
         run(j, host, clock, 2.0)
         self.assertEqual(sum("don't feel any braille" in s for s in host.said[n:]), 1, "not repeated while the finger rests there")
         self.assertEqual(j.tries, 0, "not a wrong answer")
+
+
+class HandOverTheCellTests(unittest.TestCase):
+    """The reported bug: every letter the learner put a finger on came back as "a cell I don't recognise".
+
+    A finger on a cell is the one thing that stops the camera reading that cell, so a lesson answer cannot be judged from
+    a reading of it. What the sheet says is printed there is what counts.
+    """
+
+    def test_a_covered_target_is_still_a_right_answer(self):
+        j, host, clock, p = make()
+        j.on_start()
+        want = j.target
+        host.hand_over(want)  # the finger arrives, and the camera stops making sense of that cell
+        answer(j, host, clock, want)
+        self.assertEqual(host.tones[-1], "correct")
+        self.assertNotIn("recognise", " ".join(host.said))
+        self.assertNotEqual(j.target, want, "moved on to the next letter")
+
+    def test_a_target_misread_as_another_letter_is_still_a_right_answer(self):
+        j, host, clock, p = make()
+        j.on_start()
+        want = j.target
+        other = next(l for l in "bcde" if l != want)
+        host.hand_over(want, reads_as=DOTS[other])
+        answer(j, host, clock, want)
+        self.assertEqual((host.tones[-1], j.tries), ("correct", 0))
+
+    def test_a_genuinely_wrong_touch_is_still_wrong(self):
+        j, host, clock, p = make()
+        j.on_start()
+        want = j.target
+        wrong = next(l for l in "bcde" if l != want)
+        host.hand_over(wrong)  # the hand is on the wrong letter, and spoils the reading of it too
+        answer(j, host, clock, wrong)
+        self.assertEqual(host.tones[-1], "wrong")
+        self.assertIn(f"That's the letter {wrong.upper()}.", host.last(), "named from the sheet, not from the spoiled reading")
+        self.assertEqual(j.target, want, "still asking for the same letter")
+
+    def test_where_the_letter_is_can_still_be_said_while_it_is_covered(self):
+        j, host, clock, p = make()
+        j.on_start()
+        host.hand_over(j.target)
+        j.on_hint()
+        self.assertRegex(host.last(), r"row \d, column \d")
 
 
 class HintTests(unittest.TestCase):

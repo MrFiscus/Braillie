@@ -1,2 +1,7 @@
 *.env
 .env
+
+# compiled Python and local virtualenvs (the tutor is run straight from the repo)
+__pycache__/
+*.py[cod]
+.venv*/

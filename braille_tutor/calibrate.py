@@ -74,8 +74,11 @@ def main() -> None:
         H = None
         if len(pts) == 4:
             H = homography_from_corners(pts, a.width, a.height, tuple(a.origin))
-            draw_preview(view, H, a.width, a.height, tuple(a.origin))
-            msg = "y: save   r: redo"
+            if H is None:
+                msg = "those 4 points are (nearly) in a line: r to redo"
+            else:
+                draw_preview(view, H, a.width, a.height, tuple(a.origin))
+                msg = "y: save   r: redo"
         cv2.putText(view, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
         cv2.imshow("calibrate", view)
         k = cv2.waitKey(20) & 0xFF

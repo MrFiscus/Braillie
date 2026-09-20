@@ -1,7 +1,7 @@
 import { useEffect, type MouseEvent } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import BigButton from '../components/BigButton.tsx'
-import { TUTOR_API, sendCommand, sendFinger, setMode } from '../tutor/tutorApi.ts'
+import { TUTOR_API, clearFinger, sendCommand, sendFinger, setMode } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useProgressSync } from '../tutor/useProgressSync.ts'
 import { useTutorSession } from '../tutor/useTutorSession.ts'
@@ -68,6 +68,7 @@ const Practice = () => {
   }
 
   const finger = state?.finger.cell
+  const posted = state?.finger.source === 'posted' // a click is standing in for the camera: say so, and offer it back
   const commands = activity === 'quiz' ? QUIZ_COMMANDS : activity === 'read' ? READ_COMMANDS : learning ? LEARN_COMMANDS : COMMANDS
   const buttons = commands.filter((c) => state?.config.commands.includes(c))
   const voiceProblems = state?.config.voice && !state.config.voice.ok ? state.config.voice.problems : []
@@ -181,6 +182,14 @@ const Practice = () => {
             </span>{' '}
             Green box: read and locked in. Amber: still reading. If the camera loses your fingertip, click the picture where it is.
           </p>
+          {posted && (
+            <p className="hint small" role="status">
+              Braillie is taking the spot you clicked as your fingertip for a few seconds, not what the camera sees.{' '}
+              <button type="button" className="btn btn--quiet" onClick={() => clearFinger()}>
+                Use the camera instead
+              </button>
+            </p>
+          )}
           <dl className="readout">
           <div>
             <dt>Sheet</dt>

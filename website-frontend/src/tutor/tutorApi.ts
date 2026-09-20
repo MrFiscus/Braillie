@@ -62,7 +62,11 @@ export interface TutorState {
   phone: PhoneInfo | null // null unless the tutor was started with --phone-camera
   page: { ok: boolean; message: string }
   tutor: { mode: string; state: string; prompt: string; question?: number; total?: number; asked?: number; correct?: number; tries?: number }
-  finger: { page_mm: [number, number] | null; cell: { letter: string | null; label: string | null; name: string | null; dots: number[] } | null }
+  finger: {
+    page_mm: [number, number] | null
+    source?: 'camera' | 'posted' | null // "posted": a click on the video is standing in for the camera's tracking, briefly
+    cell: { letter: string | null; label: string | null; name: string | null; dots: number[] } | null
+  }
   said: { t: number; kind: string; text: string }[]
   reading?: { locked: number; total: number; between_pages: boolean }
   hub?: HubInfo | null // null unless the tutor was started as the menu-driven tutor
@@ -78,8 +82,12 @@ const post = (path: string, body: unknown) =>
 /** Say a voice command to the tutor without speaking: "next page", "repeat", "hint", "stop", ... */
 export const sendCommand = (command: string) => post('/api/command', { command })
 
-/** Tell the tutor where the fingertip is on the video, as fractions (0-1) of its width and height. */
+/** Tell the tutor where the fingertip is on the video, as fractions (0-1) of its width and height. Stands in for the
+ *  camera's own tracking for 10 s, then the camera has it back; send it again to keep it. */
 export const sendFinger = (u: number, v: number) => post('/api/finger', { u, v })
+
+/** Stop standing in for the fingertip: give the camera's own tracking back straight away. */
+export const clearFinger = () => post('/api/finger', { clear: true })
 
 export const speak = (text: string) => {
   try {
