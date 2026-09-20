@@ -12,9 +12,15 @@ import numpy as np
 from detect import Cell, letter_of, nearest_cell, rows_of
 
 
-def word_text(cells: list) -> str:
-    """Letters of a run of cells, with "?" for any cell that isn't a plain letter."""
-    return "".join(letter_of(c["dots"]) or "?" for c in cells)
+def word_text(cells: list, printed: Optional[dict] = None) -> str:
+    """Letters of a run of cells, with "?" for any cell that isn't a plain letter.
+
+    printed: optional {(row, col): letter} lookup from a known sheet's layout, used as a fallback when the LIVE dots don't
+    spell a letter -- e.g. a finger covers the 'c' in "cat" so its dots read as blank; without this the tutor would say
+    "unknown, a, t" instead of just reading "cat". The camera's own reading still wins whenever it produces a letter."""
+    if printed is None:
+        return "".join(letter_of(c["dots"]) or "?" for c in cells)
+    return "".join(letter_of(c["dots"]) or printed.get((c["row"], c["col"])) or "?" for c in cells)
 
 
 def typical_pitch(cells: list) -> Optional[float]:
@@ -54,10 +60,13 @@ def read_lines(cells: list) -> list:
     return [" ".join(word_text(w) for w in split_words(row, typical=pitch)) for row in rows_of(cells)]
 
 
-def word_at(cells: list, x_mm: float, y_mm: float, decode: bool = False, is_word=None) -> Optional[str]:
+def word_at(cells: list, x_mm: float, y_mm: float, decode: bool = False, is_word=None,
+            printed: Optional[dict] = None) -> Optional[str]:
     """The word whose cell is nearest the page point (x, y), or None if the point isn't on a cell.
 
-    decode=True reads it as contracted braille (see contractions.py); the default reads plain letters."""
+    decode=True reads it as contracted braille (see contractions.py); the default reads plain letters.
+    printed: optional {(row, col): letter} from a known sheet, used as a fallback when the live dots don't spell a letter
+    (see word_text). Only makes sense in plain mode (decode=False)."""
     hit = nearest_cell(cells, x_mm, y_mm)
     if hit is None:
         return None
@@ -68,7 +77,7 @@ def word_at(cells: list, x_mm: float, y_mm: float, decode: bool = False, is_word
                 if decode:
                     from contractions import decode_word
                     return decode_word([c["dots"] for c in word], is_word).text
-                return word_text(word)
+                return word_text(word, printed=printed)
     return None
 
 

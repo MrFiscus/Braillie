@@ -234,6 +234,17 @@ class TestFeedIntegration(unittest.TestCase):
         feed.set_finger_mm(30, 40)  # clicking again is how you keep pointing
         self.assertEqual(feed.finger(), (30, 40))
 
+    def test_a_raw_fingertip_is_drawn_on_the_video(self):
+        """The green ring is what tells you the tutor can see the finger; it uses the camera pixels, not the page."""
+        import tutor
+        feed = tutor.CameraFeed(None, None, None, track_finger=True)
+        feed.frame = np.zeros((80, 120, 3), np.uint8)
+        feed.tracker.tip = Tip(40, 30, 0.9, (40, 50), 2.0)
+        view = feed.render(hud=False)
+        b, g, r = (int(c) for c in view[30, 40])
+        self.assertGreater(g, b + 40, "the fingertip should be a green ring on the video")
+        self.assertGreater(g, r + 40)
+
     def test_a_stale_click_outlives_a_rest_that_counts_as_an_answer(self):
         """It has to last: the learner clicks, the tutor waits for the finger to settle, and only then is it an answer."""
         import tutor

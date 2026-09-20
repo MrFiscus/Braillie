@@ -87,6 +87,26 @@ class ReaderTests(unittest.TestCase):
         cells = [_make_cell(10, 10, 6, 9, "100000", 1.0, 0, 0), _make_cell(20, 10, 6, 9, "111111", 1.0, 0, 1)]
         self.assertEqual(reader.word_text(cells), "a?")
 
+    def test_printed_layout_fills_in_a_cell_whose_dots_do_not_spell_a_letter(self):
+        """A covered cell reads as blank; passing the printed sheet as a fallback keeps the word readable."""
+        from detect import _make_cell
+        blank = _make_cell(10, 10, 6, 9, "000000", 1.0, 0, 0)  # dots hidden by a finger
+        a = _make_cell(20, 10, 6, 9, "100000", 1.0, 0, 1)
+        t = _make_cell(30, 10, 6, 9, "011110", 1.0, 0, 2)  # dots for 't'
+        printed = {(0, 0): "c", (0, 1): "a", (0, 2): "t"}
+        self.assertEqual(reader.word_text([blank, a, t], printed=printed), "cat")
+        self.assertEqual(reader.word_at([blank, a, t], 10, 10, printed=printed), "cat")
+
+    def test_live_reading_wins_over_the_printed_layout(self):
+        from detect import _make_cell
+        cell = _make_cell(10, 10, 6, 9, "100000", 1.0, 0, 0)  # live dots clearly say 'a'
+        self.assertEqual(reader.word_text([cell], printed={(0, 0): "z"}), "a")
+
+    def test_printed_layout_still_falls_back_to_question_mark_when_it_has_no_entry(self):
+        from detect import _make_cell
+        blank = _make_cell(10, 10, 6, 9, "000000", 1.0, 0, 0)
+        self.assertEqual(reader.word_text([blank], printed={}), "?")
+
 
 @unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")
 class LetterQuizTests(unittest.TestCase):
@@ -279,6 +299,22 @@ class WordModeTests(unittest.TestCase):
         s.on_found_it()
         self.assertIn("c, a, unknown", v.said[-1])
         self.assertNotIn("u, n, k", v.said[-1])
+
+    def test_read_mode_falls_back_to_the_printed_layout_when_a_cell_is_hidden(self):
+        """A finger over a cell hides its dots, so the live read has "?" there; on a known sheet the tutor should fill that
+        in from the printed layout and still read the word (finger on "c" in "cat" -> "The word is cat", not "unknown, a, t")."""
+        from detect import _make_cell, dots_to_label
+        printed = cells_from_layout(["cat dog"], x0=10, y0=10, pitch_x=12, pitch_y=20)
+
+        def scan():  # what the camera sees now: the 'c' cell reads as blank because a finger covers it
+            seen = [dict(c) for c in printed]
+            seen[0] = _make_cell(seen[0]["x"], seen[0]["y"], seen[0]["w"], seen[0]["h"], dots_to_label(set()), 1.0, 0, 0)
+            return seen
+
+        s, v = session(mode="read", cells=printed, scan=scan, finger=lambda: (10, 10))  # finger on the (hidden) 'c'
+        s.on_start()
+        s.on_found_it()
+        self.assertEqual(v.said[-1], "The word is cat.")
 
     def test_quiz_accepts_after_redetect(self):
         scan, st = self.scans("cax dog", "cap dog")

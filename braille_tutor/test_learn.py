@@ -98,10 +98,11 @@ def run(j, host, clock, seconds, step=0.1):
         j.tick(clock.t)
 
 
-def answer(j, host, clock, letter, settle=1.4):
-    """The learner puts a finger on `letter` and rests it there."""
+def answer(j, host, clock, letter, settle=None):
+    """The learner puts a finger on `letter` and rests it there for long enough to count as an answer."""
+    from learn import DWELL_SECONDS
     host.finger_pos = host.pos(letter)
-    run(j, host, clock, settle)
+    run(j, host, clock, DWELL_SECONDS + 0.2 if settle is None else settle)
 
 
 def leave(j, host, clock):
@@ -320,10 +321,11 @@ class WrongAnswerTests(unittest.TestCase):
         self.assertGreaterEqual(host.tones.count("wrong"), MAX_TRIES)
 
     def test_resting_on_blank_paper_is_gently_pointed_out_once(self):
+        from learn import DWELL_SECONDS
         j, host, clock, p = self.start_practice()
         n = len(host.said)
         host.finger_pos = (5.0, 5.0)  # nowhere near a cell
-        run(j, host, clock, 2.5)
+        run(j, host, clock, DWELL_SECONDS + 1.3)
         said = host.said[n:]
         self.assertEqual(sum("don't feel any braille" in s for s in said), 1, said)
         run(j, host, clock, 2.0)

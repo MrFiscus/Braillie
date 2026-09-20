@@ -18,7 +18,7 @@ export function QuizPanel({ tutor }: { tutor: TutorState['tutor'] }) {
               {letter.toUpperCase()}
             </div>
           )}
-          <p className="hint">{tutor.prompt} Rest your finger on it.</p>
+          <p className="hint">{tutor.prompt} Rest your finger on it, or click the picture where it is.</p>
         </div>
       )}
       <p className="hint">

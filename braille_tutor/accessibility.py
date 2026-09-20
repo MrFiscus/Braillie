@@ -153,7 +153,7 @@ def help_text(hub_mode: Optional[str], mode: str, state: str) -> str:
         return ("In a lesson you can say hint for help, repeat to hear it again, found it to answer straight away, next to skip a letter, "
                 f"explore to feel the letters freely, practice for a review, or stop to finish. Say menu to choose something else. {ends}")
     if hub_mode == "quiz" or mode == "letters":
-        return f"In the quiz you can say hint, repeat, next to skip a question, or stop to finish. Say menu to choose something else. {ends}"
+        return f"In the quiz you can say found it to answer, hint, repeat, next to skip a question, or stop to finish. If I cannot see your finger, click the picture where it is. Say menu to choose something else. {ends}"
     if hub_mode == "read" or mode == "read":
         return f"When reading, rest a finger on a word and I will read it. You can say repeat, or stop to finish. Say menu to choose something else. {ends}"
     if mode == "explore":

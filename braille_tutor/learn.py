@@ -28,7 +28,7 @@ POSITION = {1: "top-left", 2: "middle-left", 3: "bottom-left", 4: "top-right", 5
 DOTS = {letter: frozenset(int(d) for d in digits) for letter, digits in _ALPHABET.items()}
 NUMBER_WORD = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six"}
 
-DWELL_SECONDS = 1.2  # resting a finger this long on a cell is "this is my answer"
+DWELL_SECONDS = 3.0  # resting a finger this long on a cell is "this is my answer" (long enough to feel the dots before it commits)
 STILL_MM = 4.0
 LEAVE_MM = 9.0
 HINT_AFTER = (12.0, 15.0, 20.0)  # seconds of no answer before each hint the tutor offers by itself (12 s, then 15 s more, then 20 s more)

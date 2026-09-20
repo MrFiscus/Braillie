@@ -121,6 +121,8 @@ class AdaptiveTargetPlanner:
         return targets, "OpenAI adaptive plan"
 
 EXPLORE_DWELL_SECONDS = 0.7  # a finger resting this long on one spot is "feeling" it
+NO_FINGER_SECONDS = 4.0  # in quiz/read: how long with no fingertip before the tutor says it cannot see one
+NO_FINGER_AGAIN = 12.0  # ...and how long between those reminders
 EXPLORE_STILL_MM = 4.0  # ...where "one spot" means it moved less than this
 EXPLORE_LOST_SECONDS = 2.0  # finger gone this long: say so, once
 EXPLORE_OFF_CELL_SECONDS = 2.5  # resting this long on blank paper: say so, once
@@ -667,7 +669,7 @@ class TutorSession:
                 self.state = "reading"
                 return self.say("Read mode. Put the words sheet in front of the camera. Rest a finger on a word and I will read it aloud. Say menu to choose something else.")
             self.questions, self.state = 8, "idle"
-            self.say("Quiz time. Put the look-alikes sheet in front of the camera. I will name a letter: find it and rest your finger on it. Say menu to stop.")
+            self.say("Quiz time. Put the look-alikes sheet in front of the camera. I will name a letter: find it and rest your finger on it. If I cannot see your finger, click the picture where it is. Say menu to stop.")
             self.on_start()
 
     def _start_dwell_loop(self) -> None:
@@ -676,19 +678,45 @@ class TutorSession:
     def _dwell_loop(self, epoch: int) -> None:
         """In read and quiz mode, resting a finger on a spot is the answer (as in the lessons): a quiz answer, or a word to read out."""
         dwell = Dwell(seconds=DWELL_SECONDS * self.settings.dwell_scale)
+        lost_since = None
+        last_nag = 0.0
         while epoch == self._epoch:
+            now = time.monotonic()
+            grade = None
+            nag = False
             with self.lock:
                 if epoch != self._epoch:
                     return
                 try:
-                    pos = dwell.update(self.finger(), time.monotonic())
+                    pos = dwell.update(self.finger(), now)
+                    waiting = ((self.mode == "letters" and self.state == "asking")
+                               or (self.mode == "read" and self.state == "reading"))
                     if pos is not None:
                         if self.mode == "letters" and self.state == "asking":
-                            self._check_symbol(pos)
+                            grade = ("symbol", pos)
                         elif self.mode == "read" and self.state == "reading":
-                            self._read_word(pos)
+                            grade = ("word", pos)
+                    if waiting and self.finger() is None:
+                        if lost_since is None:
+                            lost_since = now
+                        elif now - lost_since >= NO_FINGER_SECONDS and now - last_nag >= NO_FINGER_AGAIN:
+                            nag, last_nag = True, now
+                    else:
+                        lost_since = None
                 except Exception:
                     traceback.print_exc()
+            try:
+                if grade is not None:
+                    kind, pos = grade
+                    with self.lock:
+                        if kind == "symbol" and self.mode == "letters" and self.state == "asking":
+                            self._check_symbol(pos)
+                        elif kind == "word" and self.mode == "read" and self.state == "reading":
+                            self._read_word(pos)
+                elif nag and not self.is_speaking():
+                    self.say("I can't see your finger. Rest it on the page, or click the picture where it is.")
+            except Exception:
+                traceback.print_exc()
             time.sleep(0.1)
 
     # ---- commands -------------------------------------------------------------------------------
@@ -1105,10 +1133,17 @@ class TutorSession:
         self.say(f"That's {got_text}, not {want_text}.{close}{self._tail(cheer)} Try again.")
 
     def _word_at(self, pos) -> str:
-        """The word under the finger, from a fresh detection ("" if there is none)."""
+        """The word under the finger, from a fresh detection ("" if there is none).
+
+        On a known printed sheet (plain mode), the sheet's own layout is passed as a fallback so a cell the finger is
+        covering still contributes its printed letter -- otherwise a finger over the 'c' in "cat" turns the reading into
+        "?at" and the tutor stumbles instead of just reading "cat"."""
         if self.scan is None:
             return ""
-        return reader.word_at(self.scan(), *pos, decode=self.contracted) or ""
+        printed = None
+        if not self.contracted and self.cells:
+            printed = {(c["row"], c["col"]): letter_of(c["dots"]) for c in self.cells}
+        return reader.word_at(self.scan(), *pos, decode=self.contracted, printed=printed) or ""
 
     def _read_word(self, pos) -> None:
         if self.scan is None:
@@ -1359,13 +1394,20 @@ class CameraFeed:
                     lines.append(locked_check_line(self.stable, self.observe_sheet))
                 elif H is not None:
                     lines.append(("reading the sheet...", AMBER))
+                if self.tracker is not None and self._posted_finger() is None and self.finger() is None:
+                    lines.append(("no finger — click the picture where it is", RED))
                 draw_hud(view, lines)
         if self.detector is not None and (H is None or self.always_reading):
             draw_detections(view, self.detector.boxes)  # what the camera reads, shown even when the page isn't registered
         if H is not None and hasattr(self.page_src, "size_mm"):  # outline the page the edge finder found
             draw_page_outline(view, H, *self.page_src.size_mm, self.page_src.origin)
         if self.finger_px is not None and self._posted_finger() is not None:  # the orange ring goes when the click stops counting
-            cv2.circle(view, (int(self.finger_px[0]), int(self.finger_px[1])), 10, (255, 128, 0), 3)
+            cv2.circle(view, (int(self.finger_px[0]), int(self.finger_px[1])), 14, (255, 128, 0), 3)
+            cv2.circle(view, (int(self.finger_px[0]), int(self.finger_px[1])), 4, (255, 128, 0), -1)
+        elif self.tracker is not None and self.tracker.tip is not None:  # image pixels: visible even before the page is registered
+            x, y = int(self.tracker.tip.x), int(self.tracker.tip.y)
+            cv2.circle(view, (x, y), 16, (0, 255, 0), 3)
+            cv2.circle(view, (x, y), 4, (0, 255, 0), -1)
         elif self.tracker is not None and self.tracker.position is not None and H is not None:
             x, y = to_image(H, *self.tracker.position)  # drawn from the smoothed page position: what the tutor is really using
             cv2.circle(view, (int(x), int(y)), 12, (0, 255, 0), 3)

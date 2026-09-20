@@ -2,6 +2,7 @@
 import io
 import unittest
 import wave
+from pathlib import Path
 
 import numpy as np
 
@@ -212,6 +213,38 @@ class InstallTests(unittest.TestCase):
         v._play_audio_stream([wav_of(speechlike(1.0))])
         y, _ = read(sent[0])
         self.assertAlmostEqual(len(y) / RATE, 1.0 / 0.75, delta=0.08)
+
+
+class TtsClipTailTests(unittest.TestCase):
+    """The last consonant of a short word was getting eaten ('cat' -> 'ca'). Helpers that stop that."""
+
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        root = str(Path(__file__).resolve().parents[1])
+        if root not in sys.path:
+            sys.path.insert(0, root)
+
+    def test_for_tts_adds_a_pause_after_the_last_word(self):
+        import voice_io
+        self.assertEqual(voice_io._for_tts("The word is cat."), "The word is cat....")
+        self.assertEqual(voice_io._for_tts("already..."), "already...")
+        self.assertEqual(voice_io._for_tts(""), "")
+
+    def test_pad_wav_silence_lengthens_the_clip_by_the_asked_amount(self):
+        import voice_io
+        data = wav_of(sine(220, 0.2))
+        padded = voice_io._pad_wav_silence(data, seconds=0.45)
+        x, rate = read(data)
+        y, _ = read(padded)
+        self.assertAlmostEqual(len(y) / rate, len(x) / rate + 0.45, delta=0.02)
+
+    def test_pad_wav_silence_fixes_a_lying_deepgram_header(self):
+        import voice_io
+        data = wav_of(sine(220, 0.2), lie=True)
+        padded = voice_io._pad_wav_silence(data, seconds=0.1)
+        y, rate = read(padded)
+        self.assertAlmostEqual(len(y) / rate, 0.3, delta=0.02)
 
 
 if __name__ == "__main__":

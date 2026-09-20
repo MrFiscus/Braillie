@@ -17,7 +17,7 @@ const SHEET_NAMES: Record<string, string> = {
 }
 const COMMANDS = ['next page', 'repeat', 'hint', 'found it', 'stop'] // the ones that mean something while exploring a page
 const LEARN_COMMANDS = ['start quiz', 'repeat', 'hint', 'found it', 'next', 'explore', 'practice', 'next page', 'stop'] // in the guided lessons
-const QUIZ_COMMANDS = ['repeat', 'hint', 'next', 'stop']
+const QUIZ_COMMANDS = ['found it', 'repeat', 'hint', 'next', 'stop']
 const READ_COMMANDS = ['repeat', 'stop']
 const LABELS: Record<string, string> = { 'start quiz': 'Start / continue', 'found it': 'I found it', explore: 'Free explore', practice: 'Practice review', stop: 'Finish' }
 const TITLES: Record<string, string> = { learn: 'Learn braille', read: 'Read', quiz: 'Quiz' }
@@ -179,7 +179,7 @@ const Practice = () => {
             <span className="badge" data-ok={!!state?.page.ok}>
               {state?.page.ok ? 'Sheet in view' : 'Sheet not in view'}
             </span>{' '}
-            Green box: read and locked in. Amber: still reading. If the camera loses your fingertip, click the picture where it is.
+            Green box: read and locked in. Amber: still reading. Green ring on the video is your fingertip. If there is no ring, click the picture where your finger is.
           </p>
           <dl className="readout">
           <div>
@@ -188,7 +188,13 @@ const Practice = () => {
           </div>
           <div>
             <dt>Finger</dt>
-            <dd>{finger ? `${finger.label ?? finger.letter ?? 'a cell'}: dots ${finger.dots.join(', ')}` : 'not on a cell'}</dd>
+            <dd>
+              {finger
+                ? `${finger.label ?? finger.letter ?? 'a cell'}: dots ${finger.dots.join(', ')}`
+                : state?.finger.page_mm
+                  ? 'not on a cell'
+                  : 'I cannot see your finger — click the picture'}
+            </dd>
           </div>
           <div>
             <dt>Tutor</dt>

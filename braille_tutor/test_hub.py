@@ -200,7 +200,7 @@ class GreetingTests(unittest.TestCase):
 @unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")
 class ModeTests(unittest.TestCase):
     def setUp(self):
-        self.patch = mock.patch.object(tutor, "Dwell", fast_dwell)  # answering by resting takes 0.15 s here, not 1.2 s
+        self.patch = mock.patch.object(tutor, "Dwell", fast_dwell)  # answering by resting takes 0.15 s here, not DWELL_SECONDS
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
@@ -237,6 +237,19 @@ class ModeTests(unittest.TestCase):
         finger.pos = cell_pos("lookalikes", target)
         self.assertTrue(wait_for(lambda: s.status()["correct"] == 1), voice.said[-3:])
         self.assertTrue(any("Correct" in t for t in voice.said))
+        s.set_mode("menu")
+
+    def test_quiz_says_when_it_cannot_see_a_finger(self):
+        s, voice, finger, feed = hub()
+        self.patch_nag = mock.patch.object(tutor, "NO_FINGER_SECONDS", 0.2)
+        self.patch_nag.start()
+        self.addCleanup(self.patch_nag.stop)
+        self.patch_again = mock.patch.object(tutor, "NO_FINGER_AGAIN", 0.2)
+        self.patch_again.start()
+        self.addCleanup(self.patch_again.stop)
+        s.set_mode("quiz")
+        finger.pos = None
+        self.assertTrue(wait_for(lambda: any("can't see your finger" in t for t in voice.said), 4), voice.said[-3:])
         s.set_mode("menu")
 
     def test_a_wrong_touch_in_the_quiz_says_what_it_was_and_the_finger_must_move_before_the_next_answer(self):

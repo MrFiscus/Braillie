@@ -81,6 +81,7 @@ import queue
 import re
 import threading
 import time
+import wave
 from pathlib import Path
 from typing import Callable
 
@@ -113,9 +114,11 @@ DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
 # or warns about it being absent.
 ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 
-# Deepgram TTS — Aura Asteria: used for all narration, including the
-# end-of-session debrief. Single backend keeps the demo path simple.
+# Deepgram TTS. Aura 1 drops the last ~200–300 ms of a short line ("cat" -> "ca"), so we keep
+# this model (it is the one that actually speaks in this demo) and add a pause + file tail below.
 DEEPGRAM_TTS_MODEL: str = "aura-asteria-en"
+TTS_TAIL = "..."  # synthesised as a pause, not a word: if anything still eats the end, this is what goes
+WAV_SILENCE_SECONDS = 0.45  # extra quiet at the end of the file, for phone players that clip the last buffer
 
 # ElevenLabs voice ID retained for future reference; not called at runtime.
 ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
@@ -992,6 +995,53 @@ def _deepgram_listener_loop() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _for_tts(text: str) -> str:
+    """Text actually sent to Deepgram. Aura treats the last word of a short line as optional and
+    drops it; a trailing ellipsis is a pause, so 'cat' is no longer the last thing it generates."""
+    t = (text or "").rstrip()
+    if not t:
+        return text
+    if t.endswith(TTS_TAIL):
+        return t
+    return t + TTS_TAIL
+
+
+def _fix_wav_header(data: bytes) -> bytes:
+    """Deepgram's streamed WAV header claims about 2 GB; rewrite the size fields to the real length."""
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return data
+    at = data.find(b"data", 12)
+    if at < 0:
+        return data
+    body = len(data) - (at + 8)
+    out = bytearray(data)
+    out[4:8] = (len(data) - 8).to_bytes(4, "little")
+    out[at + 4:at + 8] = body.to_bytes(4, "little")
+    return bytes(out)
+
+
+def _pad_wav_silence(data: bytes, seconds: float = WAV_SILENCE_SECONDS) -> bytes:
+    """Append quiet samples so a player that drops the last buffer cannot eat the last consonant."""
+    data = _fix_wav_header(data)
+    try:
+        with wave.open(io.BytesIO(data), "rb") as wf:
+            nch, sw, rate, nframes = wf.getnchannels(), wf.getsampwidth(), wf.getframerate(), wf.getnframes()
+            comptype = wf.getcomptype()
+            pcm = wf.readframes(nframes)
+        if comptype != "NONE" or rate <= 0 or sw <= 0 or nch <= 0:
+            return data
+        extra = b"\x00" * int(rate * seconds) * sw * nch
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as out:
+            out.setnchannels(nch)
+            out.setsampwidth(sw)
+            out.setframerate(rate)
+            out.writeframes(pcm + extra)
+        return buf.getvalue()
+    except (wave.Error, EOFError, OverflowError):
+        return data
+
+
 def _deepgram_speak(text: str) -> None:
     try:
         from deepgram import DeepgramClient  # type: ignore[import-untyped]
@@ -1010,13 +1060,18 @@ def _deepgram_speak(text: str) -> None:
 
     try:
         client = DeepgramClient(api_key=DEEPGRAM_API_KEY)
-        chunks = client.speak.v1.audio.generate(
-            text=text,
-            model=DEEPGRAM_TTS_MODEL,
-            encoding="linear16",  # request PCM; default is MP3 which wave.open() rejects
-            container="wav",
+        # Join the stream while the SDK's response is still open, then pad: the phone speaker
+        # intercepts _play_audio_stream, so any silence written only inside pyaudio never reaches
+        # the phone (that is why 'cat' was still heard as 'ca' after the laptop-side waits).
+        raw = b"".join(
+            client.speak.v1.audio.generate(
+                text=_for_tts(text),
+                model=DEEPGRAM_TTS_MODEL,
+                encoding="linear16",  # request PCM; default is MP3 which wave.open() rejects
+                container="wav",
+            )
         )
-        _play_audio_stream(chunks)
+        _play_audio_stream([_pad_wav_silence(raw)])
     except Exception as exc:
         log.error("Deepgram TTS failed: %s", exc)
 
@@ -1074,7 +1129,8 @@ def _play_audio_stream(chunks) -> None:
         log.error("pyaudio not available for playback: %s", exc)
         return
 
-    buf = io.BytesIO(b"".join(chunks))
+    data = _fix_wav_header(b"".join(chunks))
+    buf = io.BytesIO(data)
     buf.seek(0)
 
     try:
@@ -1096,10 +1152,15 @@ def _play_audio_stream(chunks) -> None:
                 output=True,
             )
             try:
+                nframes, rate = wf.getnframes(), float(wf.getframerate() or 1)
+                started = time.monotonic()
                 chunk = wf.readframes(1024)
                 while chunk:
                     stream.write(chunk)
                     chunk = wf.readframes(1024)
+                remaining = (nframes / rate) - (time.monotonic() - started)
+                if remaining > 0:
+                    time.sleep(min(remaining, 8.0))  # never block the tutor on a lying WAV header
             finally:
                 stream.stop_stream()
                 stream.close()
