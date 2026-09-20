@@ -176,6 +176,9 @@ _COMMAND_MAP: dict[str, str] = {
     "skip": "next",
     "move on": "next",
     "continue": "next",
+    "next page": "next page",  # turn to a new page: longer phrases win, so this is never heard as plain "next"
+    "new page": "next page",
+    "another page": "next page",
     "stop": "stop",
     "quit": "stop",
     "i'm done": "stop",
