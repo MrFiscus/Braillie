@@ -225,11 +225,23 @@ _COMMAND_MAP: dict[str, str] = {
     "back to normal": "normal",
     "stop": "stop",
     "quit": "stop",
+    "finish": "stop",
+    "finished": "stop",
+    "i'm finished": "stop",
+    "im finished": "stop",
     "i'm done": "stop",
     "im done": "stop",        # apostrophe-free variant
+    "done": "stop",
     # --- quiz ------------------------------------------------------------
     "start quiz": "start quiz",
     "begin quiz": "start quiz",
+    # --- ask the AI tutor (wake word; question may follow in the same utterance) ---
+    "braillo": "braillo",
+    "briello": "braillo",
+    "brailo": "braillo",
+    "barillo": "braillo",
+    "braylo": "braillo",
+    "brello": "braillo",
 }
 
 # Test phrases longest-first. Testing each phrase in that order, rather than
@@ -268,7 +280,14 @@ def _normalize_transcript(transcript: str) -> str:
 
 
 def _match_command(normalized_transcript: str) -> str | None:
-    """Return the canonical command for the longest whole-phrase match."""
+    """Return the canonical command for the longest whole-phrase match.
+
+    The braillo wake word always wins when present, so "braillo how do I learn"
+    asks the AI tutor instead of switching into Learn mode.
+    """
+    for phrase, pattern in _COMMAND_PATTERNS:
+        if _COMMAND_MAP[phrase] == "braillo" and pattern.search(normalized_transcript):
+            return "braillo"
     for phrase, pattern in _COMMAND_PATTERNS:
         if pattern.search(normalized_transcript):
             return _COMMAND_MAP[phrase]
@@ -826,9 +845,10 @@ def _deepgram_listener_loop() -> None:
                 interim_results=False,       # only final transcripts; interim results are
                                              # a common source of inaccurate word picks
                 keyterm=[                    # boost command vocabulary in the acoustic model
-                    "repeat", "hint", "next", "stop",
+                    "repeat", "hint", "next", "stop", "finish", "done",
                     "found it", "got it",
                     "start quiz", "begin quiz",
+                    "braillo", "learn", "read", "quiz", "menu",
                 ],
             ) as socket:
                 reader_done = threading.Event()

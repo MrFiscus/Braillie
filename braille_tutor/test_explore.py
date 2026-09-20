@@ -55,11 +55,11 @@ class DescribeTests(unittest.TestCase):
         self.assertEqual(s.describe(SHEET.cells[0]), "The letter A. Dot 1: top-left.")
         self.assertEqual(s.describe(SHEET.cells[1]), "The letter B. Dots 1 and 2: top-left and middle-left.")
 
-    def test_what_is_said_follows_the_detected_dots_not_the_sheet(self):
-        """The sheet says D (1 4 5) but the camera sees only 1 and 4: it must say C, not D."""
+    def test_what_is_said_keeps_the_sheet_name_when_a_finger_hides_a_dot(self):
+        """The sheet says D (1 4 5) but the camera sees only 1 and 4: it must still say D, not C."""
         s, _ = explore_session()
         seen = {**SHEET.cells[3], "dots": frozenset({1, 4})}
-        self.assertEqual(s.describe(seen, full=False), "The letter C. Dots 1 and 4.")
+        self.assertEqual(s.describe(seen, full=False), "The letter D. Dots 1, 4 and 5.")
 
     def test_no_dots_and_unknown_patterns(self):
         s, _ = explore_session(names=None)
@@ -148,13 +148,13 @@ class DwellTests(unittest.TestCase):
         s.explore_tick(4.0)
         self.assertEqual(v.said, ["I don't see any braille there."])
 
-    def test_it_speaks_the_reading_from_scan_when_there_is_one(self):
-        """With a scan (the camera), what is said is what the camera reports: here it reports a dot missing from the D."""
+    def test_it_speaks_the_printed_letter_when_a_dot_is_hidden(self):
+        """A finger covering a poke must not rename the cell: explore says the sheet's letter, not the live misread."""
         seen = [{**c, "dots": frozenset({1, 4}) if c["row"] == 0 and c["col"] == 3 else c["dots"]} for c in SHEET.cells]
         finger = Finger(centre("d"))
         s, v = explore_session(finger=finger, scan=lambda: seen)
         s.explore_tick(0.0); s.explore_tick(0.8)
-        self.assertTrue(v.said[0].startswith("The letter C. Dots 1 and 4"), v.said)
+        self.assertTrue(v.said[0].startswith("The letter D. Dots 1, 4 and 5"), v.said)
 
     def test_falls_back_to_the_layout_if_the_scan_finds_nothing(self):
         finger = Finger(centre("a"))
@@ -256,8 +256,7 @@ class SheetObservationTests(PhotoCase):
         s.state, s._ex = "exploring", s._new_explore_state()
         s.explore_tick(0.0); s.explore_tick(0.8)
         self.assertEqual(len(voice.said), 1)
-        self.assertNotIn("letter D", voice.said[0])  # one dot short of D: not D
-        self.assertRegex(voice.said[0], r"Dots? [\d, and]+")
+        self.assertIn("letter D", voice.said[0])  # a missing poke must not rename the cell
 
 
 @unittest.skipUnless(all(p.exists() for p in POKE_FILES.values()), "poke files not generated")
@@ -293,7 +292,7 @@ class ReadingBoxesTests(PhotoCase):
         feed, _ = self.run_feed()
         self.assertEqual([c["label"] for c in feed.scan()], [c["label"] for c in feed.stable])
 
-    def test_a_missing_poke_is_amber_not_green_and_the_status_line_says_so(self):
+    def test_a_missing_poke_does_not_rename_the_printed_letter(self):
         import poke_files as pf
         import make_sheet
         from page import SHEET_ORIGIN_MM
@@ -302,13 +301,12 @@ class ReadingBoxesTests(PhotoCase):
         pts = pf.after_flip(pf.guide_dots(str(POKE_FILES["alphabet"])))
         gone = [p for p in pts if min(np.hypot(p[0] - dx, p[1] - dy) for dx, dy in dots) < 0.5][:1]
         feed, _ = self.run_feed(drop=gone)
-        self.assertEqual(sum(1 for c in feed.stable if c["locked"]), 25)  # the cell that is not what the sheet says never locks
-        bad = next(c for c in feed.stable if (c["row"], c["col"]) == (target["row"], target["col"]))
-        self.assertFalse(bad.get("locked"))
-        self.assertNotEqual(bad["dots"], target["dots"])
+        self.assertEqual(sum(1 for c in feed.stable if c["locked"]), 26)
+        held = next(c for c in feed.stable if (c["row"], c["col"]) == (target["row"], target["col"]))
+        self.assertEqual(held["dots"], target["dots"], "D stays D even if a poke is hidden")
         import detect
         text, _ = detect.locked_check_line(feed.stable, SHEET.cells)
-        self.assertIn("25/26 locked", text)
+        self.assertTrue("26" in text and "locked" in text, text)
 
     def test_hidden_detections_and_no_page_draw_nothing_extra(self):
         feed = tutor.CameraFeed(None, None, None, observe_sheet=SHEET.cells, show_reading=False)
@@ -319,8 +317,11 @@ class ReadingBoxesTests(PhotoCase):
         feed2 = tutor.CameraFeed(None, None, None, observe_sheet=SHEET.cells)  # reader on but no page registered: says so, draws no boxes
         feed2.frame, feed2.message = frame, "PAGE NOT FOUND: test"
         view = feed2.render()
-        self.assertEqual(feed2.stable, [])
+        self.assertTrue(feed2.stable, "demo sheets start prelocked from the printed layout")
+        self.assertIsNone(feed2.H)
         self.assertFalse(np.array_equal(view, frame), "the status line is drawn")
+        # Without a page lock, boxes are not drawn even though the layout is known.
+        self.assertLess(np.count_nonzero(view != frame), view.size * 0.15)
 
 
 class NextPageVoiceTests(unittest.TestCase):

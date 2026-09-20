@@ -196,7 +196,7 @@ class DwellTests(unittest.TestCase):
         d = Dwell(seconds=1.0)
         self.assertIsNone(d.update((10, 10), 0.0))
         self.assertIsNone(d.update((11, 10), 0.5))
-        self.assertEqual(d.update((10, 11), 1.1), (10, 10))
+        self.assertEqual(d.update((10, 11), 1.1), (10, 11))
         for t in (1.2, 2.0, 5.0):
             self.assertIsNone(d.update((10, 10), t), "does not answer again while it stays")
         self.assertIsNone(d.update((30, 10), 6.0), "moved away: re-armed but must rest again")
@@ -210,8 +210,23 @@ class DwellTests(unittest.TestCase):
         self.assertIsNone(d.update((20, 0), 1.5))
         self.assertEqual(d.update((20, 0), 1.95), (20, 0))
         d.update(None, 3.0)
-        self.assertIsNone(d.update((20, 0), 3.1), "after the finger was lost it must rest again, even on the same spot")
-        self.assertEqual(d.update((20, 0), 4.2), (20, 0))
+        d.update(None, 3.6)  # gone longer than the dropout gap: the rest is forgotten
+        self.assertIsNone(d.update((20, 0), 3.7), "after the finger was lost it must rest again, even on the same spot")
+        self.assertEqual(d.update((20, 0), 4.8), (20, 0))
+
+
+    def test_a_few_millimetres_of_tracking_jitter_does_not_restart_the_rest(self):
+        """A fingertip on a cell wobbles a little under the camera; that must not reset the 3-second answer timer."""
+        d = Dwell(seconds=1.0)
+        d.update((0, 0), 0.0)
+        self.assertIsNone(d.update((8, 0), 0.5))  # 8 mm: inside STILL_MM (half a cell), still counting
+        self.assertEqual(d.update((7, 1), 1.05), (7, 1))
+
+    def test_a_brief_tracking_dropout_does_not_restart_the_rest(self):
+        d = Dwell(seconds=1.0)
+        d.update((0, 0), 0.0)
+        d.update(None, 0.3)  # one missed frame
+        self.assertEqual(d.update((1, 0), 1.05), (1, 0))
 
 
 class FirstLessonTests(unittest.TestCase):
@@ -227,6 +242,15 @@ class FirstLessonTests(unittest.TestCase):
         self.assertEqual(host.last(), "The letter A. One dot, at the top-left. Find it and rest your finger on it.")
         self.assertEqual(host.tones, ["ready"])
         self.assertEqual(p.sessions, 1)
+
+    def test_resting_in_the_letter_square_counts_even_off_the_centre(self):
+        """The green ring in A's box must register A, not only a hit on the exact cell centre."""
+        j, host, clock, p = make()
+        j.on_start()
+        cell = next(c for c in host.cells() if frozenset(c["dots"]) == DOTS["a"])
+        host.finger_pos = (cell["x"] + cell["w"] / 2 - 0.3, cell["y"] + cell["h"] / 2 - 0.3)
+        run(j, host, clock, 3.2)
+        self.assertEqual(j.target, "b", host.last(3))
 
     def test_a_whole_lesson_teach_practise_recap_and_the_next_lesson_offered(self):
         j, host, clock, p = make()
@@ -293,6 +317,37 @@ class WrongAnswerTests(unittest.TestCase):
         self.assertEqual(j.tries, 1)
         self.assertEqual(j.target, want, "still asking for the same letter")
         self.assertEqual(p.confusions.get(f"{wrong}>{want}"), 1)
+
+    def test_moving_to_the_right_letter_after_a_mistake_counts_without_leaving_first(self):
+        """After 'that's L', resting on B must register — the learner should not have to lift off and wait again."""
+        j, host, clock, p = make()
+        j.on_start()
+        answer(j, host, clock, "a")
+        leave(j, host, clock)
+        self.assertEqual(j.target, "b")
+        answer(j, host, clock, "l")
+        self.assertEqual(j.tries, 1)
+        answer(j, host, clock, "b")  # no leave() in between: they slide to the right cell
+        self.assertEqual(j.target, "c", host.last(3))
+        self.assertEqual(host.tones[-1], "correct")
+
+    def test_already_on_the_right_letter_when_the_correction_finishes_counts(self):
+        """The correction speech blocks the rest-timer; if they found B during it, take it when speech ends."""
+        j, host, clock, p = make()
+        j.on_start()
+        answer(j, host, clock, "a")
+        leave(j, host, clock)
+        self.assertEqual(j.target, "b")
+        original_say = host.say
+
+        def say_and_move(text):
+            original_say(text)
+            if j.tries >= 1 and j.target == "b":
+                host.finger_pos = host.pos("b")
+
+        host.say = say_and_move
+        answer(j, host, clock, "l")
+        self.assertEqual(j.target, "c", host.last(3))
 
     def test_a_right_answer_after_a_wrong_one_counts_but_not_as_clean(self):
         j, host, clock, p = self.start_practice()

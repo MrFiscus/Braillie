@@ -81,7 +81,12 @@ class UserTests(unittest.TestCase):
         self.assertEqual(tutor.clean_name("<b>Bob</b>"), "bBobb", "markup characters are dropped")
         self.assertEqual((tutor.clean_name(""), tutor.clean_name(None), tutor.clean_name("!!!")), ("friend",) * 3)
         self.assertEqual(len(tutor.clean_name("x" * 200)), 40)
-        self.assertEqual(tutor.greeting("Ana"), "What do you want to do today, Ana? You can say learn, read, or quiz.")
+        self.assertEqual(tutor.greeting("Ana"),
+                         "What do you want to do today, Ana? " + tutor.MENU_LINE)
+        self.assertIn("Choose an option", tutor.MENU_LINE)
+        self.assertIn("Learn teaches", tutor.MENU_LINE)
+        self.assertIn("Read says a word", tutor.MENU_LINE)
+        self.assertIn("Quiz names a letter", tutor.MENU_LINE)
 
     def test_a_guest_keeps_nothing_not_even_on_this_computer(self):
         s, voice, finger, feed = hub()
@@ -146,7 +151,7 @@ class GreetingTests(unittest.TestCase):
         s, voice, *_ = hub()
         s.set_user("Ana", "guest")
         self.assertTrue(wait_for(lambda: self.said(voice)))
-        self.assertEqual(self.said(voice), ["What do you want to do today, Ana? You can say learn, read, or quiz."])
+        self.assertEqual(self.said(voice), [tutor.greeting("Ana")])
         self.assertEqual(s.state, "menu")
 
     def test_with_a_phone_it_waits_for_the_phone_to_be_linked_and_says_it_once(self):
@@ -279,7 +284,8 @@ class ModeTests(unittest.TestCase):
                 break
         self.assertTrue(wait_for(lambda: s.hub_mode == "menu", 6))
         text = " ".join(voice.said)
-        self.assertIn("You can say learn, read, or quiz", text)
+        self.assertIn("Choose an option", text)
+        self.assertIn("Say learn, read, or quiz", text)
         self.assertEqual((s.mode, s.state), ("menu", "menu"))
 
     def test_read_uses_the_words_sheet_and_reads_the_word_under_a_resting_finger(self):
@@ -292,6 +298,29 @@ class ModeTests(unittest.TestCase):
         first = min(words.cells, key=lambda c: (c["row"], c["col"]))
         finger.pos = (first["x"], first["y"])
         self.assertTrue(wait_for(lambda: any("The word is cat" in t for t in voice.said)), voice.said[-3:])
+        said = len(voice.said)
+        voice.commands["read"]()  # already in read: reads the word again, does not replay the intro
+        self.assertTrue(wait_for(lambda: len(voice.said) > said), voice.said[-3:])
+        self.assertIn("The word is cat", voice.said[-1])
+        self.assertNotIn("Read mode", voice.said[-1])
+        s.set_mode("menu")
+
+    def test_switching_to_read_or_quiz_resets_the_finger_tracker(self):
+        """A held tip from Learn must not keep grading after the demo sheet is swapped."""
+        from fingertip import FingerTracker, Tip
+        s, voice, finger, feed = hub()
+        feed.tracker = FingerTracker()
+        feed.tracker.position = (11.0, 22.0)
+        feed.tracker.tip = Tip(40, 30, 0.9, (40, 50), 2.0)
+        feed.tracker._streak = 9
+        s.set_mode("read")
+        self.assertIsNone(feed.tracker.position)
+        self.assertIsNone(feed.tracker.tip)
+        self.assertEqual(feed.tracker._streak, 0)
+        feed.tracker.position = (33.0, 44.0)
+        s.set_mode("quiz")
+        self.assertIsNone(feed.tracker.position)
+        self.assertEqual(feed.sheet_name, "lookalikes")
         s.set_mode("menu")
 
     def test_stop_leaves_read_and_quiz_even_when_the_adaptive_planner_is_on(self):
@@ -339,7 +368,8 @@ class ModeTests(unittest.TestCase):
         voice.commands["stop"]()
         self.assertEqual((s.hub_mode, s.state), ("menu", "menu"))
         self.assertIn("end of this session", " ".join(voice.said))
-        self.assertIn("You can say learn, read, or quiz", voice.said[-1])
+        self.assertIn("Say learn, read, or quiz", voice.said[-1])
+        self.assertIn("Choose an option", voice.said[-1])
 
     def test_the_voice_commands_switch_modes(self):
         s, voice, finger, feed = hub()
@@ -364,7 +394,8 @@ class ModeTests(unittest.TestCase):
         s, voice, finger, feed = hub()
         feed.select_sheet("words")
         self.assertEqual((feed.sheet_name, len(feed.observe_sheet), len(s.cells)), ("words", len(SHEETS["words"].cells), len(SHEETS["words"].cells)))
-        self.assertEqual(feed.stable, [])
+        self.assertEqual(len(feed.stable), len(SHEETS["words"].cells))
+        self.assertTrue(all(c["locked"] for c in feed.stable))
         self.assertEqual(feed.reader.sheet, SHEETS["words"].cells)
 
 

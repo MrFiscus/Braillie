@@ -312,6 +312,64 @@ def nearest_cell(cells: list[Cell], x_mm: float, y_mm: float, max_dist: Optional
     return cells[i] if max_dist is None or d[i] <= max_dist else None
 
 
+def _median_spacing_mm(cells: list[Cell]) -> float:
+    if len(cells) < 2:
+        return 19.0
+    xy = np.array([[c["x"], c["y"]] for c in cells], dtype=float)
+    pair = np.hypot(*(xy[:, None] - xy[None]).transpose(2, 0, 1))
+    np.fill_diagonal(pair, np.inf)
+    return float(np.median(pair.min(axis=1)))
+
+
+def _axis_spacing_mm(cells: list[Cell]) -> tuple[float, float]:
+    """Typical (pitch_x, pitch_y) for a printed grid — words are denser vertically than the alphabet sheet."""
+    if len(cells) < 2:
+        return 19.0, 45.0
+    by_row: dict = {}
+    by_col: dict = {}
+    for c in cells:
+        by_row.setdefault(c["row"], []).append(float(c["x"]))
+        by_col.setdefault(c["col"], []).append((int(c["row"]), float(c["y"])))
+    dxs = []
+    for xs in by_row.values():
+        xs = sorted(xs)
+        dxs.extend(xs[i + 1] - xs[i] for i in range(len(xs) - 1) if xs[i + 1] - xs[i] > 1.0)
+    dys = []
+    for col in by_col.values():
+        ys = [y for _, y in sorted(col)]
+        dys.extend(ys[i + 1] - ys[i] for i in range(len(ys) - 1) if ys[i + 1] - ys[i] > 1.0)
+    px = float(np.median(dxs)) if dxs else 19.0
+    py = float(np.median(dys)) if dys else 45.0
+    return px, py
+
+
+def cell_at(cells: list[Cell], x_mm: float, y_mm: float, pad_mm: Optional[float] = None) -> Optional[Cell]:
+    """The cell whose drawn box contains the point, else the nearest cell within one grid step.
+
+    Uses separate horizontal/vertical pitch so the denser words sheet (pitch_y ~30 mm) and lookalike
+    pairs hit-test like the alphabet sheet. A tip in a letter's square must resolve to that letter."""
+    if not cells:
+        return None
+    pitch_x, pitch_y = _axis_spacing_mm(cells)
+    spacing = min(pitch_x, pitch_y)
+    if pad_mm is None:
+        pad_x, pad_y = pitch_x * 0.42, pitch_y * 0.42
+    else:
+        pad_x = pad_y = pad_mm
+    hit, best = None, 1e9
+    for c in cells:
+        hw = min(max(float(c.get("w") or 0) / 2.0, pitch_x * 0.22) + pad_x, pitch_x * 0.55)
+        hh = min(max(float(c.get("h") or 0) / 2.0, pitch_y * 0.22) + pad_y, pitch_y * 0.55)
+        dx, dy = abs(x_mm - c["x"]), abs(y_mm - c["y"])
+        if dx <= hw and dy <= hh:
+            d = max(dx / max(hw, 1e-6), dy / max(hh, 1e-6))
+            if d < best:
+                best, hit = d, c
+    if hit is not None:
+        return hit
+    return nearest_cell(cells, x_mm, y_mm, max_dist=spacing)
+
+
 def cells_from_layout(rows_of_text: list[str], x0: float, y0: float, pitch_x: float, pitch_y: float,
                       cell_w: Optional[float] = None, cell_h: Optional[float] = None) -> list[Cell]:
     """Build Cells from a hardcoded letter grid. (x0, y0) is the centre of the top-left cell, in page mm.
@@ -524,12 +582,13 @@ def letter_of(dots: Iterable[int]) -> Optional[str]:
 
 
 def cell_letter_text(cell: Cell, printed: Optional[str] = None) -> str:
-    """What to draw over a cell: the live-read letter if the observed dots spell one, else the printed fallback, else "?".
+    """What to draw over a cell: the printed sheet's letter when we have one, else the live-read letter, else "?".
 
-    On a known sheet the printed layout is ground truth; using it stops a finger that hides some dots from turning the
-    overlay for that cell into "?". The camera's own reading still wins whenever it produces a letter, so what the tutor
-    is actually seeing is visible in the demo -- the fallback only fills in cells the camera can't decide right now."""
-    return (letter_of(cell["dots"]) or printed or "?").upper()
+    On a known sheet the printed layout (from the sheet photos / first scan) is ground truth. A finger that hides a
+    dot still produces some other letter-shaped pattern; that must not rename the cell on the video."""
+    if printed:
+        return printed.upper()
+    return (letter_of(cell["dots"]) or "?").upper()
 
 
 def draw_cell(view: np.ndarray, quad, cell: Cell, color, labels: bool = False, dots: bool = True, letters: bool = False,

@@ -34,6 +34,15 @@ class KnownSheetTests(unittest.TestCase):
         self.assertEqual(lk.locked_count, 26)
         self.assertTrue(all(c["locked"] for c in out))
 
+    def test_known_sheet_centres_stay_on_the_printed_layout(self):
+        """Live refine under a finger must not drag demo-sheet boxes onto neighbours."""
+        lk = CellLocker(lock_after=1)
+        shifted = [{**c, "x": c["x"] + 4.0, "y": c["y"] - 3.0} for c in observed_like(self.expected, self.right)]
+        out = lk.update_known(shifted, self.expected)
+        for got, want in zip(out, self.expected):
+            self.assertAlmostEqual(got["x"], want["x"], places=3)
+            self.assertAlmostEqual(got["y"], want["y"], places=3)
+
     def test_a_wrong_reading_never_locks(self):
         lk = CellLocker()
         wrong = ["111111"] * 26
@@ -79,31 +88,39 @@ class KnownSheetTests(unittest.TestCase):
         out = self.scan(lk, ["000000"] * 26)
         self.assertEqual([c["label"] for c in out], self.right)
 
-    def test_it_lets_go_when_the_sheet_really_changes(self):
+    def test_a_finger_covering_a_dot_does_not_rename_a_known_cell(self):
+        """Once the alphabet sheet is known, covering a dot (B looking like A) must not change the name."""
+        lk = CellLocker(lock_after=2, unlock_after=4)
+        self.scan(lk, self.right)
+        self.scan(lk, self.right)
+        covered = list(self.right)
+        covered[1] = self.right[0]  # B, with a dot hidden, reads as A
+        for _ in range(20):
+            out = self.scan(lk, covered)
+            self.assertEqual(out[1]["label"], self.right[1], "B must stay B")
+            self.assertTrue(out[1]["locked"])
+
+    def test_it_keeps_the_sheet_name_even_when_a_different_pattern_persists(self):
+        """A long run of misreads is a finger or shadow, not a new sheet. Names change only on reset / a new page."""
         lk = CellLocker(lock_after=2, unlock_after=4)
         self.scan(lk, self.right)
         self.scan(lk, self.right)
         changed = list(self.right)
-        changed[5] = "101010"  # a different pattern, and it keeps being read
-        for _ in range(3):
-            self.assertEqual(self.scan(lk, changed)[5]["label"], self.right[5])  # not yet
-        out = self.scan(lk, changed)  # the 4th: the change is real
-        self.assertFalse(out[5]["locked"])
-        self.assertEqual(out[5]["label"], "101010")
-        self.assertEqual(lk.locked_count, 25)
-        for _ in range(2):  # and it relocks when the correct reading comes back
-            out = self.scan(lk, self.right)
-        self.assertTrue(out[5]["locked"])
-        self.assertEqual(out[5]["label"], self.right[5])
+        changed[5] = "101010"
+        for _ in range(12):
+            out = self.scan(lk, changed)
+            self.assertTrue(out[5]["locked"])
+            self.assertEqual(out[5]["label"], self.right[5])
 
-    def test_swapping_the_whole_sheet_unlocks_everything(self):
+    def test_swapping_the_whole_sheet_does_not_rename_until_reset(self):
         lk = CellLocker(lock_after=2, unlock_after=3)
         self.scan(lk, self.right)
         self.scan(lk, self.right)
         other = ["110011"] * 26
-        for _ in range(3):
+        for _ in range(8):
             self.scan(lk, other)
-        self.assertEqual(lk.locked_count, 0)
+        self.assertEqual(lk.locked_count, 26)
+        self.assertEqual([c["label"] for c in lk.result()], self.right)
 
     def test_reset(self):
         lk = CellLocker()

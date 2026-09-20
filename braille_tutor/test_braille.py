@@ -10,7 +10,7 @@ import numpy as np
 
 import make_sheet
 import page
-from detect import (WEIGHTS, cell_letter_text, cells_from_boxes, cells_from_layout, dot_distance, dots_to_char, dots_to_label,
+from detect import (WEIGHTS, cell_at, cell_letter_text, cells_from_boxes, cells_from_layout, dot_distance, dots_to_char, dots_to_label,
                     label_to_dots, load_cells, nearest_cell, rows_of, save_cells, scan_page)
 from make_sheet import dot_points, sheet_cells
 
@@ -492,10 +492,10 @@ class CellLetterTextTests(unittest.TestCase):
 
     def test_live_reading_is_used_when_the_dots_spell_a_letter(self):
         self.assertEqual(cell_letter_text({"dots": frozenset({1})}), "A")
-        self.assertEqual(cell_letter_text({"dots": frozenset({1})}, printed="z"), "A", "the camera wins whenever it produces a letter")
 
-    def test_printed_fallback_is_used_when_the_live_dots_do_not_spell_a_letter(self):
-        # (a finger hides some dots on the printed A: the observed pattern is not a letter, so the sheet's known letter fills in)
+    def test_printed_name_wins_when_a_finger_hides_a_dot(self):
+        # Covering a dot on D (1-4-5) can look like C (1-4); the overlay must still say D.
+        self.assertEqual(cell_letter_text({"dots": frozenset({1, 4})}, printed="d"), "D")
         self.assertEqual(cell_letter_text({"dots": frozenset()}, printed="a"), "A")
         self.assertEqual(cell_letter_text({"dots": frozenset({1, 2, 3, 4, 5, 6})}, printed="b"), "B")
 
@@ -523,6 +523,33 @@ class LookupTests(unittest.TestCase):
     def test_edge_cases(self):
         self.assertIsNone(nearest_cell([], 0, 0))
         self.assertIsNotNone(nearest_cell(self.cells[:1], 999, 999))  # single cell: no spacing, no cutoff
+
+    def test_a_point_inside_the_drawn_square_counts_as_that_cell(self):
+        a = self.cells[0]  # centre 10, 10; box is 0.6 of the 20 mm pitch
+        inside = (a["x"] + a["w"] / 2 - 0.2, a["y"])
+        self.assertEqual(cell_at(self.cells, *inside)["char"], "⠁")
+        self.assertIsNone(cell_at([], 0, 0))
+
+    def test_a_tip_near_a_cell_counts_even_outside_the_tight_half_spacing(self):
+        """Green ring near a box must not become 'no braille' from the old half-spacing cutoff."""
+        a = self.cells[0]  # (10, 10); pitch 20 → old nearest cutoff was 10 mm
+        near = (a["x"], a["y"] + 12.0)  # below A, still within one cell of A (B is at x+20)
+        self.assertEqual(cell_at(self.cells, *near)["char"], "⠁")
+
+    def test_demo_words_and_lookalikes_hit_like_the_alphabet_sheet(self):
+        """Denser demo sheets must still resolve a tip inside a letter square to that letter."""
+        import sheets
+        from detect import letter_of
+        for name in ("alphabet", "words", "lookalikes"):
+            with self.subTest(sheet=name):
+                cells = sheets.get_sheet(name).cells
+                for cell in cells[:: max(1, len(cells) // 6)]:
+                    # Off-centre inside the box (toward a neighbour) — still that letter.
+                    tip = (cell["x"] + cell["w"] * 0.35, cell["y"] + cell["h"] * 0.25)
+                    hit = cell_at(cells, *tip)
+                    self.assertIsNotNone(hit, name)
+                    self.assertEqual((hit["row"], hit["col"]), (cell["row"], cell["col"]), name)
+                    self.assertEqual(letter_of(hit["dots"]), letter_of(cell["dots"]), name)
 
     def test_layout_matches_scan_structure(self):
         c = self.cells

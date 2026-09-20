@@ -21,7 +21,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from detect import _ALPHABET, nearest_cell
+from detect import _ALPHABET, cell_at, nearest_cell
 from progress import LESSON_MASTERY, Progress
 
 POSITION = {1: "top-left", 2: "middle-left", 3: "bottom-left", 4: "top-right", 5: "middle-right", 6: "bottom-right"}
@@ -29,8 +29,9 @@ DOTS = {letter: frozenset(int(d) for d in digits) for letter, digits in _ALPHABE
 NUMBER_WORD = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six"}
 
 DWELL_SECONDS = 3.0  # resting a finger this long on a cell is "this is my answer" (long enough to feel the dots before it commits)
-STILL_MM = 4.0
-LEAVE_MM = 9.0
+STILL_MM = 12.0  # resting drift allowed (~half a denser words-sheet cell); tip jitter used to reset the 3 s timer forever at 4 mm
+LEAVE_MM = 18.0  # after an answer, the finger must move about one cell away before the next rest can count
+DWELL_GAP_SECONDS = 0.5  # a one-frame tracking dropout must not restart the 3 s rest
 HINT_AFTER = (12.0, 15.0, 20.0)  # seconds of no answer before each hint the tutor offers by itself (12 s, then 15 s more, then 20 s more)
 MAX_TRIES = 3  # wrong touches before the tutor shows where the letter is and moves on
 REMIND_EVERY = 25.0  # while waiting for the learner to say what to do next
@@ -156,19 +157,25 @@ class Dwell:
     """Feed it the finger position every moment; it returns the position ONCE when the finger has stayed put for `seconds`, and then
     nothing until the finger has moved well away (or vanished): resting on a cell answers once, not repeatedly."""
 
-    def __init__(self, seconds: float = DWELL_SECONDS, still_mm: float = STILL_MM, leave_mm: float = LEAVE_MM):
-        self.seconds, self.still_mm, self.leave_mm = seconds, still_mm, leave_mm
+    def __init__(self, seconds: float = DWELL_SECONDS, still_mm: float = STILL_MM, leave_mm: float = LEAVE_MM,
+                 gap_seconds: float = DWELL_GAP_SECONDS):
+        self.seconds, self.still_mm, self.leave_mm, self.gap_seconds = seconds, still_mm, leave_mm, gap_seconds
         self.reset()
 
     def reset(self) -> None:
         self.anchor: Optional[tuple] = None
         self.since = 0.0
         self.fired: Optional[tuple] = None
+        self._gone_since: Optional[float] = None
 
     def update(self, pos: Optional[tuple], now: float) -> Optional[tuple]:
         if pos is None:
-            self.reset()
+            if self._gone_since is None:
+                self._gone_since = now
+            if now - self._gone_since > self.gap_seconds:
+                self.reset()
             return None
+        self._gone_since = None
         if self.fired is not None:
             if np.hypot(pos[0] - self.fired[0], pos[1] - self.fired[1]) > self.leave_mm:
                 self.fired, self.anchor, self.since = None, pos, now
@@ -177,8 +184,8 @@ class Dwell:
             self.anchor, self.since = pos, now
             return None
         if now - self.since >= self.seconds:
-            self.fired = self.anchor
-            return self.anchor
+            self.fired = pos
+            return pos
         return None
 
 
@@ -408,14 +415,24 @@ class Journey:
         graded is resting on exactly the cell that reading would need a clear view of, which a finger
         or hand nearby routinely spoils (see vote.py's CellLocker -- a run of misreads there can even
         unlock a cell that was read correctly moments earlier, before the hand arrived)."""
-        cell = nearest_cell(self.host.known_cells(), *pos)
+        cell = cell_at(self.host.known_cells(), *pos)
         now = self.clock()
         if cell is None:
-            if now - self.off_page_since >= OFF_PAGE_AFTER:  # (once per rest: the dwell stays "answered" until the finger moves away)
+            # Last resort: any known letter within a generous reach of the tip (warped page / lag).
+            cells = self.host.known_cells()
+            if cells:
+                cell = nearest_cell(cells, *pos, max_dist=30.0)
+        if cell is None:
+            if now - self.off_page_since >= OFF_PAGE_AFTER:
                 self.off_page_since = now
                 self.host.say("I don't feel any braille there. Move your finger over the sheet.")
             return
         touched = letter_of_dots(cell["dots"])
+        if touched is None and self.host.known_cells():
+            # Prefer the sheet's letter at this box even if live dots were empty/garbled.
+            printed = next((c for c in self.host.known_cells()
+                            if c.get("row") == cell.get("row") and c.get("col") == cell.get("col")), cell)
+            touched = letter_of_dots(printed["dots"])
         if touched == self.target:
             return self._correct()
         self.tries += 1
@@ -429,6 +446,17 @@ class Journey:
         lead = self.rng.choice(NEARLY)
         detail = contrast(touched, self.target) if touched else "That's a cell I don't recognise."
         self.host.say(f"{lead} {detail} {self.rng.choice(AGAIN)}")
+        self.dwell.reset()
+        self._accept_if_on_target()
+
+    def _accept_if_on_target(self) -> None:
+        """After a correction, take the letter the finger is on now if it is the one we asked for."""
+        pos = self.host.finger()
+        if pos is None or not self.target:
+            return
+        cell = cell_at(self.host.known_cells(), *pos)
+        if cell is not None and letter_of_dots(cell["dots"]) == self.target:
+            self._correct()
 
     def _mark_taught(self, letter: str) -> None:
         if self.phase == "teach" and letter not in self.taught:

@@ -32,14 +32,15 @@ import cv2
 import phonelink
 import tutor
 from progress import Progress
-from detect import letter_of, nearest_cell, open_camera, page_source_from_args
+from detect import cell_at, letter_of, open_camera, page_source_from_args
 
 WEB_DIR = Path(__file__).parent / "web"
 MAX_BODY = 4096
 COMMANDS = {"start quiz": "on_start", "repeat": "on_repeat", "hint": "on_hint", "found it": "on_found_it",
             "next": "on_next", "next page": "on_next_page", "explore": "on_explore", "practice": "on_practice",
             "learn": "on_mode_learn", "read": "on_mode_read", "quiz": "on_mode_quiz", "menu": "on_mode_menu",
-            "help": "on_help", "slower": "on_slower", "faster": "on_faster", "relaxed": "on_relaxed", "normal": "on_normal", "stop": "on_stop"}
+            "help": "on_help", "slower": "on_slower", "faster": "on_faster", "relaxed": "on_relaxed", "normal": "on_normal",
+            "stop": "on_stop", "braillo": "on_braillo"}
 LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
 FPS, STREAM_WIDTH = 15, 960
 
@@ -126,12 +127,15 @@ class TutorRuntime:
         pos = feed.finger()
         cell = None
         if pos is not None and session.cells:
-            hit = nearest_cell(session.cells, *pos)
+            grade = getattr(session, "grade_cells", None)
+            cells = grade() if callable(grade) else session.cells
+            hit = cell_at(cells or session.cells, *pos)
             if hit is not None:
                 sym = session._symbol(hit)
                 cell = {"letter": letter_of(hit["dots"]), "label": sym.short if sym else None, "name": sym.spoken if sym else None,
                         "dots": sorted(hit["dots"]), "row": hit["row"], "col": hit["col"]}
         return {"config": {"mode": session.mode, "commands": list(COMMANDS), "llm": session.coach.status if session.coach else "off",
+                   "ask": session.ask.status if session.ask else "off",
                    "voice": session.voice_status, "sheet": self.feed.sheet_name},
                 "reading": {"locked": sum(1 for c in feed.stable if c.get("locked")), "total": len(feed.observe_sheet or []),
                             "between_pages": bool(feed.identify_until)},
@@ -431,7 +435,8 @@ def main() -> None:
     progress, progress_file = tutor.progress_for(a)
     session = tutor.TutorSession(rv, wc, setup.cells, feed.finger, feed.scan, a.mode, a.questions, setup.words,
                                  rng=random.Random(a.seed), names=setup.names, coach=tutor.make_coach(a),
-                                 contracted=setup.contracted, progress=progress, progress_file=progress_file, tones=not a.no_tones)
+                                 contracted=setup.contracted, progress=progress, progress_file=progress_file, tones=not a.no_tones,
+                                 ask=tutor.make_ask_tutor(a))
     if setup.layout_scan:
         session.scan = lambda: session.cells  # word modes read the printed sheet's known layout
     tutor.wire_new_page(session, feed)

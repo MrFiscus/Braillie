@@ -49,7 +49,7 @@ const Modes = () => {
             ? 'I cannot reach the tutor. Start it on the laptop, then this page will update by itself.'
             : hub === null && reach === 'yes'
               ? 'The tutor was started in one fixed mode, so there is no choice to make. Go to the practice screen instead.'
-              : 'Say learn, read, or quiz, or choose below.'}
+              : 'Say learn, read, or quiz, or choose below. Learn teaches letters. Read reads words. Quiz asks you to find a letter. Say braillo, then ask any question.'}
         </p>
       </div>
 

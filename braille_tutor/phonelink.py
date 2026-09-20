@@ -25,8 +25,9 @@ sends 16 kHz mono 16-bit audio; the laptop wraps the one place voice_io reads it
 otherwise. Nothing else in voice_io changes: same Deepgram connection, same command matching, same muting while it speaks, and the
 laptop microphone is the automatic fallback.
 
-For someone who cannot see a QR code: the laptop also SAYS the address and code (`spoken_instructions`), and an iPhone with
-VoiceOver reads a QR code aloud from its Camera app. Someone sighted can also scan it for them.
+For someone who cannot see a QR code: the laptop says a short "scan the QR on the screen" line (`spoken_instructions`);
+an iPhone with VoiceOver can also read a QR code aloud from its Camera app. Someone sighted can scan it for them.
+Details (address, code, privacy warning) stay on the laptop screen.
 """
 from __future__ import annotations
 
@@ -411,17 +412,8 @@ class PhoneLink:
         return f"{self.base}/phone?t={self.code}"
 
     def spoken_instructions(self) -> str:
-        """What to say to someone who cannot scan the code: the address and code, digit by digit."""
-        if self.trusted_name:  # a real certificate: nothing to click through
-            return ("To connect your phone camera: on your phone, point the camera app at the code on the laptop screen and open the link. "
-                    "The phone must be on the same Wi-Fi as the laptop. Then tap the big button on the phone.")
-        if self.tunnelled:  # a real certificate: nothing to click through, and any network will do
-            return ("To connect your phone camera: on your phone, point the camera app at the code on the laptop screen and open the link. "
-                    "The phone can use Wi-Fi or mobile data. Then tap the big button on the phone.")
-        return ("To connect your phone camera: on your phone, point the camera app at the code on the laptop screen and open the "
-                f"link. Or open your phone's web browser and go to {'https' if self.tls else 'http'} colon slash slash "
-                f"{spell_out(self.ip)} colon {spell_out(str(self.port))}, then enter the code {spell_out(self.code)}. "
-                "Your phone may warn the connection is not private: choose advanced, then continue.")
+        """Short line spoken on the QR screen: just tell them to scan. Details stay on screen for sighted helpers."""
+        return "Scan the QR code on the screen using your mobile phone."
 
     # -- codes --
     def check_code(self, given: Optional[str]) -> bool:

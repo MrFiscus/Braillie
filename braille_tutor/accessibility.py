@@ -146,16 +146,19 @@ class Settings:
 
 def help_text(hub_mode: Optional[str], mode: str, state: str) -> str:
     """What can be said right now, in a sentence or two (the tutor speaks it)."""
-    ends = "You can also say slower or faster to change how quickly I talk, and take your time if you would like more time."
+    ends = ("You can also say braillo and then ask me a question, slower or faster to change how quickly I talk, "
+            "and take your time if you would like more time.")
     if hub_mode == "menu":
-        return f"You can say learn, read, or quiz. {ends}"
+        return ("Choose an option. Learn teaches the letters. Read reads words aloud. Quiz asks you to find a letter. "
+                f"Say learn, read, or quiz. {ends}")
     if hub_mode == "learn" or mode == "learn":
         return ("In a lesson you can say hint for help, repeat to hear it again, found it to answer straight away, next to skip a letter, "
-                f"explore to feel the letters freely, practice for a review, or stop to finish. Say menu to choose something else. {ends}")
+                f"explore to feel the letters freely, practice for a review, or stop or finish. Say menu to choose something else. {ends}")
     if hub_mode == "quiz" or mode == "letters":
-        return f"In the quiz you can say found it to answer, hint, repeat, next to skip a question, or stop to finish. If I cannot see your finger, click the picture where it is. Say menu to choose something else. {ends}"
+        return f"In the quiz you can say found it to answer, hint, repeat, next to skip a question, or stop or finish. If I cannot see your finger, click the picture where it is. Say menu to choose something else. {ends}"
     if hub_mode == "read" or mode == "read":
-        return f"When reading, rest a finger on a word and I will read it. You can say repeat, or stop to finish. Say menu to choose something else. {ends}"
+        return (f"When reading, rest a finger on a word and I will read it. You can also say read or found it, or repeat to hear "
+                f"the last word again. Say stop or finish when you are done, or menu to choose something else. {ends}")
     if mode == "explore":
-        return f"Rest a finger on any cell and I will tell you what it is. You can say repeat, hint, next page, or stop. {ends}"
-    return f"You can say start, repeat, hint, found it, next, or stop. {ends}"
+        return f"Rest a finger on any cell and I will tell you what it is. You can say repeat, hint, next page, or stop or finish. {ends}"
+    return f"You can say start, repeat, hint, found it, next, or stop or finish. {ends}"

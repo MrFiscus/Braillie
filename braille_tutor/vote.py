@@ -108,6 +108,15 @@ class CellLocker:
         if label is None:
             return  # a dropout says nothing: a locked cell stays locked
         slot["hist"].append(label)
+        if slot["expected"] is not None:
+            # Known printed sheet (and the photos that layout came from): the name is the sheet.
+            # A finger covering a dot is a worse live reading, not a new page — never rename or unlock.
+            if slot["locked"] is not None:
+                return
+            slot["run"] = slot["run"] + 1 if label == slot["expected"] else 0
+            if slot["run"] >= self.lock_after:
+                slot["locked"] = slot["expected"]
+            return
         if slot["locked"] is not None:
             if label == slot["locked"]:
                 slot["other"], slot["other_run"] = None, 0
@@ -117,21 +126,22 @@ class CellLocker:
             if slot["other_run"] >= self.unlock_after:  # a different reading, again and again: the page really changed
                 slot["locked"], slot["other"], slot["other_run"], slot["run"] = None, None, 0, 0
             return
-        if slot["expected"] is not None:  # known sheet: lock as soon as it reads as the sheet says
-            slot["run"] = slot["run"] + 1 if label == slot["expected"] else 0
-            if slot["run"] >= self.lock_after:
-                slot["locked"] = label
-            return
         top, count = collections.Counter(slot["hist"]).most_common(1)[0]  # unknown page: lock on a steady majority
         if count >= self.lock_after and count >= self.agree * len(slot["hist"]):
             slot["locked"] = top
 
     def update_known(self, observed: list, expected: list) -> list:
-        """Add one scan of a known sheet: `observed` and `expected` are lists of Cells in the same order."""
+        """Add one scan of a known sheet: `observed` and `expected` are lists of Cells in the same order.
+
+        Centres stay on the printed layout (the demo-sheet photos). Live observation under a covering finger
+        used to drag boxes onto neighbours — especially on the denser words and lookalikes sheets — so the
+        green ring looked right while grading looked at a shifted square. Names stay pinned either way."""
         if not self.slots or len(self.slots) != len(expected):
             self.slots = [self._new(e, e["label"]) for e in expected]
-        for slot, o in zip(self.slots, observed):
-            slot["cell"] = {**slot["cell"], **{k: o[k] for k in ("dots", "label", "char", "confidence", "x", "y") if k in o}}  # x, y: where the dots really are
+        for slot, o, e in zip(self.slots, observed, expected):
+            # Keep the sheet's own centre; only refresh size if the layout carried one.
+            slot["cell"] = {**slot["cell"], "x": e["x"], "y": e["y"],
+                            **{k: e[k] for k in ("w", "h") if k in e}}
             self._follow(slot, o["label"])
         return self.result()
 

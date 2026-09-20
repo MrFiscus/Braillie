@@ -30,9 +30,9 @@ MIN_HAND_FRACTION = 0.004  # a skin blob smaller than this share of the picture 
 MAX_HAND_FRACTION = 0.45  # a bigger one is more likely a skin-coloured desk
 SKIN_CR = (135, 180)
 SKIN_CB = (85, 130)
-MIN_SATURATION = 40  # paper, however warm the light, is far less saturated than skin
-MIN_VALUE = 50
-PAGE_MARGIN_MM = 30.0  # how far past the printed sheet a sighting may still land and count as "on the page"
+MIN_SATURATION = 30  # paper, however warm the light, is far less saturated than skin
+MIN_VALUE = 40
+PAGE_MARGIN_MM = 40.0  # how far past the printed sheet a sighting may still land and count as "on the page"
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,9 @@ def find_fingertip(frame: np.ndarray, skin_ranges: Optional[tuple] = None) -> Op
     d = np.hypot(pts[:, 0] - entry[0], pts[:, 1] - entry[1])  # the finger points away from where the arm comes in
     tip = pts[d >= 0.97 * d.max()].mean(axis=0)  # average the very end of the finger: one noisy outline pixel cannot move it
     reach = float(np.hypot(tip[0] - cx, tip[1] - cy)) / radius
-    confidence = float(np.clip((reach - 1.2) / 1.3, 0.0, 1.0)) * (1.0 if touches_border else 0.4)
+    # Softer than (reach - 1.2) / 1.3 so a finger resting flat on the page still scores enough to keep
+    # the green ring and the answer dwell; pointing fingers (reach ~2+) still land near 1.0.
+    confidence = float(np.clip((reach - 0.7) / 1.6, 0.0, 1.0)) * (1.0 if touches_border else 0.65)
     return Tip(float(tip[0] / scale), float(tip[1] / scale), confidence, (float(cx / scale), float(cy / scale)), reach)
 
 
@@ -110,10 +112,14 @@ class FingerTracker:
     * needs `confirm` sightings in a row before reporting (a flash of skin colour does not move the finger)
     * smooths in page mm with an exponential average (`smooth` = weight of the newest sighting), unless the finger jumped
       farther than `jump_mm`, which is taken as a new place rather than smoothed toward
-    * holds the last position for `hold_seconds` after the hand leaves, then reports None"""
+    * holds the last position for `hold_seconds` after the hand leaves, then reports None
 
-    def __init__(self, min_confidence: float = 0.3, confirm: int = 2, smooth: float = 0.5, jump_mm: float = 40.0,
-                 hold_seconds: float = 0.6, clock: Callable = time.monotonic, find: Callable = find_fingertip,
+    hold_seconds defaults longer than a rest that counts as an answer (see learn.DWELL_SECONDS): resting a finger
+    on the page often makes the tip look less "pointy", so confidence dips -- without a long hold the tutor would
+    forget the finger mid-answer and never grade / never keep the green ring on the video."""
+
+    def __init__(self, min_confidence: float = 0.10, confirm: int = 1, smooth: float = 0.85, jump_mm: float = 40.0,
+                 hold_seconds: float = 5.0, clock: Callable = time.monotonic, find: Callable = find_fingertip,
                  page_size_mm: tuple = (PAGE_W_MM, PAGE_H_MM), page_margin_mm: float = PAGE_MARGIN_MM):
         self.min_confidence, self.confirm, self.smooth, self.jump_mm = min_confidence, confirm, smooth, jump_mm
         self.hold_seconds, self.clock, self.find = hold_seconds, clock, find
@@ -133,34 +139,55 @@ class FingerTracker:
 
     def reset(self) -> None:
         self.position: Optional[tuple] = None  # page mm, or image px when no page is registered
-        self.tip: Optional[Tip] = None  # the newest raw sighting
-        self._streak, self._seen = 0, 0.0
+        self.tip: Optional[Tip] = None  # the newest raw sighting (drives the green ring)
+        self._streak, self._seen, self._tip_seen = 0, 0.0, -1e9
 
     def update(self, frame: np.ndarray, H: Optional[np.ndarray]) -> Optional[tuple]:
         """Process one frame. Returns the fingertip in page mm (needs H), or None."""
         tip = self.find(frame)
         now = self.clock()
-        valid = tip is not None and tip.confidence >= self.min_confidence
-        raw = to_page(H, tip.x, tip.y) if (valid and H is not None) else None
-        if valid and raw is not None and not self._on_page(raw):
-            valid = False  # a hand-shaped blob well off the sheet: treat it as no sighting, not a new position
-        if not valid:
-            self.tip, self._streak = None, 0
+        raw = to_page(H, tip.x, tip.y) if (tip is not None and H is not None) else None
+        on_page = raw is not None and self._on_page(raw)
+        # Green ring: always the latest camera tip so it stays on the finger through page flicker and
+        # sheet swaps. Grading (see contact_mm / CameraFeed.finger) only accepts on-page tips.
+        if tip is not None:
+            self.tip, self._tip_seen = tip, now
+        elif now - self._tip_seen > 1.0:
+            self.tip = None
+        if not on_page:
+            self._streak = 0
             if self.position is not None and now - self._seen > self.hold_seconds:
                 self.position = None
             return self.position if H is not None else None
-        self.tip, self._streak, self._seen = tip, self._streak + 1, now
-        if H is None:  # without a page there is no mm: keep nothing that would mean the wrong thing
-            self.position = None
-            return None
+        self._streak, self._seen = self._streak + 1, now
         if self._streak < self.confirm and self.position is None:
             return None
-        if self.position is None or np.hypot(raw[0] - self.position[0], raw[1] - self.position[1]) > self.jump_mm:
-            self.position = raw
+        # Grade a few millimetres behind the visual tip (toward the palm): that is the pad that
+        # actually rests on the braille cell. Matter more on the denser words / lookalikes sheets.
+        grade = self.contact_mm(H, tip) or raw
+        if self.position is None or np.hypot(grade[0] - self.position[0], grade[1] - self.position[1]) > self.jump_mm:
+            self.position = grade
         else:
             a = self.smooth
-            self.position = (a * raw[0] + (1 - a) * self.position[0], a * raw[1] + (1 - a) * self.position[1])
+            self.position = (a * grade[0] + (1 - a) * self.position[0], a * grade[1] + (1 - a) * self.position[1])
         return self.position
+
+    def contact_mm(self, H: Optional[np.ndarray], tip: Optional[Tip], pad_mm: float = 7.0) -> Optional[tuple]:
+        """Page-mm point under the finger pad (a little toward the palm from the visual tip), or None."""
+        if tip is None or H is None:
+            return None
+        tip_xy = to_page(H, tip.x, tip.y)
+        if tip_xy is None or not self._on_page(tip_xy):
+            return None
+        palm_xy = to_page(H, tip.palm[0], tip.palm[1])
+        if palm_xy is None:
+            return tip_xy
+        dx, dy = palm_xy[0] - tip_xy[0], palm_xy[1] - tip_xy[1]
+        d = float(np.hypot(dx, dy))
+        if d < 1e-3:
+            return tip_xy
+        t = min(pad_mm, 0.22 * d) / d
+        return (tip_xy[0] + t * dx, tip_xy[1] + t * dy)
 
 
 def main() -> None:

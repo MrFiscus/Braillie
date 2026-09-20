@@ -9,7 +9,7 @@ from typing import Optional
 
 import numpy as np
 
-from detect import Cell, letter_of, nearest_cell, rows_of
+from detect import Cell, cell_at, letter_of, rows_of
 
 
 def word_text(cells: list, printed: Optional[dict] = None) -> str:
@@ -62,12 +62,15 @@ def read_lines(cells: list) -> list:
 
 def word_at(cells: list, x_mm: float, y_mm: float, decode: bool = False, is_word=None,
             printed: Optional[dict] = None) -> Optional[str]:
-    """The word whose cell is nearest the page point (x, y), or None if the point isn't on a cell.
+    """The word whose cell contains the page point (x, y), or None if the point isn't on a cell.
+
+    Uses the same padded-box hit test as letter grading (cell_at), so a green ring inside a letter square
+    on the words sheet resolves to that word — not only when the tip sits on the exact cell centre.
 
     decode=True reads it as contracted braille (see contractions.py); the default reads plain letters.
     printed: optional {(row, col): letter} from a known sheet, used as a fallback when the live dots don't spell a letter
     (see word_text). Only makes sense in plain mode (decode=False)."""
-    hit = nearest_cell(cells, x_mm, y_mm)
+    hit = cell_at(cells, x_mm, y_mm)
     if hit is None:
         return None
     pitch = typical_pitch(cells)

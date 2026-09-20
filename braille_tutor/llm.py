@@ -41,10 +41,15 @@ class LLMClient:
         return cls(key, model or os.environ.get("BRAILLIE_LLM_MODEL", DEFAULT_MODEL),
                    os.environ.get("BRAILLIE_LLM_BASE_URL", DEFAULT_BASE_URL))
 
-    def chat(self, system: str, user: str) -> str:
+    def chat(self, system: str, user: str, max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> str:
         """One request; returns the reply text. Raises on any error."""
-        body = json.dumps({"model": self.model, "messages": [{"role": "system", "content": system},
-                                                             {"role": "user", "content": user}]}).encode()
+        payload: dict = {"model": self.model, "messages": [{"role": "system", "content": system},
+                                                           {"role": "user", "content": user}]}
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if temperature is not None:
+            payload["temperature"] = temperature
+        body = json.dumps(payload).encode()
         req = urllib.request.Request(f"{self.base_url}/chat/completions", data=body, method="POST",
                                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
@@ -204,3 +209,73 @@ class Coach:
         if line is None or set(re.findall(r"\d+", line)) - allowed:
             return None
         return line
+
+
+# ---- spoken Q&A: say "braillo" then ask anything -------------------------------------------------
+
+ASK_WAKE = "braillo"
+# Deepgram often reshapes the name; any of these arms the tutor the same way.
+ASK_WAKE_ALIASES = (ASK_WAKE, "briello", "brailo", "barillo", "braylo", "brello")
+_ASK_WAKE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(a) for a in ASK_WAKE_ALIASES) + r")\b[,:]?\s*",
+    re.IGNORECASE,
+)
+ASK_CANCEL = frozenset({"stop", "cancel", "never mind", "nevermind", "nothing", "forget it"})
+ASK_SYSTEM = (
+    "You are Braillo, the spoken tutor inside Braillie, a braille learning app for people who may be blind or have "
+    "low vision. Answer like a real tutor who knows the topic. Prefer plain speech for text-to-speech: no markdown, "
+    "bullet lists, emoji, or URLs. Keep answers under 60 words unless they clearly ask for more detail. Help with "
+    "braille, reading, and the app when relevant, but answer any honest question."
+)
+
+
+def strip_ask_wake(text: str) -> str:
+    """Remove the first braillo wake word (and aliases) from a transcript; leftover is the question."""
+    if not isinstance(text, str):
+        return ""
+    return _ASK_WAKE_RE.sub("", text, count=1).strip().strip(",:;!")
+
+
+def looks_like_question(text: str) -> bool:
+    """True when the leftover after the wake word is enough to send to the model."""
+    words = text.split()
+    return bool(words) and (len(words) >= 2 or text.endswith("?") or len(text) >= 8)
+
+
+class AskTutor:
+    """Fast spoken Q&A via ChatGPT. Armed by the braillo wake word; answers are kept short for TTS."""
+
+    def __init__(self, client: Optional[LLMClient] = None, timeout: float = 6.0):
+        self.client, self.off_reason = client, ""
+        if self.client is not None and hasattr(self.client, "timeout"):
+            self.client.timeout = min(self.client.timeout, timeout)
+
+    @property
+    def enabled(self) -> bool:
+        return self.client is not None and not self.off_reason
+
+    @property
+    def status(self) -> str:
+        if self.client is None:
+            return "off"
+        return f"off after an error: {self.off_reason}" if self.off_reason else f"on ({self.client.model})"
+
+    def answer(self, question: str) -> Optional[str]:
+        """Blocking ChatGPT reply fit to speak, or None. Failures switch this helper off for the session."""
+        if not self.enabled:
+            return None
+        q = " ".join(str(question or "").split()).strip()
+        if not q:
+            return None
+        try:
+            raw = self.client.chat(ASK_SYSTEM, q, max_tokens=160, temperature=0.4)
+        except Exception as e:
+            self.off_reason = f"{type(e).__name__}: {e}"[:120]
+            return None
+        line = clean_line(raw, 480, allow_digits=True)
+        if line:
+            return line
+        # Model used forbidden markup: still speak a compressed plain version if we can.
+        plain = " ".join(str(raw or "").replace("\n", " ").split())
+        plain = re.sub(r"[*_`#<>{}\[\]|~]", "", plain)
+        return plain[:480] if plain else None

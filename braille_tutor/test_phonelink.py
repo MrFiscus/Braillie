@@ -100,13 +100,13 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(link.url, f"https://192.168.1.23:8443/phone?t={link.code}")
         self.assertNotEqual(self.link().code, self.link().code)  # (random: a repeat is a one in a million fluke)
 
-    def test_spoken_instructions_give_address_and_code_digit_by_digit(self):
+    def test_spoken_instructions_just_ask_to_scan_the_qr(self):
         link = self.link(code="048213")
         text = link.spoken_instructions()
-        self.assertIn("1 9 2 dot 1 6 8 dot 1 dot 2 3", text)
-        self.assertIn("8 4 4 3", text)
-        self.assertIn("0 4 8 2 1 3", text)
-        self.assertIn("not private", text)
+        self.assertEqual(text, "Scan the QR code on the screen using your mobile phone.")
+        self.assertNotIn("not private", text)
+        self.assertNotIn("0 4 8 2 1 3", text)
+        self.assertNotIn("1 9 2 dot", text)
 
     def test_wrong_codes_are_refused_and_lock_out_guessing(self):
         link = self.link(code="123456")
@@ -1041,8 +1041,8 @@ class TunnelledLinkTests(unittest.TestCase):
         text = self.link().spoken_instructions()
         self.assertNotIn("not private", text)
         self.assertNotIn("advanced", text.lower())
-        self.assertIn("Wi-Fi or mobile data", text)
-        self.assertIn("not private", self.link(tunnel=False).spoken_instructions(), "the local-network way still warns, as before")
+        self.assertIn("Scan the QR code", text)
+        self.assertEqual(self.link(tunnel=False).spoken_instructions(), text, "same short line whether tunnelled or not")
 
     def test_the_diagnosis_talks_about_the_internet_not_the_wifi(self):
         link = self.link()
@@ -1271,7 +1271,7 @@ class TrustedLinkTests(unittest.TestCase):
         self.assertTrue(link.no_warning and not link.tunnelled)
         text = link.spoken_instructions()
         self.assertNotIn("not private", text)
-        self.assertIn("same Wi-Fi", text)
+        self.assertIn("Scan the QR code", text)
         self.assertFalse(self.link(trusted=False).no_warning)
 
     def test_the_diagnosis_talks_about_wifi_and_dns_not_about_a_warning(self):

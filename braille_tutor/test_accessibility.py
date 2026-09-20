@@ -133,6 +133,7 @@ class HelpTests(unittest.TestCase):
         for h in (help_text("menu", "menu", "menu"), help_text("learn", "learn", "learning")):
             self.assertIn("slower or faster", h)
             self.assertIn("take your time", h)
+            self.assertIn("braillo", h)
 
 
 class PageSeenTests(unittest.TestCase):
@@ -290,11 +291,15 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: any("What do you want" in t for t in voice.said)))
         s.watch_once(0.0)
         heard[0] = {"n": 1, "text": "what is the weather", "matched": False, "reason": Hearing.UNMATCHED}
-        self.assertEqual(s.watch_once(1.0), acc.NOT_UNDERSTOOD)
+        self.assertIsNone(s.watch_once(1.0), "at the menu the tutor stays quiet and waits for learn, read or quiz")
+        s.set_mode("quiz")
+        heard[0] = {"n": 2, "text": "what is the weather", "matched": False, "reason": Hearing.UNMATCHED}
+        self.assertEqual(s.watch_once(2.0), acc.NOT_UNDERSTOOD)
         self.assertIn("Say help", voice.said[-1])
         s.apply_settings({"hearing_feedback": False})
-        heard[0] = {"n": 2, "text": "another sentence here", "matched": False, "reason": Hearing.UNMATCHED}
+        heard[0] = {"n": 3, "text": "another sentence here", "matched": False, "reason": Hearing.UNMATCHED}
         self.assertIsNone(s.watch_once(60.0))
+        s.set_mode("menu")
 
     def test_the_real_voice_module_reports_what_was_heard(self):
         voice, _ = tutor.load_teammate_modules(mock=True)

@@ -27,8 +27,8 @@ class Scripted:
     def __init__(self, reply=None, delay=0.0, error=None):
         self.reply, self.delay, self.error, self.calls = reply, delay, error, []
 
-    def chat(self, system, user):
-        self.calls.append((system, user))
+    def chat(self, system, user, max_tokens=None, temperature=None):
+        self.calls.append((system, user, max_tokens, temperature))
         time.sleep(self.delay)
         if self.error:
             raise self.error
@@ -310,6 +310,82 @@ class CoachInSessionTests(unittest.TestCase):
         s.on_found_it()
         self.assertEqual(v.said[-1], f"Correct! That's the letter {s.items[0].upper()}.")
         self.assertEqual(len(v.debriefs), 1)
+
+
+class AskStripTests(unittest.TestCase):
+    def test_strip_wake_and_question_shape(self):
+        self.assertEqual(llm.strip_ask_wake("braillo what is dot one"), "what is dot one")
+        self.assertEqual(llm.strip_ask_wake("Briello, how many dots?"), "how many dots?")
+        self.assertEqual(llm.strip_ask_wake("braillo"), "")
+        self.assertTrue(llm.looks_like_question("what is a"))
+        self.assertFalse(llm.looks_like_question(""))
+        self.assertFalse(llm.looks_like_question("hi"))
+
+
+class AskTutorTests(unittest.TestCase):
+    def test_answer_is_short_spoken_text(self):
+        client = Scripted("Dot one is top left on the cell.")
+        ask = llm.AskTutor(client)
+        self.assertEqual(ask.answer("what is dot one"), "Dot one is top left on the cell.")
+        self.assertEqual(client.calls[0][2], 160)
+        self.assertIn("Braillo", client.calls[0][0])
+
+    def test_failure_turns_ask_off(self):
+        ask = llm.AskTutor(Scripted(error=RuntimeError("down")))
+        self.assertIsNone(ask.answer("hello there"))
+        self.assertFalse(ask.enabled)
+        self.assertIsNone(ask.answer("hello again"))  # stays off; no more calls
+
+
+@unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")
+class BrailloSessionTests(unittest.TestCase):
+    def test_same_utterance_answers_immediately(self):
+        client = Scripted("Braille cells have six dots.")
+        s, voice, _ = make_session(None)
+        s.ask = llm.AskTutor(client)
+        s.heard_fn = lambda: {"n": 3, "text": "braillo how many dots are in a cell", "matched": True}
+        s.attach()
+        voice.commands["braillo"]()
+        self.assertIn("six dots", voice.said[-1])
+        self.assertFalse(s._ask_armed)
+
+    def test_wake_alone_waits_then_answers_next_utterance(self):
+        client = Scripted("The letter A is only dot one.")
+        s, voice, _ = make_session(None)
+        s.ask = llm.AskTutor(client)
+        heard = {"n": 1, "text": "braillo", "matched": True}
+        s.heard_fn = lambda: heard
+        s.on_braillo()
+        self.assertTrue(s._ask_armed)
+        self.assertIn("question", voice.said[-1].lower())
+        heard.update({"n": 2, "text": "what is the letter a", "matched": False, "reason": "no command phrase matched"})
+        s.watch_once(time.time())
+        self.assertIn("dot one", voice.said[-1].lower())
+        self.assertFalse(s._ask_armed)
+
+    def test_no_key_explains_how_to_turn_it_on(self):
+        s, voice, _ = make_session(None)
+        s.ask = None
+        s.heard_fn = lambda: {"n": 1, "text": "braillo what is braille", "matched": True}
+        s.on_braillo()
+        self.assertIn("OpenAI API key", voice.said[-1])
+
+    def test_make_ask_tutor(self):
+        old = os.environ.pop("OPENAI_API_KEY", None)
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                self.assertIsNone(tutor.make_ask_tutor(argparse.Namespace(no_llm=False, llm_model=None)))
+            self.assertIn("Braillo Q&A off", out.getvalue())
+            os.environ["OPENAI_API_KEY"] = "sk-x"
+            with redirect_stdout(out):
+                ask = tutor.make_ask_tutor(argparse.Namespace(no_llm=False, llm_model="m1"))
+            self.assertTrue(ask.enabled)
+            self.assertIsNone(tutor.make_ask_tutor(argparse.Namespace(no_llm=True, llm_model=None)))
+        finally:
+            os.environ.pop("OPENAI_API_KEY", None)
+            if old is not None:
+                os.environ["OPENAI_API_KEY"] = old
 
 
 if __name__ == "__main__":

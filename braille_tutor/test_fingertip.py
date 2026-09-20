@@ -108,14 +108,15 @@ class TestFingerTracker(unittest.TestCase):
         clock = FakeClock()
         return FingerTracker(clock=clock, **kw), clock
 
-    def test_needs_two_frames_in_a_row(self):
+    def test_locks_on_the_first_on_page_frame(self):
         tr, _ = self.tracker()
         frame = hand_frame()
-        self.assertIsNone(tr.update(frame, identity_like()))
         pos = tr.update(frame, identity_like())
         self.assertIsNotNone(pos)
         self.assertAlmostEqual(pos[0], 80, delta=3)  # 320 px / 4
-        self.assertAlmostEqual(pos[1], 37.5, delta=3)
+        # Pad is a little toward the palm from the visual tip (~37.5 mm).
+        self.assertGreater(pos[1], 37.5)
+        self.assertLess(pos[1], 50.0)
 
     def test_no_position_without_a_page(self):
         tr, _ = self.tracker()
@@ -158,11 +159,31 @@ class TestFingerTracker(unittest.TestCase):
             tr.update(hand_frame((520, 250)), H)  # a real jump of 50 mm+: taken as a new place at once
         self.assertAlmostEqual(tr.position[0], 130, delta=3)
 
-    def test_low_confidence_sightings_are_ignored(self):
-        weak = lambda frame: Tip(10, 10, 0.1, (0, 0), 1.2)
+    def test_an_on_page_tip_is_the_finger_even_at_low_confidence(self):
+        """A rest on A looks like a fist. It must still lock so the green ring and the grade agree."""
+        weak = lambda frame: Tip(320, 150, 0.05, (320, 300), 1.05)
         tr = FingerTracker(find=weak)
-        for _ in range(4):
-            self.assertIsNone(tr.update(np.zeros((10, 10, 3), np.uint8), identity_like()))
+        H = identity_like()
+        pos = tr.update(np.zeros((10, 10, 3), np.uint8), H)
+        self.assertIsNotNone(pos)
+        self.assertAlmostEqual(pos[0], 80, delta=3)
+
+    def test_a_resting_finger_keeps_the_lock_when_confidence_dips(self):
+        """Once the green ring is on a cell, flattening the finger (low reach) must not drop the grade point."""
+        spots = {"now": Tip(320, 150, 0.9, (320, 300), 2.2)}
+
+        def find(_frame):
+            return spots["now"]
+
+        tr, _ = self.tracker(find=find)
+        H = identity_like()
+        for _ in range(3):
+            tr.update(np.zeros((10, 10, 3), np.uint8), H)
+        self.assertIsNotNone(tr.position)
+        spots["now"] = Tip(324, 152, 0.08, (320, 300), 1.05)
+        pos = tr.update(np.zeros((10, 10, 3), np.uint8), H)
+        self.assertIsNotNone(pos)
+        self.assertAlmostEqual(pos[0], 81, delta=3)
 
     def test_a_hand_shaped_blob_mapped_off_the_page_is_ignored(self):
         """A confident, well-formed sighting is still rejected if the homography puts it nowhere near the sheet --
@@ -235,7 +256,7 @@ class TestFeedIntegration(unittest.TestCase):
         self.assertEqual(feed.finger(), (30, 40))
 
     def test_a_raw_fingertip_is_drawn_on_the_video(self):
-        """The green ring is what tells you the tutor can see the finger; it uses the camera pixels, not the page."""
+        """The green ring always follows the camera fingertip in image pixels."""
         import tutor
         feed = tutor.CameraFeed(None, None, None, track_finger=True)
         feed.frame = np.zeros((80, 120, 3), np.uint8)
@@ -244,6 +265,40 @@ class TestFeedIntegration(unittest.TestCase):
         b, g, r = (int(c) for c in view[30, 40])
         self.assertGreater(g, b + 40, "the fingertip should be a green ring on the video")
         self.assertGreater(g, r + 40)
+
+    def test_grading_uses_the_finger_pad_behind_the_green_ring(self):
+        """Grade a little toward the palm from the visual tip so denser demo sheets still register."""
+        import tutor
+        feed = tutor.CameraFeed(None, None, None, track_finger=True)
+        feed.H = identity_like()
+        feed.tracker.position = (10.0, 10.0)  # old place (e.g. after a hold)
+        feed.tracker.tip = Tip(320, 150, 0.9, (320, 300), 2.0)  # tip at 80, 37.5 mm; palm lower in the image
+        pos = feed.finger()
+        self.assertIsNotNone(pos)
+        self.assertAlmostEqual(pos[0], 80, delta=3)
+        self.assertGreater(pos[1], 37.5)  # pad is toward the palm
+        self.assertLess(pos[1], 50.0)
+
+    def test_off_page_skin_does_not_move_the_grade_point(self):
+        """A desk/couch blob may move the green ring, but grading stays on the last on-page pad."""
+        spots = {"now": Tip(320, 150, 0.9, (320, 300), 2.2)}
+
+        def find(_frame):
+            return spots["now"]
+
+        tr = FingerTracker(find=find, page_size_mm=(90.0, 200.0), page_margin_mm=5.0)
+        H = identity_like()
+        tr.update(np.zeros((10, 10, 3), np.uint8), H)
+        held = tr.position
+        self.assertIsNotNone(held)
+        spots["now"] = Tip(580, 150, 0.95, (580, 300), 2.2)  # off the 90 mm-wide page
+        tr.update(np.zeros((10, 10, 3), np.uint8), H)
+        self.assertEqual(tr.position, held)
+
+    def test_the_default_hold_outlasts_a_rest_that_counts_as_an_answer(self):
+        """Resting a finger for ~3 s must not make the tracker forget it mid-answer."""
+        import learn
+        self.assertGreater(FingerTracker().hold_seconds, learn.DWELL_SECONDS)
 
     def test_a_stale_click_outlives_a_rest_that_counts_as_an_answer(self):
         """It has to last: the learner clicks, the tutor waits for the finger to settle, and only then is it an answer."""

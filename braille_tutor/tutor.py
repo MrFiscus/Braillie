@@ -30,9 +30,9 @@ import cv2
 import numpy as np
 
 import reader
-from detect import AMBER, GREEN, RED, _Detector, braille_status, dot_distance, draw_cell, draw_detections, draw_hud, draw_page_outline, letter_of, locked_check_line, nearest_cell, open_camera, page_source_from_args, page_status
+from detect import AMBER, GREEN, RED, _Detector, braille_status, cell_at, dot_distance, draw_cell, draw_detections, draw_hud, draw_page_outline, letter_of, locked_check_line, open_camera, page_source_from_args, page_status
 from drill import drill as _drill
-from llm import Coach, LLMClient, Pending
+from llm import AskTutor, Coach, LLMClient, Pending, looks_like_question, strip_ask_wake, ASK_CANCEL
 import accessibility as acc
 import audio_speed
 import phonelink
@@ -130,7 +130,10 @@ EXPLORE_OFF_CELL_SECONDS = 2.5  # resting this long on blank paper: say so, once
 HUB_MODES = {"learn": {"mode": "learn", "sheet": "alphabet", "title": "Learn"},
              "read": {"mode": "read", "sheet": "words", "title": "Read"},
              "quiz": {"mode": "letters", "sheet": "lookalikes", "title": "Quiz"}}
-MENU_LINE = "You can say learn, read, or quiz."
+MENU_LINE = ("Choose an option. Learn teaches the letters a few at a time on the alphabet sheet. "
+             "Read says a word aloud when you rest your finger on it on the words sheet. "
+             "Quiz names a letter on the look-alikes sheet and you find it. "
+             "Say learn, read, or quiz.")
 PROMPTS = {  # canned things the website may ask the tutor to say (it cannot make the tutor say anything else; {name} is a cleaned first name)
     "welcome": "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. To sign in, say Google. "
                "To carry on without an account, say guest. Or use the tab key to move between the options. If you sign in, your progress "
@@ -274,8 +277,21 @@ def wire_new_page(session: "TutorSession", feed: "CameraFeed") -> None:
     session.page_ok_fn = lambda: page_seen_now(feed)  # (see page_seen_now: really seen, not just remembered)
     session.current_sheet = lambda: feed.sheet_name
     session.identifies_sheets = bool(feed.known_sheets)
+    # Grading uses the same centres the video draws. On known demo sheets those centres stay on the
+    # printed layout (photos): live refine under a finger used to drag boxes on words / lookalikes.
+    session.grade_cells = lambda: _cells_for_grading(session.cells, feed.stable)
     feed.on_sheet = session.set_sheet
     feed.announce = lambda text: threading.Thread(target=session.say, args=(text,), daemon=True).start()  # speaking blocks
+
+
+def _cells_for_grading(printed: list, stable: list) -> list:
+    """Printed-sheet letters at printed centres (demo photos), or the last drawn stable boxes if no layout yet.
+
+    Known hub sheets (alphabet / words / lookalikes) keep the layout centres from the sheet files so a
+    covering finger cannot drag the graded square onto a neighbour."""
+    if printed:
+        return list(printed)
+    return list(stable) if stable else []
 
 
 def known_sheets_for(a, setup) -> Optional[dict]:
@@ -318,12 +334,17 @@ class _JourneyHost:
         return self.s._explore_cells()  # a fresh reading of the page, or the sheet's layout if there is none yet
 
     def known_cells(self) -> list:
-        """The active sheet's own printed layout -- ground truth, never the live camera reading.
+        """The active sheet's own printed letters at the printed centres from the demo-sheet layout.
 
         Unlike cells() above (for explore mode, where hearing what the camera actually sees is the point),
         grading a lesson answer should not depend on a clean live reading of the exact cell the learner's
-        finger is resting on: that finger is, by definition, occluding it right then. Kept in sync with the
-        active sheet by set_sheet() on every mode switch."""
+        finger is resting on: that finger is, by definition, occluding it right then. Centres stay on the
+        sheet photos so denser words / lookalikes boxes are not dragged onto neighbours."""
+        grade = getattr(self.s, "grade_cells", None)
+        if callable(grade):
+            cells = grade()
+            if cells:
+                return cells
         return self.s.cells
 
     def sheet_name(self) -> str:
@@ -366,9 +387,13 @@ class TutorSession:
                  questions: int = 5, words: tuple = (), max_tries: int = 3, rng: Optional[random.Random] = None,
                  names: Optional[dict] = None, coach: Optional[Coach] = None, contracted: bool = False,
                  adaptive_planner: Optional[AdaptiveTargetPlanner] = None,
-                 progress: Optional[Progress] = None, progress_file=None, tones: bool = True):
+                 progress: Optional[Progress] = None, progress_file=None, tones: bool = True,
+                 ask: Optional[AskTutor] = None):
         self.contracted = contracted  # read words as contracted (Grade 2) braille: for a real page; printed sheets are plain letters
         self.coach, self.confusions, self.last_debrief = coach, {}, None  # coach = optional LLM extras; see llm.py
+        self.ask = ask  # optional ChatGPT Q&A: say "braillo" then ask anything
+        self._ask_armed = False
+        self._ask_heard_n = 0
         self.names = names  # (row, col) -> sheets.Symbol for every cell of a printed sheet; None = every letter cell is a letter
         self.voice, self.wc, self.cells, self.finger, self.scan = voice, wc, cells, finger, scan
         self.mode, self.questions, self.words, self.max_tries = mode, questions, tuple(words), max_tries
@@ -414,6 +439,8 @@ class TutorSession:
             def run() -> None:
                 if self.dialogue_active():  # someone is answering the sign-in page: a name must not start a lesson
                     return
+                if self._ask_armed and handler is not self.on_braillo:
+                    self._ask_armed = False  # another command: drop the pending question
                 self.earcons.play("locked")
                 handler()
             return run
@@ -423,7 +450,8 @@ class TutorSession:
                               ("explore", self.on_explore), ("practice", self.on_practice), ("learn", self.on_mode_learn),
                               ("read", self.on_mode_read), ("quiz", self.on_mode_quiz), ("menu", self.on_mode_menu),
                               ("help", self.on_help), ("slower", self.on_slower), ("faster", self.on_faster),
-                              ("take your time", self.on_relaxed), ("normal pace", self.on_normal), ("stop", self.on_stop)):
+                              ("take your time", self.on_relaxed), ("normal pace", self.on_normal), ("stop", self.on_stop),
+                              ("braillo", self.on_braillo)):
             try:
                 self.voice.register_command(name, heard(handler))
             except ValueError:  # an older voice_io that does not know this phrase: the others still work
@@ -465,9 +493,13 @@ class TutorSession:
         return (status() or {}).get("heard")
 
     def _listening_state(self) -> bool:
-        if self.dialogue_active():
+        if self.dialogue_active() or self._ask_armed:
             return False
-        return self.state in ("menu", "learning", "exploring", "asking", "reading")
+        # At the choose-learn/read/quiz screen: stay quiet. Only those three commands (and help/settings)
+        # should get a reply; do not say "I didn't catch that" for every other sound in the room.
+        if self.hub and self.hub_mode == "menu":
+            return False
+        return self.state in ("learning", "exploring", "asking", "reading")
 
     def _activity_running(self) -> bool:
         """An activity is under way (a lesson, a quiz, reading, exploring): the sheet matters. Not at the menu, not while waiting for a sheet."""
@@ -481,6 +513,17 @@ class TutorSession:
         """One look at what is going on, speaking up if needed (called about twice a second by the watcher; testable on its own)."""
         if self._speech.locked():  # it is talking already: what it would say may be out of date by the time it finishes
             return None
+        if self._ask_armed and self.heard_fn is not None:
+            heard = self.heard_fn()
+            if heard and int(heard.get("n", 0)) > self._ask_heard_n:
+                self._ask_armed = False
+                self.hearing.seen = int(heard["n"])  # so Hearing does not also nag about this utterance
+                text = str(heard.get("text") or "").strip()
+                if not text or text.casefold() in ASK_CANCEL:
+                    self.say("Okay.")
+                    return "Okay."
+                self._answer_ask(strip_ask_wake(text) or text)
+                return None
         page_ok = self.page_ok_fn() if self.page_ok_fn is not None else True
         msg = self.awareness.update(now, bool(page_ok), self._activity_running() and self.page_ok_fn is not None)
         if msg is None and self.heard_fn is not None:
@@ -503,6 +546,34 @@ class TutorSession:
                     traceback.print_exc()
         self._watcher = threading.Thread(target=loop, daemon=True, name="watcher")
         self._watcher.start()
+
+    def on_braillo(self) -> None:
+        """Wake word for ChatGPT Q&A: answer a question in the same utterance, or wait for the next one."""
+        heard = self.heard_fn() if self.heard_fn is not None else None
+        text = str((heard or {}).get("text") or "")
+        question = strip_ask_wake(text)
+        if looks_like_question(question):
+            self._ask_armed = False
+            self._answer_ask(question)
+            return
+        self._ask_heard_n = int((heard or {}).get("n", 0))
+        self._ask_armed = True
+        self.say("What's your question?")
+
+    def _answer_ask(self, question: str) -> None:
+        """Fetch a short ChatGPT answer and speak it. Network wait is outside the speech lock."""
+        q = " ".join(str(question or "").split()).strip()
+        if not q:
+            self.say("I did not catch a question. Say braillo, then ask again.")
+            return
+        if self.ask is None or not self.ask.enabled:
+            self.say("I cannot answer questions right now. Add an OpenAI API key to the .env file to turn Braillo on.")
+            return
+        answer = self.ask.answer(q)
+        if not answer:
+            self.say("Sorry, I could not get an answer just then. Try again in a moment.")
+            return
+        self.say(answer)
 
     def on_help(self) -> None:
         """"What can I say?": the commands that mean something right now."""
@@ -637,6 +708,8 @@ class TutorSession:
         self.on_mode("learn")
 
     def on_mode_read(self) -> None:
+        if self.hub and self.hub_mode == "read" and self.state == "reading":
+            return self._read_word_now()  # already in read: "read" means read this word, not the intro again
         self.on_mode("read")
 
     def on_mode_quiz(self) -> None:
@@ -644,6 +717,13 @@ class TutorSession:
 
     def on_mode_menu(self) -> None:
         self.on_mode("menu")
+
+    def _read_word_now(self) -> None:
+        """Speak the word under the finger right now (read mode), or say how to place the finger."""
+        pos = self.finger()
+        if pos is None:
+            return self.say("I can't see your finger. Rest it on a word, or click the picture where it is.")
+        self._read_word(pos)
 
     def set_mode(self, mode: str) -> None:
         """Switch to learn, read or quiz (each on its own printed sheet), or back to the menu. Whatever was running stops."""
@@ -667,7 +747,8 @@ class TutorSession:
             self._start_dwell_loop()
             if mode == "read":
                 self.state = "reading"
-                return self.say("Read mode. Put the words sheet in front of the camera. Rest a finger on a word and I will read it aloud. Say menu to choose something else.")
+                return self.say("Read mode. Put the words sheet in front of the camera. Rest a finger on a word and I will read it aloud. "
+                                "You can also say read or found it. Say menu to choose something else.")
             self.questions, self.state = 8, "idle"
             self.say("Quiz time. Put the look-alikes sheet in front of the camera. I will name a letter: find it and rest your finger on it. If I cannot see your finger, click the picture where it is. Say menu to stop.")
             self.on_start()
@@ -755,7 +836,9 @@ class TutorSession:
             elif self.state == "asking":
                 self.say(self._prompt())
             elif self.state == "reading":
-                self.say("Put your finger on a word, then say found it.")
+                if self._last_said.startswith("The word is"):
+                    return self.say(self._last_said)
+                return self._read_word_now()
             else:
                 self.say("Say start quiz to begin.")
 
@@ -865,19 +948,19 @@ class TutorSession:
         return cells or self.cells
 
     def _explore_symbol(self, cell: dict) -> Optional[Symbol]:
-        """What the DETECTED dots mean: the sheet's name for the cell only if the camera agrees with it, else a plain letter."""
+        """The printed sheet's name for this cell. A finger covering a dot must not rename it to the live misread."""
         sym = self._symbol(cell)
-        if sym is not None and self.names is not None and sym.dots != frozenset(cell["dots"]):
-            letter = letter_of(cell["dots"])
-            return letter_symbol(letter) if letter else None
-        return sym
+        if sym is not None:
+            return sym
+        letter = letter_of(cell["dots"])
+        return letter_symbol(letter) if letter else None
 
     def describe(self, cell: dict, full: bool = True) -> str:
         """What a blind learner needs to hear for a cell: its name, the dot numbers and (`full`) where those dots sit."""
-        dots = sorted(cell["dots"])
+        sym = self._explore_symbol(cell)
+        dots = sorted(sym.dots if sym is not None else cell["dots"])
         if not dots:
             return "The camera sees no raised dots in this cell."
-        sym = self._explore_symbol(cell)
         lead = (sym.spoken[0].upper() + sym.spoken[1:]) if sym else "A cell I don't recognise"
         text = f"{lead}. {'Dot' if len(dots) == 1 else 'Dots'} {_and([str(d) for d in dots])}"
         if full:
@@ -886,7 +969,7 @@ class TutorSession:
 
     def _explore_announce(self, pos, now: float, force: bool = False, full: Optional[bool] = None) -> None:
         ex = self._ex
-        cell = nearest_cell(self._explore_cells(), *pos)
+        cell = cell_at(self._explore_cells(), *pos)
         if cell is None:
             if (force or now - ex["since"] >= EXPLORE_OFF_CELL_SECONDS) and not ex["off_told"]:
                 ex["off_told"] = True
@@ -1108,7 +1191,9 @@ class TutorSession:
 
     def _check_symbol(self, pos) -> None:
         target = self.items[self.index]
-        cell = nearest_cell(self.cells, *pos)
+        grade = getattr(self, "grade_cells", None)
+        cells = grade() if callable(grade) else self.cells
+        cell = cell_at(cells or self.cells, *pos)
         if cell is None:
             return self.say("You're not on a cell yet. Keep feeling around.")
         wanted = self._target_cell(target)
@@ -1135,15 +1220,21 @@ class TutorSession:
     def _word_at(self, pos) -> str:
         """The word under the finger, from a fresh detection ("" if there is none).
 
-        On a known printed sheet (plain mode), the sheet's own layout is passed as a fallback so a cell the finger is
-        covering still contributes its printed letter -- otherwise a finger over the 'c' in "cat" turns the reading into
-        "?at" and the tutor stumbles instead of just reading "cat"."""
+        Hit-testing uses the same drawn boxes as the green ring (grade_cells / stable overlay) so resting
+        inside a letter square counts. On a known printed sheet (plain mode), the sheet's own letters are
+        passed as a fallback so a cell the finger is covering still contributes its printed letter --
+        otherwise a finger over the 'c' in "cat" turns the reading into "?at" and the tutor stumbles
+        instead of just reading "cat"."""
         if self.scan is None:
             return ""
         printed = None
         if not self.contracted and self.cells:
             printed = {(c["row"], c["col"]): letter_of(c["dots"]) for c in self.cells}
-        return reader.word_at(self.scan(), *pos, decode=self.contracted, printed=printed) or ""
+        grade = getattr(self, "grade_cells", None)
+        cells = grade() if callable(grade) else None
+        if not cells:
+            cells = self.scan()
+        return reader.word_at(cells, *pos, decode=self.contracted, printed=printed) or ""
 
     def _read_word(self, pos) -> None:
         if self.scan is None:
@@ -1153,10 +1244,12 @@ class TutorSession:
             return self.say("I don't see a word there.")
         result = self.wc.correct_word_read_mode(raw, redetect=lambda: self._word_at(pos))
         if result.source in ("exact", "redetect"):
-            self.say(f"The word is {result.word}.")
+            self._last_said = f"The word is {result.word}."
+            self.say(self._last_said)
         else:  # the backend never guesses; say what was read, letter by letter -- "unknown" for any cell that isn't a plain letter
             spoken = ", ".join("unknown" if ch == "?" else ch for ch in result.raw)
-            self.say(f"I couldn't read that clearly. I think it says {spoken}.")
+            self._last_said = f"I couldn't read that clearly. I think it says {spoken}."
+            self.say(self._last_said)
 
     def _check_word(self, pos) -> None:
         target = self.items[self.index]
@@ -1201,12 +1294,22 @@ class CameraFeed:
         # video as a box per cell with the detected dots and letter: green = locked in, amber = still reading
         self.reader = _Detector(0.15, "auto", sheet=observe_sheet) if (observe_sheet is not None and show_reading) else None
         self.locker, self.stable, self._seen = CellLocker(), [], 0
+        self._remember_sheet(observe_sheet)
         # "next page": which of these sheets is on the desk now? (name -> Sheet); on_sheet(Sheet) and announce(text) are set by the app
         self.known_sheets, self.sheet_name = known_sheets, sheet_name
         self.on_sheet: Optional[Callable] = None
         self.announce: Callable = lambda text: None
         self.identify_until, self._identifying, self._last_identify = 0.0, False, 0.0
         self._changed, self._thumb0, self._identify_from, self._lost_frames = False, None, 0.0, 0
+
+    def _remember_sheet(self, cells: Optional[list]) -> None:
+        """Pin every cell's name to the printed sheet (the photos / first layout). Live frames only refine where the boxes sit."""
+        self.locker.reset()
+        if cells:
+            self.locker.prelock(cells)
+            self.stable = self.locker.result()
+        else:
+            self.stable = []
 
     def update(self, frame: np.ndarray) -> None:
         """Take a new camera frame and re-register the page on it."""
@@ -1283,8 +1386,11 @@ class CameraFeed:
             self.sheet_name, self.observe_sheet = name, sheet.cells
             if self.reader is not None:
                 self.reader.sheet = sheet.cells
-        self.locker.reset()
-        self.stable = []
+        self._remember_sheet(sheet.cells)
+        # Fresh finger for the new sheet: a held tip from Learn must not grade Read/Quiz for seconds.
+        if self.tracker is not None:
+            self.tracker.reset()
+        self.clear_finger()
         if self.reader is not None:
             self._seen = self.reader.snapshot()[2]  # a scan already under way belongs to the old sheet
         if self.on_sheet is not None:
@@ -1302,8 +1408,7 @@ class CameraFeed:
             sheet = self.known_sheets[name]
             self.sheet_name, self.observe_sheet = name, sheet.cells
             self.reader.sheet = sheet.cells
-            self.locker.reset()
-            self.stable = []
+            self._remember_sheet(sheet.cells)
             if self.on_sheet is not None:
                 self.on_sheet(sheet)
         spoken = SHEET_SPOKEN.get(name, name)
@@ -1344,11 +1449,22 @@ class CameraFeed:
 
         A posted point wins while it is fresh, then the camera has it back: whoever clicked meant "it is here, now", not
         "it is here for the rest of the session", and a click nobody remembers making is indistinguishable from a tutor
-        that has decided every letter is the same one."""
+        that has decided every letter is the same one.
+
+        When the green ring is on a camera tip, grade the finger *pad* a little behind that tip (toward the
+        palm) so resting on a cell of the denser words / lookalikes demo sheets matches what the ring shows.
+        A held smoothed position only fills in through brief tip dropouts — never outranks a live on-page tip."""
         posted = self._posted_finger()
         if posted is not None:
             return posted
-        return self.tracker.position if self.tracker is not None and self.H is not None else None
+        if self.tracker is None or self.H is None:
+            return None
+        tip = self.tracker.tip
+        if tip is not None:
+            raw = self.tracker.contact_mm(self.H, tip)
+            if raw is not None:
+                return raw
+        return self.tracker.position
 
     def finger_source(self) -> Optional[str]:
         """Where the position now comes from: "posted" (a click is standing in), "camera", or None if there is none."""
@@ -1378,9 +1494,8 @@ class CameraFeed:
         view = draw_overlay(frame, H, self.overlay_cells, self.labels) if (H is not None and self.overlay_cells and self.reader is None) else frame.copy()
         if self.reader is not None:
             if H is not None:
-                # The sheet's printed layout, keyed by (row, col): what letter is meant to be at each cell. Used as a fallback
-                # when the live-read dots don't spell a letter (a finger over the cell hides some of the dots), so a covered
-                # cell shows the printed letter instead of "?". The camera's own reading still wins whenever it produces one.
+                # The sheet's printed layout is the name we keep: a finger over a cell hides dots and would
+                # otherwise make the live reading spell a different letter. Red dots still show what the camera sees.
                 printed = {(c["row"], c["col"]): letter_of(c["dots"]) for c in (self.observe_sheet or [])}
                 for c in self.stable:  # one box per cell, in page mm mapped back to the picture
                     quad = [to_image(H, c["x"] + sx * c["w"] / 2, c["y"] + sy * c["h"] / 2) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
@@ -1395,7 +1510,12 @@ class CameraFeed:
                 elif H is not None:
                     lines.append(("reading the sheet...", AMBER))
                 if self.tracker is not None and self._posted_finger() is None and self.finger() is None:
-                    lines.append(("no finger — click the picture where it is", RED))
+                    if self.tracker.tip is not None and H is None:
+                        lines.append(("finger seen — lock the page (markers) or click the picture", AMBER))
+                    elif self.tracker.tip is not None:
+                        lines.append(("finger seen — hold still on a cell", AMBER))
+                    else:
+                        lines.append(("no finger — click the picture where it is", RED))
                 draw_hud(view, lines)
         if self.detector is not None and (H is None or self.always_reading):
             draw_detections(view, self.detector.boxes)  # what the camera reads, shown even when the page isn't registered
@@ -1404,14 +1524,11 @@ class CameraFeed:
         if self.finger_px is not None and self._posted_finger() is not None:  # the orange ring goes when the click stops counting
             cv2.circle(view, (int(self.finger_px[0]), int(self.finger_px[1])), 14, (255, 128, 0), 3)
             cv2.circle(view, (int(self.finger_px[0]), int(self.finger_px[1])), 4, (255, 128, 0), -1)
-        elif self.tracker is not None and self.tracker.tip is not None:  # image pixels: visible even before the page is registered
+        elif self.tracker is not None and self.tracker.tip is not None:
+            # Always on the camera fingertip (image pixels), not the smoothed page point used for grading.
             x, y = int(self.tracker.tip.x), int(self.tracker.tip.y)
             cv2.circle(view, (x, y), 16, (0, 255, 0), 3)
             cv2.circle(view, (x, y), 4, (0, 255, 0), -1)
-        elif self.tracker is not None and self.tracker.position is not None and H is not None:
-            x, y = to_image(H, *self.tracker.position)  # drawn from the smoothed page position: what the tutor is really using
-            cv2.circle(view, (int(x), int(y)), 12, (0, 255, 0), 3)
-            cv2.circle(view, (int(x), int(y)), 3, (0, 255, 0), -1)
         return view
 
 
@@ -1516,6 +1633,20 @@ def make_coach(a) -> Optional[Coach]:
     return Coach(client)
 
 
+def make_ask_tutor(a=None) -> Optional[AskTutor]:
+    """ChatGPT Q&A for the braillo wake word. On whenever OPENAI_API_KEY is set, unless --no-llm."""
+    if a is not None and getattr(a, "no_llm", False):
+        return None
+    model = getattr(a, "llm_model", None) if a is not None else None
+    client = LLMClient.from_env(model)
+    if client is None:
+        print("Braillo Q&A off: add OPENAI_API_KEY=... to the .env file, then say braillo and ask a question.", flush=True)
+        return None
+    ask = AskTutor(client)
+    print(f"Braillo Q&A on ({client.model}). Say braillo, then ask anything.", flush=True)
+    return ask
+
+
 def make_adaptive_planner(a) -> Optional[AdaptiveTargetPlanner]:
     """Return the opt-in, bounded-latency OpenAI target planner."""
     if not getattr(a, "adaptive", False):
@@ -1592,7 +1723,7 @@ def main() -> None:
     session = TutorSession(voice, wc, setup.cells, finger=lambda: None, mode=a.mode, questions=a.questions, words=setup.words,
                            rng=random.Random(a.seed), names=setup.names, coach=make_coach(a), contracted=setup.contracted,
                            adaptive_planner=make_adaptive_planner(a),
-                           progress=progress, progress_file=progress_file, tones=not a.no_tones)
+                           progress=progress, progress_file=progress_file, tones=not a.no_tones, ask=make_ask_tutor(a))
     session.voice_status = voice_check(voice)
     report_voice(session.voice_status)  # silence must never be a mystery
     session.attach()

@@ -14,7 +14,7 @@ def _run_event(text: str, confidence: float = 0.99, is_final: bool = True) -> li
     try:
         voice_io._callbacks = {
             command: [lambda command=command: fired.append(command)]
-            for command in ("hint", "found it", "start quiz", "stop")
+            for command in ("hint", "found it", "start quiz", "stop", "braillo", "learn")
         }
         voice_io._mic_paused = False
         voice_io._process_transcript_event(text, confidence, is_final)
@@ -36,6 +36,12 @@ def main() -> None:
         ("hint", 0.99, False, []),
         ("I enjoy practicing braille today", 0.99, True, []),
         ("stopping", 0.99, True, []),
+        ("finish", 0.99, True, ["stop"]),
+        ("I'm finished", 0.99, True, ["stop"]),
+        ("done", 0.99, True, ["stop"]),
+        ("braillo", 0.99, True, ["braillo"]),
+        ("braillo how do I learn", 0.99, True, ["braillo"]),  # wake word wins over "learn"
+        ("briello what is quiz mode", 0.99, True, ["braillo"]),
     ]
     for text, confidence, is_final, expected in cases:
         actual = _run_event(text, confidence, is_final)
