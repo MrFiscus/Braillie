@@ -3,6 +3,8 @@ import { getToKnowStyles, themeTokens } from '../styles-react-components/mainSty
 import CustomButton from '../styles-react-components/CustomButton.tsx'
 import { TUTOR_API, sendCommand, sendFinger } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
+import { useProgressSync } from '../tutor/useProgressSync.ts'
+import LearnPanel from '../components/LearnPanel.tsx'
 
 const SHEET_NAMES: Record<string, string> = {
   alphabet: 'Alphabet A to Z',
@@ -11,12 +13,16 @@ const SHEET_NAMES: Record<string, string> = {
   lookalikes: 'Look-alikes',
 }
 const COMMANDS = ['next page', 'repeat', 'hint', 'found it', 'stop'] // the ones that mean something while exploring a page
+const LEARN_COMMANDS = ['start quiz', 'repeat', 'hint', 'found it', 'next', 'explore', 'practice', 'next page', 'stop'] // in the guided lessons
+const LABELS: Record<string, string> = { 'start quiz': 'Start / continue', 'found it': 'I found it', explore: 'Free explore', practice: 'Practice review' }
 
 // The practice screen: the live camera with a box on every braille cell the tutor detects (red dots = what it sees, green box = locked
 // in as read correctly), what it reads, and the same voice commands as buttons. The tutor speaks; this page shows what it is doing.
 const Practice = () => {
   const styles = getToKnowStyles
   const { state, reach } = useTutorState(600)
+  const sync = useProgressSync(state)
+  const learning = state?.learning ?? null
 
   const reading = state?.reading
   let status = 'Looking for the tutor…'
@@ -24,7 +30,9 @@ const Practice = () => {
   else if (state && !state.camera.ok) status = 'The camera is not giving pictures. Check that it is connected and not used by another program.'
   else if (state && reading?.between_pages) status = 'Looking for the next page… show it to the camera.'
   else if (state && !state.page.ok) status = 'I cannot see the page. Hold the whole sheet in view of the camera.'
-  else if (state && reading && reading.total > 0 && reading.locked === reading.total) status = `All ${reading.total} cells read. Rest a finger on a cell to hear it.`
+  else if (state && reading && reading.total > 0 && reading.locked === reading.total) {
+    status = state.learning ? `The sheet is in view and all ${reading.total} cells are read.` : `All ${reading.total} cells read. Rest a finger on a cell to hear it.`
+  }
   else if (state && reading) status = `Reading the sheet… ${reading.locked} of ${reading.total} cells locked in.`
   else if (state) status = 'Page found.'
 
@@ -34,17 +42,19 @@ const Practice = () => {
   }
 
   const finger = state?.finger.cell
-  const buttons = COMMANDS.filter((c) => state?.config.commands.includes(c))
+  const buttons = (learning ? LEARN_COMMANDS : COMMANDS).filter((c) => state?.config.commands.includes(c))
   const voiceProblems = state?.config.voice && !state.config.voice.ok ? state.config.voice.problems : []
   const said = state ? [...state.said].reverse().slice(0, 5) : []
 
   return (
     <main style={styles.container}>
       <div style={{ ...styles.card, maxWidth: 980, alignItems: 'stretch' }}>
-        <h1 style={styles.title}>Practice</h1>
+        <h1 style={styles.title}>{learning ? 'Learn braille' : 'Practice'}</h1>
         <p style={styles.subtitle} role="status" aria-live="polite">
           {status}
         </p>
+
+        {learning && <LearnPanel learning={learning} progress={state?.progress} />}
 
         {voiceProblems.length > 0 && (
           <div role="alert" style={{ padding: 12, borderRadius: 12, border: `1px solid ${themeTokens.colors.badgeBorder}`, background: themeTokens.colors.badgeBg, textAlign: 'left' }}>
@@ -79,9 +89,15 @@ const Practice = () => {
 
         <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
           {buttons.map((c) => (
-            <CustomButton key={c} buttonText={c.charAt(0).toUpperCase() + c.slice(1)} onClick={() => sendCommand(c)} />
+            <CustomButton key={c} buttonText={LABELS[c] ?? c.charAt(0).toUpperCase() + c.slice(1)} onClick={() => sendCommand(c)} />
           ))}
         </div>
+
+        {learning && sync.detail && (
+          <p role="status" aria-live="polite" style={{ margin: 0, fontSize: 13, color: sync.status === 'error' ? themeTokens.colors.badgeText : themeTokens.colors.textMuted }}>
+            {sync.detail}
+          </p>
+        )}
 
         {said.length > 0 && (
           <div style={{ textAlign: 'left' }}>

@@ -244,6 +244,52 @@ of playing it: without `--mock` and with a key, speech is played.
 Bug fixed in `voice_io.py` on the way: it asked Deepgram for `container="wav"` without `encoding="linear16"`; Deepgram then
 defaults to mp3 and answers HTTP 400 ("container is not applicable when encoding=mp3"), so no speech ever played. One added argument.
 
+## Learning mode: guided lessons (`--mode learn`)
+
+```
+python tutor_server.py --mode learn --sheet alphabet --paper            # add --profile ana to keep someone's progress separate
+```
+
+It starts by itself and teaches braille the way a good teacher would, out loud, by touch:
+
+1. **Lessons** (`learn.py`): six short lessons, A-E, F-J, K-O, P-T, U-Z and the look-alike pairs. Each one *teaches* a letter at a time
+   ("The letter B. Two dots: top-left and middle-left. It is the letter A with one more dot, at the middle-left. Find it and rest your
+   finger on it."), then *practises* them in a fresh order with a couple of older shaky letters mixed in, then gives a spoken *recap*.
+   The explanations are built from the actual dot patterns, so they cannot disagree with the braille, and they use true patterns of
+   the system (K-O are A-E with dot 3 added, and so on) to make the letters stick.
+2. **Resting a finger is the answer**: hold the finger on a cell for about a second (or say "found it"). Nothing to press.
+3. **A mistake is never just "wrong"**: it says what the finger IS on and what to feel for instead ("That's the letter E. The letter C has a
+   dot at the top-right, and no dot at the middle-right."). Three misses and it shows where the letter is and moves on.
+4. **It never leaves you stuck**: hints arrive by themselves after 12 s, then 15 s, then 20 s, each more specific, ending with the
+   row and column. "Hint" asks for the next one at once.
+5. **Adaptive review** ("practice"): 8 letters chosen by spaced repetition (`progress.py`): shaky and recently confused letters come
+   round far more often, solid ones now and then. If two letters keep being mixed up it stops to compare them side by side.
+6. **Free exploring** ("explore") between lessons, and back ("next"). Different sheets: a lesson that needs another sheet asks for it and
+   recognises it ("next page" machinery).
+7. **Gentle sounds** (`earcons.py`): a bright rising phrase for right, a soft falling one for not quite (never a buzzer), a little
+   chime when a lesson starts, a fanfare for a lesson really learned. Played through the same speaker as the voice; `--no-tones` turns them off.
+
+Voice commands: **start** (or "start lesson"), **repeat**, **hint**, **found it**, **next** (skip a letter, move on from a recap), **explore**,
+**practice** (or "review"), **next page**, **stop** (spoken recap of the session). The same are buttons on the website.
+
+Progress (letters and how solid, mix-ups, lessons, days in a row) is saved after every answer to `~/.braillie/progress-<profile>.json`
+(written atomically; a damaged file is set aside, never deleted). `GET /api/progress` returns it, `POST /api/progress {"data": ...}`
+MERGES a copy in (the more recently practised letter wins, counts take the larger value, so merging the same copy twice changes nothing).
+The website uses that to keep it in the learner's Supabase account: run `supabase_progress.sql` once (a `learning_progress` table with
+row level security), and the Learn screen loads the account's copy on start and saves back a few seconds after each change. Signed out or
+offline it just says progress is kept on this computer.
+
+**AI coach**: with `OPENAI_API_KEY=...` in the repo's `.env` learn mode turns the coach on by itself (`--no-llm` stops that): it writes
+memory aids for the letters in a lesson (used as the second hint), varied praise, and a personal debrief. Only lesson facts (letter names, dot
+numbers, scores) are ever sent, never pictures or audio; if it is slow or fails, the built-in wording is used. Without a key, everything
+above works the same with the built-in wording.
+
+What is tested and what is not: the lesson engine, the progress rules, the tones, the wiring and the account sync are covered by tests
+(`test_learn.py`, `test_progress.py`, `test_earcons.py`, `test_learn_session.py`, and `node --test "tests/*.test.mjs"` in `website-frontend`),
+and a whole lesson was run through the real server with a simulated camera and a scripted learner. NOT tested: a real hand on a real poked
+sheet (the timings, such as the 1.2 s rest, are educated guesses to tune with real learners), the AI coach with a real key, and the account
+sync against a real Supabase project.
+
 ## The website flow (React frontend)
 
 With the tutor running (`python tutor_server.py --mode explore --sheet alphabet --paper`, add `--phone-camera` for a phone) and the site
@@ -253,7 +299,8 @@ running (`cd website-frontend && npm run dev`), the flow after sign-in is:
 2. **Connect your camera** (`/connect-phone`): a QR code and the typed address + code when the tutor was started with `--phone-camera`
    (Continue unlocks once the phone's video arrives, and a plain-words hint says where a phone got stuck); with the laptop camera it says
    so and Continue is available at once. Then
-3. **Practice** (`/practice`): the live camera with a box on every detected cell (red dots = what it sees, letter above, green = locked in),
+3. **Practice / Learn** (`/practice`): with `--mode learn` it becomes the learning screen (lesson, the letter with its dot diagram, progress
+   through the lesson, a map of how well each letter is known, streak, and the progress sync); the live camera with a box on every detected cell (red dots = what it sees, letter above, green = locked in),
    a status line ("All 26 cells read. Rest a finger on a cell to hear it."), the sheet, what the finger is on, buttons for the voice
    commands (next page, repeat, hint, found it, stop), and what the tutor said. A warning box explains if speech will not be heard.
    Clicking the video stands in for the fingertip. The tutor itself does the speaking.

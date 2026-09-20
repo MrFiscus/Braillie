@@ -13,6 +13,34 @@ export interface PhoneInfo {
   mic?: boolean
 }
 
+export type LearningPhase = 'idle' | 'await_sheet' | 'teach' | 'practice' | 'review' | 'recap' | 'explore' | 'done'
+
+/** Where the learner is in the guided lessons (only when the tutor runs with --mode learn). */
+export interface LearningStatus {
+  phase: LearningPhase
+  lesson: { id: string; title: string; index: number; of: number; sheet: string } | null
+  target: string | null // the letter being asked for
+  target_dots: number[]
+  remaining: number // letters still to do in this part of the lesson, including the current one
+  letters: number // letters in the lesson
+  in_a_row: number
+  hints: number
+  tries: number
+  round: number
+}
+
+/** What has been learned so far. `mastery` is 0 (never practised) to 1 (solid) per letter. */
+export interface ProgressSummary {
+  learned: number
+  practised: number
+  sessions: number
+  streak: number
+  best_streak: number
+  mastery: Record<string, number>
+  confusions: { touched: string; wanted: string; count: number }[]
+  lessons: Record<string, { best: number; last: number; times: number }>
+}
+
 export interface TutorState {
   config: {
     mode: string
@@ -27,6 +55,8 @@ export interface TutorState {
   finger: { page_mm: [number, number] | null; cell: { letter: string | null; label: string | null; name: string | null; dots: number[] } | null }
   said: { t: number; kind: string; text: string }[]
   reading?: { locked: number; total: number; between_pages: boolean }
+  learning?: LearningStatus | null // null unless --mode learn
+  progress?: ProgressSummary | null
 }
 
 const post = (path: string, body: unknown) =>
@@ -45,4 +75,17 @@ export const speak = (text: string) => {
   } catch {
     // no speech available in this browser: the same text is on screen
   }
+}
+
+/** The learner's whole progress record, as the tutor keeps it (opaque here: it is saved to and merged from the learner's account). */
+export async function getProgress(): Promise<unknown> {
+  const res = await fetch(`${TUTOR_API}/api/progress`, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`progress: ${res.status}`)
+  return (await res.json()).data
+}
+
+/** Fold a saved copy of the progress (e.g. from the learner's account) into the tutor's; merging the same copy twice changes nothing. */
+export async function mergeProgress(data: unknown): Promise<void> {
+  const res = await post('/api/progress', { data })
+  if (!res.ok) throw new Error(`progress: ${res.status}`)
 }
