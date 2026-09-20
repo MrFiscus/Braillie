@@ -90,6 +90,19 @@ class SessionTests(unittest.TestCase):
             saved = Progress.load(path)
             self.assertEqual(saved.sessions, 1)
 
+    def test_a_reading_spoiled_by_the_hand_does_not_fail_a_right_answer(self):
+        """The reported bug, through the real session: with a live reader running, every letter touched came back as
+        "a cell I don't recognise" -- because the hand that answered was over the cell being read."""
+        s, voice, finger = learn_session()
+        s.scan = lambda: [{**c, "dots": frozenset({1, 2, 3, 4, 5, 6})} for c in ALPHABET.cells]
+        s.attach()
+        voice.commands["start quiz"]()
+        self.assertEqual(s.learning_status()["target"], "a")
+        finger.pos = pos_of("a")
+        self.assertTrue(wait_for(lambda: s.learning_status()["target"] == "b"), voice.said[-3:])
+        self.assertFalse(any("recognise" in t for t in voice.said), voice.said)
+        s.on_stop()
+
     def test_start_after_stop_begins_again_and_the_loop_runs_again(self):
         s, voice, finger = learn_session()
         s.attach()

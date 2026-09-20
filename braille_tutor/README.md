@@ -49,7 +49,7 @@ Use `--markers-only` for the old behaviour (all four markers required in every f
 from detect import scan_page, nearest_cell, cells_from_layout, load_cells
 from page import page_homography, to_page
 
-H = page_homography(frame)                    # None unless all 4 markers visible
+H = page_homography(frame)                    # None unless all 4 markers are visible and place the page usably
 cells = scan_page(frame, H)                   # no hand in view; list of Cell dicts in mm
 # fallback if the detector struggles on your sheet: same structure, hardcoded
 cells = cells_from_layout(["abcde", "fghij"], x0=20, y0=30, pitch_x=15, pitch_y=25)
@@ -288,7 +288,10 @@ It starts by itself and teaches braille the way a good teacher would, out loud, 
    finger on it."), then *practises* them in a fresh order with a couple of older shaky letters mixed in, then gives a spoken *recap*.
    The explanations are built from the actual dot patterns, so they cannot disagree with the braille, and they use true patterns of
    the system (K-O are A-E with dot 3 added, and so on) to make the letters stick.
-2. **Resting a finger is the answer**: hold the finger on a cell for about a second (or say "found it"). Nothing to press.
+2. **Resting a finger is the answer**: hold the finger on a cell for about a second (or say "found it"). Nothing to press. Which cell
+   that is comes from the printed sheet's own layout, not from reading the dots at that moment: the finger giving the answer is sitting
+   on the very cell a reading would need a clear view of. (Explore mode is the opposite: there, what the camera makes of the dots under
+   the finger is exactly what you asked to hear.)
 3. **A mistake is never just "wrong"**: it says what the finger IS on and what to feel for instead ("That's the letter E. The letter C has a
    dot at the top-right, and no dot at the middle-right."). Three misses and it shows where the letter is and moves on.
 4. **It never leaves you stuck**: hints arrive by themselves after 12 s, then 15 s, then 20 s, each more specific, ending with the
