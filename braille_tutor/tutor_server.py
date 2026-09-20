@@ -28,13 +28,16 @@ from typing import Optional
 
 import cv2
 
+import phonelink
 import tutor
+from progress import Progress
 from detect import letter_of, nearest_cell, open_camera, page_source_from_args
 
 WEB_DIR = Path(__file__).parent / "web"
 MAX_BODY = 4096
 COMMANDS = {"start quiz": "on_start", "repeat": "on_repeat", "hint": "on_hint", "found it": "on_found_it",
-            "next": "on_next", "stop": "on_stop"}
+            "next": "on_next", "next page": "on_next_page", "explore": "on_explore", "practice": "on_practice",
+            "learn": "on_mode_learn", "read": "on_mode_read", "quiz": "on_mode_quiz", "menu": "on_mode_menu", "stop": "on_stop"}
 LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
 FPS, STREAM_WIDTH = 15, 960
 
@@ -63,8 +66,9 @@ class TutorRuntime:
     """Runs the camera in a background thread and keeps the newest annotated JPEG and state for the web handlers."""
 
     def __init__(self, cap, feed: tutor.CameraFeed, session: tutor.TutorSession, voice: RecordingVoice,
-                 loop_file: bool = False):
+                 loop_file: bool = False, phone: Optional[phonelink.PhoneLink] = None):
         self.cap, self.feed, self.session, self.voice, self.loop_file = cap, feed, session, voice, loop_file
+        self.phone = phone  # when the camera is a phone: its link, so the page can show the QR code and tell the phone what we see
         self.cond, self.jpeg, self.seq, self.stopped = threading.Condition(), None, 0, False
         self.camera_ok = True
 
@@ -89,6 +93,8 @@ class TutorRuntime:
                 continue
             self.camera_ok = True
             self.feed.update(frame)
+            if self.phone is not None:  # the phone speaks this to whoever is holding it ("page found", "hold the phone higher")
+                self.phone.status = {"page_ok": bool(self.feed.page_ok and self.phone.connected), "message": self.feed.message}
             view = self.feed.render()
             if view.shape[1] > STREAM_WIDTH:
                 view = cv2.resize(view, (STREAM_WIDTH, int(view.shape[0] * STREAM_WIDTH / view.shape[1])))
@@ -117,12 +123,60 @@ class TutorRuntime:
                 sym = session._symbol(hit)
                 cell = {"letter": letter_of(hit["dots"]), "label": sym.short if sym else None, "name": sym.spoken if sym else None,
                         "dots": sorted(hit["dots"]), "row": hit["row"], "col": hit["col"]}
-        return {"config": {"mode": session.mode, "commands": list(COMMANDS), "llm": session.coach.status if session.coach else "off"},
-                "camera": {"ok": self.camera_ok, "frames": feed.frames},
+        return {"config": {"mode": session.mode, "commands": list(COMMANDS), "llm": session.coach.status if session.coach else "off",
+                   "voice": session.voice_status, "sheet": self.feed.sheet_name},
+                "reading": {"locked": sum(1 for c in feed.stable if c.get("locked")), "total": len(feed.observe_sheet or []),
+                            "between_pages": bool(feed.identify_until)},
+                "hub": session.hub_status(),
+                "learning": session.learning_status(),
+                "progress": session.progress.summary() if session.journey is not None else None,
+                "camera": {"ok": self.camera_ok, "frames": feed.frames}, "phone": self.phone_info(),
                 "page": {"ok": feed.page_ok, "message": feed.message},
                 "tutor": session.status(),
                 "finger": {"page_mm": None if pos is None else [round(pos[0], 1), round(pos[1], 1)], "cell": cell},
                 "said": list(self.voice.said)[-15:], "debrief": session.last_debrief or self.voice.debrief}
+
+    def hub_request(self, path: str, body: dict) -> tuple:
+        """/api/session, /api/mode and /api/prompt: returns (status, json). Speech and mode changes run in a thread so the answer is quick."""
+        session = self.session
+        if path == "/api/session":
+            kind, name, profile = body.get("kind"), body.get("name"), body.get("profile")
+            if kind not in ("google", "guest"):
+                raise ValueError('"kind" must be "google" or "guest"')
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError('"name" must be a non-empty string')
+            if kind == "google" and not (isinstance(profile, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", profile)):
+                raise ValueError('a google session needs a "profile" (the account id: letters, digits, - and _)')
+            session.set_user(name, kind, profile if kind == "google" else None)
+            return 200, {"ok": True, "hub": session.hub_status()}
+        if path == "/api/mode":
+            mode = str(body.get("mode", "")).lower()
+            if mode != "menu" and mode not in tutor.HUB_MODES:
+                raise ValueError(f'"mode" must be one of: menu, {", ".join(tutor.HUB_MODES)}')
+            threading.Thread(target=session.set_mode, args=(mode,), daemon=True).start()
+            return 202, {"accepted": mode}
+        name = str(body.get("name", ""))
+        if name not in tutor.PROMPTS:
+            raise ValueError(f'"name" must be one of: {", ".join(tutor.PROMPTS)}')
+        threading.Thread(target=session.speak_prompt, args=(name,), daemon=True).start()
+        return 202, {"accepted": name}
+
+    def merge_progress(self, data) -> None:
+        """Fold a saved copy of the learner's progress (e.g. the one in their account) into the live one, and keep the result."""
+        if not isinstance(data, dict):
+            raise ValueError('body must be {"data": <progress object>}')
+        with self.session.lock:
+            self.session.progress.merge(Progress.from_dict(data))
+            self.session.save_progress()
+
+    def phone_info(self) -> Optional[dict]:
+        """None unless the camera is a phone; then what a setup screen needs: show `qr` (an image) until `connected`."""
+        link = self.phone
+        if link is None:
+            return None
+        return {"connected": link.connected, "url": link.url, "address": link.base, "code": link.code, "qr": "/api/phone/qr.png",
+                "instructions": link.spoken_instructions(), "diagnosis": link.diagnose(), "sound": link.sound_ready(), "mic": link.mic_live(),
+                "events": [text for _, text in list(link.events)[-8:]]}
 
     def cells(self) -> list:
         out = []
@@ -226,6 +280,20 @@ def make_handler(rt: TutorRuntime):
                 self.wfile.write(page)
             elif path == "/api/state":
                 self._json(200, rt.snapshot())
+            elif path == "/api/phone/qr.png":
+                if rt.phone is None:
+                    return self._json(404, {"error": "the camera is not a phone (start with --phone-camera)"})
+                png = phonelink.qr_png(rt.phone.url)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(png)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(png)
+            elif path == "/api/progress":
+                if rt.session.journey is None:
+                    return self._json(404, {"error": "progress is kept in learn mode (start with --mode learn)"})
+                self._json(200, {"summary": rt.session.progress.summary(), "data": rt.session.progress.to_dict()})
             elif path == "/api/cells":
                 self._json(200, {"cells": rt.cells()})
             elif path == "/api/video":
@@ -237,11 +305,26 @@ def make_handler(rt: TutorRuntime):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/api/command", "/api/finger"):
+            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt"):
                 return self._json(404, {"error": "not found"})
             body = self._read_json()
             if body is None:
                 return
+            if path in ("/api/session", "/api/mode", "/api/prompt"):
+                if not rt.session.hub:
+                    return self._json(404, {"error": "these belong to the menu-driven tutor (start tutor_server.py without --mode)"})
+                try:
+                    return self._json(*rt.hub_request(path, body))
+                except (ValueError, TypeError) as e:
+                    return self._json(400, {"error": str(e)})
+            if path == "/api/progress":
+                if rt.session.journey is None:
+                    return self._json(404, {"error": "progress is kept in learn mode (start with --mode learn)"})
+                try:
+                    rt.merge_progress(body.get("data"))
+                except (ValueError, TypeError) as e:
+                    return self._json(400, {"error": str(e)})
+                return self._json(200, {"summary": rt.session.progress.summary(), "data": rt.session.progress.to_dict()})
             if path == "/api/command":
                 name = str(body.get("command", "")).replace("_", " ").strip().lower()
                 if name not in COMMANDS:
@@ -301,9 +384,11 @@ def serve(rt: TutorRuntime, host: str = "127.0.0.1", port: int = 8000) -> Thread
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     tutor.add_setup_args(ap)
+    ap.set_defaults(mode="menu")  # the website asks who is here and what they want to do; --mode learn, explore ... still work
     ap.add_argument("--mock", action="store_true", help="offline voice: speech is printed instead of played")
     ap.add_argument("--no-mic", action="store_true", help="don't listen on the microphone; use the HTTP commands only")
     ap.add_argument("--camera", default=None)
+    phonelink.add_phone_args(ap)
     ap.add_argument("--calib")
     ap.add_argument("--auto-page", type=float, nargs=2, metavar=("W_MM", "H_MM"))
     ap.add_argument("--markers-only", action="store_true", help="require all four markers in every frame")
@@ -317,15 +402,34 @@ def main() -> None:
     rv = RecordingVoice(voice)
     feed = tutor.CameraFeed(page_source_from_args(a), setup.cells or None, setup.labels,
                             detector=tutor._Detector(0.15, "auto") if a.show_detections else None,
-                            track_finger=not a.no_finger_tracking)
+                            track_finger=not a.no_finger_tracking, observe_sheet=setup.cells if setup.observed else None,
+                            show_reading=not a.hide_detections, known_sheets=tutor.known_sheets_for(a, setup),
+                            sheet_name=a.sheet or "alphabet")
+    progress, progress_file = tutor.progress_for(a)
     session = tutor.TutorSession(rv, wc, setup.cells, feed.finger, feed.scan, a.mode, a.questions, setup.words,
                                  rng=random.Random(a.seed), names=setup.names, coach=tutor.make_coach(a),
-                                 contracted=setup.contracted)
+                                 contracted=setup.contracted, progress=progress, progress_file=progress_file, tones=not a.no_tones)
     if setup.layout_scan:
         session.scan = lambda: session.cells  # word modes read the printed sheet's known layout
+    tutor.wire_new_page(session, feed)
+    session.voice_status = tutor.voice_check(voice)
+    tutor.report_voice(session.voice_status)  # silence must never be a mystery
     session.attach()
-    rt = TutorRuntime(open_camera(a.camera), feed, session, rv, loop_file=bool(a.camera) and Path(a.camera).is_file())
+    phone = phonelink.start_phone(a, announce=lambda text: session.say(text), voice=voice,
+                                  on_ready=session.on_phone_ready if session.hub else None)
+    link = phone[0] if phone else None
+    if link is not None and session.hub:
+        session.phone_ready_fn = lambda: link.connected  # the greeting waits until the phone is linked
+    rt = TutorRuntime(phone[1] if phone else open_camera(a.camera), feed, session, rv,
+                      loop_file=not phone and bool(a.camera) and Path(a.camera).is_file(), phone=link)
     rt.start()
+    def opening() -> None:
+        if link is not None:  # someone who cannot see the QR code hears how to connect
+            session.say(link.spoken_instructions())
+        if a.mode in ("explore", "learn"):  # nothing to wait for: it starts by itself
+            session.on_start()
+
+    threading.Thread(target=opening, daemon=True).start()
     if not a.no_mic:
         voice.start_listening()
     server = serve(rt, a.host, a.port)
@@ -336,6 +440,8 @@ def main() -> None:
         pass
     finally:
         rt.stop()
+        if phone:
+            phone[2].stop()
         if not a.no_mic:
             voice.stop_listening()
 

@@ -22,16 +22,25 @@
   #log { list-style:none; margin:0; padding:0; max-height:220px; overflow:auto; font-size:14px; }
   #log li { padding:4px 0; border-bottom:1px solid var(--line); }
   #log li.debrief { font-weight:600; }
+  #phone img { width:220px; height:220px; image-rendering:pixelated; background:#fff; display:block; margin:8px 0; }
+  #phone code { font-size:20px; letter-spacing:.15em; }
   dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:2px 12px; font-size:14px; } dt { opacity:.7; }
 </style>
 </head>
 <body>
 <main>
   <h1>Braillie tutor console</h1>
+  <section class="card" id="phone" hidden style="grid-column:1/-1" aria-live="polite">
+    <h2>Connect your phone camera</h2>
+    <img id="qr" alt="QR code: scan it with your phone's camera to connect it" width="220" height="220">
+    <p>Scan this with your phone's camera and open the link. Or open <b id="address"></b> on the phone and enter the code <code id="code"></code>.
+       If the phone warns the connection is not private, choose Advanced, then continue.</p>
+    <p id="diag" class="warn"></p>
+  </section>
   <section class="card">
     <h2>Camera</h2>
     <img id="video" alt="camera view" src="/api/video">
-    <div class="hint">Click the video where the fingertip is (there is no fingertip tracker yet).</div>
+    <div class="hint">The fingertip is tracked from the camera (green ring). Click the video to point with the mouse instead (orange ring).</div>
   </section>
   <section class="card">
     <h2>Tutor</h2>
@@ -58,8 +67,18 @@ $("video").addEventListener("click", (e) => {
   post("/api/finger", { u: (e.clientX - r.left) / r.width, v: (e.clientY - r.top) / r.height });
 });
 
-let built = false;
+let built = false, qrShown = false;
+function renderPhone(p) {
+  const show = !!p && !p.connected;              // only while a phone camera is expected and has not connected yet
+  $("phone").hidden = !show;
+  if (show) {
+    if (!qrShown) { $("qr").src = "/api/phone/qr.png"; qrShown = true; }
+    $("address").textContent = p.address; $("code").textContent = p.code;
+    $("diag").textContent = p.diagnosis || "";
+  } else { qrShown = false; }
+}
 function render(s) {
+  renderPhone(s.phone);
   if (!built) {
     for (const c of s.config.commands) {
       const b = document.createElement("button");

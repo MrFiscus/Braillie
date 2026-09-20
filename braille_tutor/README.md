@@ -71,9 +71,20 @@ python tutor.py --mock --mode read --auto-page 280 292  # "found it" reads the w
 python tutor.py --mock --mode word-quiz --words cap cat # "find the word cap"
 ```
 
-Drop `--mock` to use the real Deepgram / ElevenLabs voices (needs their API keys, see `voice_io.py`). Voice commands: start quiz,
-repeat, hint, found it, next, stop. The same things are on the window keys s r h f n x (q quits).
+Drop `--mock` to use the real Deepgram voice (needs `DEEPGRAM_API_KEY`, see `voice_io.py`). Voice commands: start quiz,
+repeat, hint, found it, next, next page, stop. The same things are on the window keys s r h f n p x (q quits).
 
+- **Next page** (say "next page", "new page" or "another page"; window key `p`; `POST /api/command {"command": "next page"}`): forgets the
+  page that was being read so the one now on the desk is read fresh. Locked-in readings hold on purpose (so a shaky frame cannot make
+  them flicker), which is also why a page you swapped stayed stuck; this lets go of them and makes the tutor find the page again. In
+  **explore mode** it also works out WHICH of the four printed sheets (alphabet, words, numbers, look-alikes) is now on the desk and
+  switches to it: "This is the words sheet." Because the old page is usually still in view for a moment, recognising it does not
+  count as a change: a different sheet is accepted at once, the same sheet again only after something in view changes (a hand, the
+  page being swapped), and if nothing changes for 8 s it says "The page didn't change, so I am still using the alphabet sheet."
+  If it cannot tell in 30 s it says so and keeps the old sheet. It never disturbs a quiz in progress. `state.reading` shows
+  `locked`/`total` cells and `between_pages`. Pages that are not one of the four printed sheets (a real book page) are not
+  recognised: explore mode only reads the printed sheets. The phrase was added to `voice_io.py`'s command list (longest phrase wins,
+  so "next page" is never heard as plain "next").
 - **Finger:** the fingertip is tracked from the camera (`fingertip.py`, see below); clicking the video overrides it, and
   `--no-finger-tracking` turns tracking off. Any other tracker can plug into `TutorSession.finger` (a function returning the
   page position in mm, or None).
@@ -184,6 +195,191 @@ Known weakness, measured: the detector favours left-column dots. On random patte
 19-32% of the time and invents left-column ones 25-30% of the time. Right-heavy contractions ("th", "er", "ou") suffer most.
 A correction that re-checks each dot against the image gained on some pages and lost on others, so it is not included.
 Good raking light and a sharp, close photo help more than any setting.
+
+## Hearing what the camera detects: explore mode (`--mode explore`)
+
+```
+python tutor_server.py --mode explore --sheet alphabet --paper        # or tutor.py --mode explore ...
+```
+
+No quiz and no commands to give: it starts by itself. Rest a finger on a cell for about three quarters of a second and it says what
+the camera SEES there, with the dots, so a blind learner can feel the pattern while hearing it:
+
+> "The letter D. Dots 1, 4 and 5: top-left, top-right and middle-right."
+
+- The first time a symbol is met it is described in full (where each dot sits); after that briefly ("The letter D. Dots 1, 4 and 5.").
+  It speaks once per cell, and stays quiet while the finger wobbles inside it or sweeps across, until it rests on another cell.
+- It reads the dots the camera observes (`sheetread.py`), NOT the layout copied from the file: if a dot was not poked it says what is
+  actually there ("The letter C. Dots 1 and 4" where the sheet wants a D). On a sheet with signs it names them ("The number sign").
+- Off the braille for 2.5 s: "I don't see any braille there." Finger gone for 2 s: "I can't see your finger." Each once.
+- Voice commands still work: *found it* (say the cell now), *hint* (always the full description), *repeat*, *stop*.
+- Speech never overlaps: one voice at a time, whatever asks for it.
+- **You can see it working:** the video shows a small box for every cell with the dots the camera detected (red) and the letter it
+  reads (yellow above the box). A box turns green once its reading has held steady and matches the sheet (locked in, so it will not
+  flicker), and stays amber while still reading or when it does not match (a dot not poked). The top line shows the page status and
+  `sheet check: all 26 cells locked in correct` / `25/26 locked, 1 wrong (row 1 col 4: expected D read C)`. What is spoken comes from
+  this same reading. `--hide-detections` turns the boxes off. On the phone flow the boxes appear the moment the page is in view.
+- Only sheets so far. On a real book page the cell is described by its dots and its plain-letter reading; contractions are not spoken.
+
+### Voice setup (Deepgram, `voice_io.py`)
+
+The tutor reads API keys from a **git-ignored `.env` file** at the repo root (`*.env` is in `.gitignore`), never from source or
+`.gitignore` itself (that file is committed, so a key put in it would be published):
+
+```
+DEEPGRAM_API_KEY=...          # speech for everything the tutor says
+# (no ElevenLabs key needed: the current voice_io speaks everything, the end-of-session debrief included, through Deepgram)
+```
+
+Packages: `pip install deepgram-sdk==7.9.0 pydub pyaudio`. On a Mac without Homebrew `pyaudio` cannot build; PortAudio can be built
+from source into your home directory (`./configure --prefix=$HOME/.local/portaudio && make install`, copy `include/pa_mac_core.h`
+next to the installed headers, then `CFLAGS=-I$HOME/.local/portaudio/include LDFLAGS="-L$HOME/.local/portaudio/lib -Wl,-rpath,$HOME/.local/portaudio/lib" pip install pyaudio`).
+Python 3.10+ is what `deepgram-sdk` supports (the `.venv312` environment has all of this).
+
+`voice_io` swallows speech errors into its log, so a missing key or package used to mean silence with no explanation. Both apps now
+print a banner at start ("VOICE: YOU WILL NOT HEAR ANYTHING" plus the reasons: mock mode, missing key, missing package) and
+`GET /api/state` has `config.voice` with `ok`, `problems` and `warnings`. `--mock` (or `VOICE_IO_MOCK=1`) still prints speech instead
+of playing it: without `--mock` and with a key, speech is played.
+
+Bug fixed in `voice_io.py` on the way: it asked Deepgram for `container="wav"` without `encoding="linear16"`; Deepgram then
+defaults to mp3 and answers HTTP 400 ("container is not applicable when encoding=mp3"), so no speech ever played. One added argument.
+
+## Learning mode: guided lessons (`--mode learn`)
+
+```
+python tutor_server.py --mode learn --sheet alphabet --paper            # add --profile ana to keep someone's progress separate
+```
+
+It starts by itself and teaches braille the way a good teacher would, out loud, by touch:
+
+1. **Lessons** (`learn.py`): six short lessons, A-E, F-J, K-O, P-T, U-Z and the look-alike pairs. Each one *teaches* a letter at a time
+   ("The letter B. Two dots: top-left and middle-left. It is the letter A with one more dot, at the middle-left. Find it and rest your
+   finger on it."), then *practises* them in a fresh order with a couple of older shaky letters mixed in, then gives a spoken *recap*.
+   The explanations are built from the actual dot patterns, so they cannot disagree with the braille, and they use true patterns of
+   the system (K-O are A-E with dot 3 added, and so on) to make the letters stick.
+2. **Resting a finger is the answer**: hold the finger on a cell for about a second (or say "found it"). Nothing to press.
+3. **A mistake is never just "wrong"**: it says what the finger IS on and what to feel for instead ("That's the letter E. The letter C has a
+   dot at the top-right, and no dot at the middle-right."). Three misses and it shows where the letter is and moves on.
+4. **It never leaves you stuck**: hints arrive by themselves after 12 s, then 15 s, then 20 s, each more specific, ending with the
+   row and column. "Hint" asks for the next one at once.
+5. **Adaptive review** ("practice"): 8 letters chosen by spaced repetition (`progress.py`): shaky and recently confused letters come
+   round far more often, solid ones now and then. If two letters keep being mixed up it stops to compare them side by side.
+6. **Free exploring** ("explore") between lessons, and back ("next"). Different sheets: a lesson that needs another sheet asks for it and
+   recognises it ("next page" machinery).
+7. **Gentle sounds** (`earcons.py`): a bright rising phrase for right, a soft falling one for not quite (never a buzzer), a little
+   chime when a lesson starts, a fanfare for a lesson really learned. Played through the same speaker as the voice; `--no-tones` turns them off.
+
+Voice commands: **start** (or "start lesson"), **repeat**, **hint**, **found it**, **next** (skip a letter, move on from a recap), **explore**,
+**practice** (or "review"), **next page**, **stop** (spoken recap of the session). The same are buttons on the website.
+
+Progress (letters and how solid, mix-ups, lessons, days in a row) is saved after every answer to `~/.braillie/progress-<profile>.json`
+(written atomically; a damaged file is set aside, never deleted). `GET /api/progress` returns it, `POST /api/progress {"data": ...}`
+MERGES a copy in (the more recently practised letter wins, counts take the larger value, so merging the same copy twice changes nothing).
+The website uses that to keep it in the learner's Supabase account: run `supabase_progress.sql` once (a `learning_progress` table with
+row level security), and the Learn screen loads the account's copy on start and saves back a few seconds after each change. Signed out or
+offline it just says progress is kept on this computer.
+
+**AI coach**: with `OPENAI_API_KEY=...` in the repo's `.env` learn mode turns the coach on by itself (`--no-llm` stops that): it writes
+memory aids for the letters in a lesson (used as the second hint), varied praise, and a personal debrief. Only lesson facts (letter names, dot
+numbers, scores) are ever sent, never pictures or audio; if it is slow or fails, the built-in wording is used. Without a key, everything
+above works the same with the built-in wording.
+
+What is tested and what is not: the lesson engine, the progress rules, the tones, the wiring and the account sync are covered by tests
+(`test_learn.py`, `test_progress.py`, `test_earcons.py`, `test_learn_session.py`, and `node --test "tests/*.test.mjs"` in `website-frontend`),
+and a whole lesson was run through the real server with a simulated camera and a scripted learner. NOT tested: a real hand on a real poked
+sheet (the timings, such as the 1.2 s rest, are educated guesses to tune with real learners), the AI coach with a real key, and the account
+sync against a real Supabase project.
+
+## The website flow and the menu (`tutor_server.py` with no `--mode`)
+
+Started without `--mode`, `tutor_server.py` is the **menu-driven tutor**: it waits to be told who is using it, then what they want to do.
+With the tutor running (`python tutor_server.py --phone-camera`, or without it to use the laptop's camera) and the site running
+(`cd website-frontend && npm run dev`) the flow is:
+
+1. **Sign in** (`/`, which goes straight to `/login`): built to be used without seeing it. Real headings and labels in a sensible order
+   (Google first), one thing to do per section, big high-contrast targets, strong keyboard focus rings, errors announced, and the tutor
+   SAYS the options aloud (the laptop speaks "Welcome to Braillie. On this page you can sign in with Google, or continue without an
+   account..."). Two ways in:
+   * **Sign in with Google**: the learner's progress is remembered (on the laptop under their account id, and by the website in their Supabase
+     account, see below).
+   * **Continue without an account**: just a first name for the greeting. **Nothing is saved**: not in an account and not on the laptop
+     (the tutor keeps a guest's progress in memory for the session, so practice can still adapt, and forgets it).
+2. **Connect your phone** (`/connect-phone`): the QR code (and the tutor says how). The moment the phone is linked, and its sound is on,
+   the tutor says **"What do you want to do today, <name>? You can say learn, read, or quiz."** and the page moves on by itself.
+   (Without `--phone-camera` the laptop's camera is used and the greeting comes as soon as the name is known.)
+3. **Choose** (`/modes`): say **learn**, **read** or **quiz**, or press the button. Each uses its own printed sheet:
+   * **Learn**: the guided lessons (see above), starting with A on the **alphabet** sheet.
+   * **Read**: rest a finger on a word and the tutor reads it aloud, on the **words** sheet.
+   * **Quiz**: eight questions on the **look-alikes** sheet; rest a finger on the letter that was named.
+4. **The activity** (`/practice`): the live camera with a box on every detected cell, plus the lesson / quiz / reading panel and the voice
+   commands as buttons. "Change what I am doing" (or saying **menu**) goes back to the choice; finishing or saying **stop** does too.
+
+The pages talk to the tutor on `http://127.0.0.1:8000` (`VITE_TUTOR_API` overrides it); shared code is in `website-frontend/src/tutor/`
+and `website-frontend/src/auth/`. The site needs `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_GOOGLE_CLIENT_ID` in a
+git-ignored `website-frontend/.env` (or `.env.local`) to sign in with Google; without them "Sign in with Google" says it is not set up and
+"Continue without an account" still works. This is the ONLY way through the app: every other address (including the old `/get-started` and `/user-information`) goes to the sign-in page,
+and `/connect-phone`, `/modes` and `/practice` send you back to it if nobody is signed in. The earlier start page, Get to Know and questions
+pages are no longer routed; their files are still in `website-frontend/src/pages/` if they are wanted again.
+
+How the tutor knows: `POST /api/session {"kind": "google"|"guest", "name", "profile"}` says who is here (a google session needs the account id
+as `profile`; a guest never saves), `POST /api/mode {"mode": "learn"|"read"|"quiz"|"menu"}` chooses, and `state.hub` reports
+`{"mode", "user", "greeted"}` (see API.md). Choosing by voice needs `learn`, `read`, `quiz` and `menu` in `voice_io.py`'s command list
+(added). What is tested: the tutor side (`test_hub.py`), the user model (`node --test "tests/*.test.mjs"`), and the whole path in real Chrome
+against a running tutor with a simulated phone. NOT tested: Google sign-in past Google's own page, and a real phone and hand.
+
+## Phone as the camera: scan a QR code (`--phone-camera`)
+
+```
+python tutor_server.py --phone-camera --sheet alphabet --paper       # or: python tutor.py --phone-camera ...
+```
+
+The video (the tutor window, or `/api/video` for the frontend) shows a QR code and the steps. The phone scans it with its normal
+camera app, opens the link, allows the camera, and streams to the laptop. Nothing to install on the phone. Both must be on the
+same Wi-Fi. The QR code is also printed in the terminal, and `GET /api/phone/qr.png` serves it as an image (see API.md;
+`state.phone` says whether a phone is connected, so a setup screen can show the code until it is).
+
+For someone who cannot see the screen: the laptop SPEAKS how to connect (the address and a 6-digit code, digit by digit; the
+phone page has a big code box), an iPhone with VoiceOver reads a QR code aloud from its Camera app, and once connected the phone
+itself talks: "Page found, you are ready" or "I cannot see the page yet, hold the phone higher". The phone page is one large
+button and one status line, built for VoiceOver and TalkBack. The laptop announces when the phone connects or drops.
+
+**Sound on the phone** (`--sound phone`, the default with `--phone-camera`; `--sound laptop` keeps it on the laptop): the person is
+next to the phone, not the laptop, so the tutor's voice plays there. The laptop still makes the speech with your friend's Deepgram
+voice, then sends the finished audio to the phone page, which plays it and reports back; the laptop
+waits for that, so lines never overlap and the microphone stays muted while it talks. The one thing the user does: **tap the big
+button on the phone once** (phones refuse to play sound until a tap; the same tap starts the camera). Until the phone has done that,
+and whenever it drops off, speech plays on the laptop as before, so nothing is ever silent (the opening instructions are spoken
+there, before any phone is connected). If the phone takes a clip it is trusted to play it, even through a hiccup in the video, so a
+line is never said twice. The debrief (MP3) is decoded by the phone, so it needs no ffmpeg on the laptop when played there.
+Only the two playback functions in `voice_io` are redirected (`_play_audio_stream`, `_play_mp3_stream`); a test fails if they are
+renamed. Bug found on the way: Deepgram's streamed WAV declares a length of about 12 hours in its header, so the tutor rewrites the
+header with the true size before sending. Not done: the phone's MICROPHONE is not used, so spoken commands still go to the laptop's
+microphone (fine if the user is near the laptop; streaming the phone's mic is the next step if not).
+
+**If the phone does not connect**, the laptop says where it got stuck: the terminal prints `[phone] ...` lines as they happen (a
+device reached the laptop; the phone page was opened; the phone's browser reported a camera error; video is arriving) and, while
+nothing is connected, a `[phone] HINT:` in plain words. The same text is in `state.phone.diagnosis` (the setup screens show it).
+"No phone has reached this laptop yet" means the network (same Wi-Fi? many shared networks block devices from talking to each
+other: use the phone's hotspot for both); "could not finish the secure connection (TLSV1_ALERT_UNKNOWN_CA)" means the phone refused
+the certificate (choose Advanced, then continue); "camera did not start (NotAllowedError)" means camera permission was denied. If
+port 8443 is busy (an earlier run still going) it moves to the next free port and the QR code carries it. Only ONE copy of the
+tutor should run at a time: stop the old one (Ctrl+C) before starting a new one.
+
+How it works and what to know:
+- Phone browsers only give a page the camera over HTTPS, so the laptop makes a self-signed certificate once (`openssl`, saved in
+  `~/.braillie`). The first time, the phone says the connection is not private: choose Advanced, then continue. **That warning
+  is the one step that cannot go away without a real domain name; a helper may need to tap it.**
+- Same-Wi-Fi only, and many campus, hotel and hackathon networks block devices from talking to each other. If the phone cannot
+  reach the address, join both to the phone's hotspot or the laptop's. `--phone-host IP` overrides the address it guesses,
+  `--phone-port` the port (8443).
+- Only two things are reachable from the network (the phone page and frame uploads), both need the session's code, wrong codes are
+  throttled (20 in a row locks guessing out for a minute), uploads are size limited and must decode as an image. The tutor's own
+  API stays on localhost.
+- Streams about 8 frames a second at up to 1280 px, plus the phone's continuous focus and torch where the browser allows them
+  (Android Chrome does; iPhone Safari does not offer the torch).
+- Tested: the whole chain with a simulated phone over real HTTPS (certificate verified), a real running server, QR round trips,
+  code throttling, upload limits, and the tutor finding the page from uploaded photos. NOT tested: a real phone, its browser, or the
+  phone page's JavaScript running (there is no browser here; the script was only syntax-checked). Expect to fix small things there.
 
 ## Locking in what is read right
 

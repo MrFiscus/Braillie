@@ -317,15 +317,16 @@ class RealVoiceTests(unittest.TestCase):
             VOICE._fire_command("hint")
             VOICE._fire_command("found it")
         text = out.getvalue()
-        self.assertIn(f"[SPEAK/Deepgram] Find the letter {target.upper()}.", text)
-        self.assertIn("[SPEAK/Deepgram] Correct!", text)
-        self.assertIn("[SPEAK/ElevenLabs]", text)  # the debrief goes through the ElevenLabs voice
+        # the mock voice's print format has changed over time ("[SPEAK/Deepgram] ..." then "[SPEAK/Deepgram/normal] ..."): match either
+        self.assertRegex(text, r"\[SPEAK/Deepgram(/normal)?\] Find the letter %s\." % target.upper())
+        self.assertRegex(text, r"\[SPEAK/Deepgram(/normal)?\] Correct!")
+        self.assertRegex(text, r"\[SPEAK/(ElevenLabs|Deepgram/debrief)\]")  # the debrief goes through its own (richer) voice
         self.assertTrue(s.finished.is_set())
 
     def test_every_voice_command_is_registered(self):
         s = tutor.TutorSession(VOICE, WC, [], finger=lambda: None)
         s.attach()
-        self.assertEqual(set(VOICE._callbacks), {"start quiz", "repeat", "hint", "found it", "next", "stop"})
+        self.assertEqual(set(VOICE._callbacks), {"start quiz", "repeat", "hint", "found it", "next", "next page", "explore", "practice", "learn", "read", "quiz", "menu", "stop"})
 
 
 @unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")

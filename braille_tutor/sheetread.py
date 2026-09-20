@@ -152,6 +152,27 @@ def compare(observed: list, expected: list) -> tuple:
     return len(expected) - len(bad), len(expected), bad
 
 
+IDENTIFY_MIN_SCORE = 0.75  # a sheet is recognised when at least this share of its cells read exactly as it says...
+IDENTIFY_MARGIN = 0.15  # ...and it beats the runner-up by this much (different sheets put their cells in different places)
+
+
+def identify_sheet(frame: np.ndarray, H: np.ndarray, candidates: dict) -> tuple:
+    """Which known sheet is on the desk? `candidates` maps a name to that sheet's cells. Returns (name or None, scores), scores
+    being the share of each sheet's cells whose dots read exactly as that sheet says. None when nothing is clearly ahead: a blank
+    page, a hand in the way, or a page that is none of them."""
+    resp = respond(rectify(frame, H))  # the expensive part, once for all of them
+    scores = {}
+    for name, cells in candidates.items():
+        good, total, _ = compare(observe_response(resp, cells), cells)
+        scores[name] = good / total if total else 0.0
+    ranked = sorted(scores.values(), reverse=True)
+    best = max(scores, key=scores.get)
+    runner_up = ranked[1] if len(ranked) > 1 else 0.0
+    if scores[best] >= IDENTIFY_MIN_SCORE and scores[best] - runner_up >= IDENTIFY_MARGIN:
+        return best, scores
+    return None, scores
+
+
 def display_boxes(observed: list, H: np.ndarray) -> list:
     """Observed cells as pixel boxes (x1, y1, x2, y2, label, confidence), the same form the detector returns, so the live view
     can draw and vote on them exactly like detections. Cells with no raised dot are skipped."""
