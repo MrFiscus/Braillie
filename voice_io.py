@@ -154,13 +154,18 @@ _COMMAND_MAP: dict[str, str] = {
     # --- repeat ----------------------------------------------------------
     "repeat": "repeat",
     "say it again": "repeat",
+    "say again": "repeat",
     # --- hint ------------------------------------------------------------
     # "hint" is consistently misheard as "hand", "int", "hamed", etc.
-    # All four phrases below route to the same callback.
+    # All four natural phrases + confirmed Deepgram misreads route here.
     "hint": "hint",
     "give me a hint": "hint",
     "clue": "hint",
     "help me": "hint",
+    "hence": "hint",          # confirmed misread of "hint"
+    "hen": "hint",            # confirmed misread of "hint"
+    "hints": "hint",          # confirmed misread of "hint"
+    "health": "hint",         # confirmed misread of "hint"
     # --- found it --------------------------------------------------------
     "found it": "found it",
     "i found it": "found it",
@@ -168,7 +173,13 @@ _COMMAND_MAP: dict[str, str] = {
     "i got it": "found it",
     # --- navigation ------------------------------------------------------
     "next": "next",
+    "skip": "next",
+    "move on": "next",
+    "continue": "next",
     "stop": "stop",
+    "quit": "stop",
+    "i'm done": "stop",
+    "im done": "stop",        # apostrophe-free variant
     # --- quiz ------------------------------------------------------------
     "start quiz": "start quiz",
     "begin quiz": "start quiz",
@@ -271,8 +282,47 @@ def _process_transcript_event(transcript: str, confidence: float, is_final: bool
     )
     if command is not None:
         log.info("Command recognised: %r (conf=%.2f)", command, confidence)
+        _status["last_transcript"] = normalized
         _fire_command(command)
     return command
+
+
+# ---------------------------------------------------------------------------
+# Public exception
+# ---------------------------------------------------------------------------
+
+
+class VoiceIOError(RuntimeError):
+    """Raised by start_listening() when Deepgram mode cannot be set up.
+
+    Callers should catch this to surface a clear startup failure rather than
+    waiting for the listener thread to silently do nothing.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Listener status (readable from outside without touching internals)
+# ---------------------------------------------------------------------------
+
+_status: dict = {
+    "mode": None,           # set to "mock" or "deepgram" on first start_listening()
+    "connected": False,
+    "mic_index": None,
+    "mic_name": None,
+    "last_error": None,
+    "last_transcript": None,
+    "commands_fired": 0,
+}
+
+
+def get_mode() -> str:
+    """Return "mock" or "deepgram" depending on VOICE_IO_MOCK."""
+    return "mock" if MOCK_MODE else "deepgram"
+
+
+def listener_status() -> dict:
+    """Snapshot of listener state; safe to call from any thread."""
+    return dict(_status)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +396,7 @@ def _fire_command(command: str) -> None:
     if not handlers:
         log.debug("Command %r has no registered handlers; ignoring.", command)
         return
+    _status["commands_fired"] += 1
     for cb in handlers:
         try:
             cb()
@@ -374,10 +425,12 @@ def start_listening() -> None:
             target=_mock_listener_loop, daemon=True, name="voice-listener"
         )
     else:
+        _deepgram_preflight()           # raises VoiceIOError early if deps are missing
         _listener_thread = threading.Thread(
             target=_deepgram_listener_loop, daemon=True, name="voice-listener"
         )
 
+    _status["mode"] = get_mode()
     _listener_thread.start()
     log.info("Voice listener started (mock=%s)", MOCK_MODE)
 
@@ -511,6 +564,31 @@ def _build_debrief_script(accuracy: float, missed_cells: list[str]) -> str:
 # ---------------------------------------------------------------------------
 # Deepgram STT — real implementation
 # ---------------------------------------------------------------------------
+
+
+def _deepgram_preflight() -> None:
+    """Validate Deepgram dependencies before the listener thread starts.
+
+    Raises VoiceIOError with an actionable message if anything is missing,
+    so start_listening() fails loudly instead of spawning a silent no-op thread.
+    """
+    _hint = (
+        "Run: pip install -r requirements-voice.txt, "
+        "set DEEPGRAM_API_KEY, or use VOICE_IO_MOCK=1."
+    )
+    try:
+        from deepgram import DeepgramClient                                      # noqa: F401
+        from deepgram.listen.v1.types.listen_v1results import ListenV1Results   # noqa: F401
+    except (ModuleNotFoundError, ImportError) as exc:
+        raise VoiceIOError(
+            f"deepgram-sdk is required but unavailable: {exc}. {_hint}"
+        ) from exc
+    try:
+        import pyaudio  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise VoiceIOError(f"pyaudio is not installed: {exc}. {_hint}") from exc
+    if not DEEPGRAM_API_KEY:
+        raise VoiceIOError(f"DEEPGRAM_API_KEY is not set. {_hint}")
 
 
 def _deepgram_listener_loop() -> None:
@@ -696,20 +774,37 @@ def _deepgram_listener_loop() -> None:
                     "Microphone open on device #%s (%s); streaming to Deepgram.",
                     active_index, _dev_name,
                 )
+                _status["connected"] = True
+                _status["mic_index"] = active_index
+                _status["mic_name"] = _dev_name
                 backoff = 1.0
 
                 # --- send loop: mic → Deepgram ----------------------------
-
+                # While paused (e.g. TTS playing) we still drain the mic
+                # buffer every tick to prevent driver overflow, and send a
+                # KeepAlive every 3 s so Deepgram doesn't close the idle
+                # socket.  Deepgram closes connections after ~10 s of
+                # silence; a full debrief runs 15-18 s.
+                _last_keepalive = time.monotonic()
                 while not _stop_event.is_set() and not reader_done.is_set():
-                    if _mic_paused:
-                        time.sleep(0.05)
-                        continue
                     try:
                         data = audio_stream.read(chunk_frames, exception_on_overflow=False)
-                        socket.send_media(data)
                     except OSError as exc:
                         log.warning("Microphone read error: %s", exc)
                         break
+
+                    if _mic_paused:
+                        if time.monotonic() - _last_keepalive >= 3.0:
+                            try:
+                                socket.send_keep_alive()
+                            except Exception as exc:
+                                log.warning("send_keep_alive failed: %s", exc)
+                            _last_keepalive = time.monotonic()
+                        else:
+                            time.sleep(0.05)
+                        continue
+
+                    socket.send_media(data)
 
                 # --- graceful close --------------------------------------
 
@@ -719,9 +814,12 @@ def _deepgram_listener_loop() -> None:
                     pass
                 reader_thread.join(timeout=3)
 
-        except Exception:
+        except Exception as _exc:
+            _status["connected"] = False
+            _status["last_error"] = str(_exc) or type(_exc).__name__
             log.exception("Deepgram listener loop error; reconnecting in %.1fs.", backoff)
         finally:
+            _status["connected"] = False
             if audio_stream is not None:
                 try:
                     audio_stream.stop_stream()
