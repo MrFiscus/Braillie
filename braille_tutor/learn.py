@@ -34,7 +34,8 @@ LEAVE_MM = 9.0
 HINT_AFTER = (12.0, 15.0, 20.0)  # seconds of no answer before each hint the tutor offers by itself (12 s, then 15 s more, then 20 s more)
 MAX_TRIES = 3  # wrong touches before the tutor shows where the letter is and moves on
 REMIND_EVERY = 25.0  # while waiting for the learner to say what to do next
-LOST_AFTER = 6.0
+LOST_AFTER = 6.0  # the finger has been out of sight this long: say so once...
+LOST_BACKOFF = (6.0, 15.0, 30.0, 60.0)  # ...then less and less often (someone with both hands on the sheet does not need reminding every few seconds)
 OFF_PAGE_AFTER = 3.0
 REVIEW_LENGTH = 8
 EXTRA_REVIEW = 2  # older letters mixed into a lesson's practice
@@ -192,17 +193,24 @@ class Journey:
         self.host, self.progress, self.lessons, self.coach = host, progress, tuple(lessons), coach
         self.rng, self.clock = rng or random.Random(), clock
         self.dwell = Dwell()
+        self.hint_scale = 1.0  # "take your time": help by itself arrives later (see set_pace)
         self.phase, self.lesson = "idle", None
         self.queue: list = []
         self.target: Optional[str] = None
         self.tries = self.hints = 0
         self.asked_at = self.last_activity = self.last_lost = 0.0
+        self.lost_notices = 0
         self.off_page_since = -1e9
         self.round_no, self.lesson_results, self.session_results = 1, {}, []
         self.in_a_row, self.session_started, self.taught = 0, False, []
         self.review_confusions: dict = {}
         self._await_since = 0.0
         self._pending_review: Optional[list] = None  # a practice session waiting for the right sheet to be put down
+
+    def set_pace(self, dwell_scale: float = 1.0, hint_scale: float = 1.0) -> None:
+        """A slower pace: a finger may take longer to rest on a cell to answer, and the tutor waits longer before helping by itself."""
+        self.dwell.seconds = DWELL_SECONDS * dwell_scale
+        self.hint_scale = hint_scale
 
     # ---- public commands (voice) --------------------------------------------------------------
     def on_start(self) -> None:
@@ -290,18 +298,21 @@ class Journey:
             return
         pos = self.host.finger()
         if pos is None:
-            if now - self.last_lost >= LOST_AFTER and now - self.asked_at >= LOST_AFTER:
+            gap = LOST_BACKOFF[min(self.lost_notices, len(LOST_BACKOFF) - 1)]
+            visible = getattr(self.host, "page_visible", None)
+            if now - self.last_lost >= gap and now - self.asked_at >= LOST_AFTER and (visible is None or visible()):
                 self.last_lost = now
+                self.lost_notices += 1
                 self.host.say("I can't see your finger. Put it on the page.")
             self.dwell.update(None, now)
         else:
-            self.last_lost = now
+            self.last_lost, self.lost_notices = now, 0
             answer = self.dwell.update(pos, now)
             if answer is not None:
                 return self._judge(answer)
         # the learner is not answering: help arrives by itself, a little more specific each time
         level = self.hints
-        if level < len(HINT_AFTER) and now - self.last_activity >= HINT_AFTER[level]:
+        if level < len(HINT_AFTER) and now - self.last_activity >= HINT_AFTER[level] * self.hint_scale:
             self.last_activity = now
             self._hint(auto=True)
 

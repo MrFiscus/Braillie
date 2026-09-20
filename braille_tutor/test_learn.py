@@ -624,6 +624,46 @@ class MiscTests(unittest.TestCase):
         run(j, host, clock, 9)
         self.assertEqual(sum("can't see your finger" in s for s in host.said[n:]), 1)
 
+    def test_the_finger_reminder_backs_off_instead_of_nagging(self):
+        j, host, clock, p = make()
+        j.on_start()
+        n = len(host.said)
+        host.finger_pos = None
+        times = []
+        for _ in range(int(150 / 0.1)):
+            before = len(host.said)
+            clock.t += 0.1
+            j.tick(clock.t)
+            if any("can't see your finger" in s for s in host.said[before:]):
+                times.append(round(clock.t - 1000.0, 1))
+        gaps = [round(b - a) for a, b in zip(times, times[1:])]
+        self.assertLessEqual(len(times), 6, times)
+        self.assertEqual(gaps[:3], [15, 30, 60], gaps)  # 6 s, then 15, 30, then a minute
+
+    def test_the_finger_reminder_starts_over_after_the_finger_was_seen(self):
+        j, host, clock, p = make()
+        j.on_start()
+        host.finger_pos = None
+        run(j, host, clock, 40)  # reminded a few times
+        host.finger_pos = (500.0, 500.0)
+        run(j, host, clock, 0.5)
+        n = len(host.said)
+        host.finger_pos = None
+        run(j, host, clock, 7)
+        self.assertEqual(sum("can't see your finger" in s for s in host.said[n:]), 1, "back to the first, short interval")
+
+    def test_nothing_is_said_about_the_finger_while_the_sheet_itself_is_missing(self):
+        j, host, clock, p = make()
+        host.page_visible = lambda: False
+        j.on_start()
+        n = len(host.said)
+        host.finger_pos = None
+        run(j, host, clock, 20)
+        self.assertEqual(sum("can't see your finger" in s for s in host.said[n:]), 0, "the sheet is the problem, and that is said elsewhere")
+        host.page_visible = lambda: True
+        run(j, host, clock, 3)
+        self.assertEqual(sum("can't see your finger" in s for s in host.said[n:]), 1)
+
     def test_status_describes_where_the_learner_is(self):
         j, host, clock, p = make()
         self.assertEqual(j.status()["phase"], "idle")

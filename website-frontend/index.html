@@ -4,7 +4,22 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>my-react-app</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Braillie teaches braille by touch, with a voice that guides you." />
+    <title>Braillie</title>
+    <link rel="preload" href="/fonts/atkinson-hyperlegible-next.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin />
+    <script>
+      // Apply the saved colours and text size before anything is painted (src/display/display.ts keeps the same rules for the menu).
+      try {
+        var p = JSON.parse(localStorage.getItem('braillie.display') || '{}');
+        var s = ['auto', 'light', 'dark', 'contrast'].indexOf(p.scheme) >= 0 ? p.scheme : 'auto';
+        var m = function (q) { return window.matchMedia && window.matchMedia(q).matches; };
+        var t = s !== 'auto' ? s : m('(prefers-contrast: more)') ? 'contrast' : m('(prefers-color-scheme: dark)') ? 'dark' : 'light';
+        document.documentElement.dataset.theme = t;
+        document.documentElement.dataset.size = ['1', '2', '3'].indexOf(p.size) >= 0 ? p.size : '1';
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

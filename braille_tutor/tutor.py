@@ -33,6 +33,8 @@ import reader
 from detect import AMBER, GREEN, RED, _Detector, braille_status, dot_distance, draw_cell, draw_detections, draw_hud, draw_page_outline, letter_of, locked_check_line, nearest_cell, open_camera, page_source_from_args, page_status
 from drill import drill as _drill
 from llm import Coach, LLMClient, Pending
+import accessibility as acc
+import audio_speed
 import phonelink
 from earcons import Earcons
 from fingertip import FingerTracker
@@ -127,10 +129,23 @@ HUB_MODES = {"learn": {"mode": "learn", "sheet": "alphabet", "title": "Learn"},
              "read": {"mode": "read", "sheet": "words", "title": "Read"},
              "quiz": {"mode": "letters", "sheet": "lookalikes", "title": "Quiz"}}
 MENU_LINE = "You can say learn, read, or quiz."
-PROMPTS = {  # canned things the website may ask the tutor to say (it cannot make the tutor say anything else)
-    "welcome": "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. Use the tab key to move "
-               "between the options. If you sign in, your progress is remembered. If you continue without an account, it is not.",
+PROMPTS = {  # canned things the website may ask the tutor to say (it cannot make the tutor say anything else; {name} is a cleaned first name)
+    "welcome": "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. To sign in, say Google. "
+               "To carry on without an account, say guest. Or use the tab key to move between the options. If you sign in, your progress "
+               "is remembered. If you continue without an account, it is not.",
+    "welcome_back": "Welcome back, {name}. Say continue to carry on as {name}, or say switch to choose another way.",
+    "retry_back": "Sorry, I did not catch that. Say continue, or say switch.",
+    "again_name": "Okay. Please say your first name again, or say skip.",
+    "retry_choice": "Sorry, I did not catch that. Say Google to sign in, or say guest to continue without an account.",
+    "ask_name": "Okay, without an account. Your progress will not be saved. What is your first name? Or say skip.",
+    "confirm_name": "Is your name {name}? Say yes, or say your name again.",
+    "retry_name": "Sorry, I did not catch that. Please say your first name, or say skip.",
+    "go_guest": "Nice to meet you, {name}. Let us connect your phone.",
+    "go_guest_anon": "Okay. Let us connect your phone.",
+    "go_google": "Opening Google. From here, use your keyboard or screen reader on the Google page.",
+    "give_up": "I will stop listening now. You can use the buttons on the screen: press tab to move between them.",
 }
+DIALOGUE_SECONDS = 30.0  # the sign-in page keeps the conversation open by pinging; if it stops (tab closed) the tutor goes back to normal
 
 
 def clean_name(name) -> str:
@@ -228,10 +243,33 @@ def report_voice(check: dict) -> None:
     print(bar, flush=True)
 
 
+SEEN_WITHIN_SECONDS = 1.5  # the page edges were really found this recently
+
+
+def page_seen_now(feed: "CameraFeed") -> bool:
+    """Is the sheet really in view right now, not merely remembered? The page finders keep reporting the last position for a few seconds after
+    the sheet leaves, to ride out a wobble ("holding"; the paper finder holds its edges for 5 s): fine for drawing, but too slow to tell
+    a learner who cannot see that the sheet has gone."""
+    if feed.identify_until:  # between pages the sheet is meant to be missing
+        return True
+    if not feed.page_ok:
+        return False
+    src = feed.page_src
+    source = getattr(src, "source", "")
+    if source in ("holding", "none"):
+        return False
+    paper = getattr(src, "paper_fallback", None) or (src if hasattr(src, "last_seen") else None)
+    if paper is not None and (source == "paper" or not source):
+        seen = getattr(paper, "last_seen", 0.0)
+        return seen == 0.0 or time.time() - seen < SEEN_WITHIN_SECONDS
+    return True
+
+
 def wire_new_page(session: "TutorSession", feed: "CameraFeed") -> None:
     """Connect "next page": the session asks the feed to forget the old page; what the feed then works out is spoken and applied."""
     session.new_page = feed.new_page
     session.select_sheet = feed.select_sheet if feed.known_sheets else None
+    session.page_ok_fn = lambda: page_seen_now(feed)  # (see page_seen_now: really seen, not just remembered)
     session.current_sheet = lambda: feed.sheet_name
     session.identifies_sheets = bool(feed.known_sheets)
     feed.on_sheet = session.set_sheet
@@ -299,6 +337,10 @@ class _JourneyHost:
     def explore_tick(self, now: float) -> None:
         self.s.explore_tick(now)
 
+    def page_visible(self) -> bool:
+        """Can the camera see the sheet right now? (When it cannot, the finger is not the problem worth mentioning.)"""
+        return self.s.page_ok_fn() if self.s.page_ok_fn is not None else True
+
     def finish(self) -> None:
         self.s.state = "done"
         self.s.finished.set()
@@ -336,6 +378,7 @@ class TutorSession:
         self.quiz_number = 0
         self.adaptive_planner = adaptive_planner
         self.last_selection = {"source": "unselected", "reason": ""}
+        self._dialogue_at = -1e9
         self._speech = threading.Lock()  # one voice at a time: the explore loop, commands and the phone announcer never talk over each other
         self._heard, self._last_said, self._ex = set(), "", None
         self.voice_status: Optional[dict] = None  # set by the apps from voice_check(): whether speech will actually be heard
@@ -343,10 +386,15 @@ class TutorSession:
         self.identifies_sheets = False  # set by the apps: "next page" also works out which printed sheet is now on the desk
         self.current_sheet: Callable = lambda: "alphabet"  # set by the apps: which printed sheet the camera is reading now
         self.progress, self.progress_file = progress or Progress(), progress_file  # what the learner has learned; saved as it changes
-        self.earcons = Earcons(getattr(voice, "voice", voice), enabled=tones)  # (a wrapped voice keeps the real module as .voice)
+        self.settings = acc.Settings(tones=tones)  # speech speed, pace, sounds, "I didn't catch that": see accessibility.py
+        self.earcons = Earcons(getattr(voice, "voice", voice), enabled=self.settings.tones)  # (a wrapped voice keeps the real module as .voice)
+        self.awareness, self.hearing = acc.Awareness(), acc.Hearing()
+        self.page_ok_fn: Optional[Callable] = None  # set by the apps: can the camera see the sheet right now?
+        self.heard_fn: Optional[Callable] = self._voice_heard  # what the voice module last heard (tests may replace it)
+        self._watcher: Optional[threading.Thread] = None
         self.journey: Optional[Journey] = None
         if mode == "learn":  # the guided lessons (learn.py)
-            self.journey = Journey(_JourneyHost(self), self.progress, coach=coach, rng=self.rng)
+            self.journey = self._new_journey()
         # the menu: who is using it, and which of learn / read / quiz they chose (see set_user, set_mode)
         self.hub = mode == "menu"
         self.hub_mode = "menu"
@@ -359,13 +407,23 @@ class TutorSession:
 
     # ---- wiring ---------------------------------------------------------------------------------
     def attach(self) -> None:
-        """Register the voice commands."""
+        """Register the voice commands. Each one plays a tiny sound first, so a learner who cannot see the screen knows they were heard."""
+        def heard(handler):
+            def run() -> None:
+                if self.dialogue_active():  # someone is answering the sign-in page: a name must not start a lesson
+                    return
+                self.earcons.play("locked")
+                handler()
+            return run
+
         for name, handler in (("start quiz", self.on_start), ("repeat", self.on_repeat), ("hint", self.on_hint),
                               ("found it", self.on_found_it), ("next", self.on_next), ("next page", self.on_next_page),
                               ("explore", self.on_explore), ("practice", self.on_practice), ("learn", self.on_mode_learn),
-                              ("read", self.on_mode_read), ("quiz", self.on_mode_quiz), ("menu", self.on_mode_menu), ("stop", self.on_stop)):
+                              ("read", self.on_mode_read), ("quiz", self.on_mode_quiz), ("menu", self.on_mode_menu),
+                              ("help", self.on_help), ("slower", self.on_slower), ("faster", self.on_faster),
+                              ("take your time", self.on_relaxed), ("normal pace", self.on_normal), ("stop", self.on_stop)):
             try:
-                self.voice.register_command(name, handler)
+                self.voice.register_command(name, heard(handler))
             except ValueError:  # an older voice_io that does not know this phrase: the others still work
                 print(f"voice: this voice_io does not know the command {name!r}", flush=True)
 
@@ -382,6 +440,93 @@ class TutorSession:
             prompt = ""
         return {"mode": self.mode, "state": self.state, "prompt": prompt, "question": self.index + 1 if asking else 0,
                 "total": len(self.items), "asked": self.asked, "correct": self.correct, "tries": self.tries}
+
+    def _new_journey(self) -> Journey:
+        j = Journey(_JourneyHost(self), self.progress, coach=self.coach, rng=self.rng)
+        j.set_pace(self.settings.dwell_scale, self.settings.hint_scale)
+        return j
+
+    # ---- accessibility: settings, help, and speaking up when something is wrong -----------------
+    def apply_settings(self, changes: dict) -> dict:
+        """Change speech speed / pace / sounds / "I didn't catch that" (raises ValueError, changing nothing, if a value is not allowed)."""
+        self.settings.update(changes)
+        self.earcons.enabled = self.settings.tones
+        if self.journey is not None:
+            self.journey.set_pace(self.settings.dwell_scale, self.settings.hint_scale)
+        return self.settings.to_dict()
+
+    def _voice_heard(self) -> Optional[dict]:
+        module = getattr(self.voice, "voice", self.voice)
+        status = getattr(module, "listener_status", None)
+        if status is None or getattr(module, "MOCK_MODE", False):
+            return None
+        return (status() or {}).get("heard")
+
+    def _listening_state(self) -> bool:
+        if self.dialogue_active():
+            return False
+        return self.state in ("menu", "learning", "exploring", "asking", "reading")
+
+    def _activity_running(self) -> bool:
+        """An activity is under way (a lesson, a quiz, reading, exploring): the sheet matters. Not at the menu, not while waiting for a sheet."""
+        if self.state not in ("learning", "exploring", "asking", "reading") or self.finished.is_set():
+            return False
+        if self.hub and self.hub_mode == "menu":
+            return False
+        return not (self.journey is not None and self.journey.phase in ("idle", "await_sheet", "done"))
+
+    def watch_once(self, now: float) -> Optional[str]:
+        """One look at what is going on, speaking up if needed (called about twice a second by the watcher; testable on its own)."""
+        if self._speech.locked():  # it is talking already: what it would say may be out of date by the time it finishes
+            return None
+        page_ok = self.page_ok_fn() if self.page_ok_fn is not None else True
+        msg = self.awareness.update(now, bool(page_ok), self._activity_running() and self.page_ok_fn is not None)
+        if msg is None and self.heard_fn is not None:
+            msg = self.hearing.update(self.heard_fn(), now, self._listening_state(), self.settings.hearing_feedback)
+        if msg:
+            self.say(msg)
+        return msg
+
+    def start_watching(self) -> None:
+        """Start the background watcher (once): it tells the learner when the camera loses the sheet, and when they were not understood."""
+        if self._watcher is not None and self._watcher.is_alive():
+            return
+
+        def loop() -> None:
+            while True:
+                time.sleep(0.5)
+                try:
+                    self.watch_once(time.monotonic())
+                except Exception:  # one bad moment must not stop the watcher
+                    traceback.print_exc()
+        self._watcher = threading.Thread(target=loop, daemon=True, name="watcher")
+        self._watcher.start()
+
+    def on_help(self) -> None:
+        """"What can I say?": the commands that mean something right now."""
+        self.say(acc.help_text(self.hub_mode if self.hub else None, self.mode, self.state))
+
+    def on_slower(self) -> None:
+        s = self.settings
+        if s.speech_speed <= audio_speed.MIN_SPEED + 0.001:
+            return self.say("That's as slowly as I can go.")
+        self.apply_settings({"speech_speed": max(audio_speed.MIN_SPEED, round(s.speech_speed - acc.SLOWER_FASTER_STEP, 2))})
+        self.say("Okay, I'll speak more slowly.")  # (already at the new speed)
+
+    def on_faster(self) -> None:
+        s = self.settings
+        if s.speech_speed >= audio_speed.MAX_SPEED - 0.001:
+            return self.say("That's as fast as I go.")
+        self.apply_settings({"speech_speed": min(audio_speed.MAX_SPEED, round(s.speech_speed + acc.SLOWER_FASTER_STEP, 2))})
+        self.say("Okay, a bit faster.")
+
+    def on_relaxed(self) -> None:
+        self.apply_settings({"pace": "relaxed"})
+        self.say("Okay, take your time. I'll wait longer before offering help, and you can rest your finger a little longer to answer.")
+
+    def on_normal(self) -> None:
+        self.apply_settings({"pace": "normal"})
+        self.say("Back to the normal pace.")
 
     def learning_status(self) -> Optional[dict]:
         """Where the learner is in the lessons (None unless --mode learn)."""
@@ -438,6 +583,7 @@ class TutorSession:
             if self.journey is not None:
                 self.journey.progress = self.progress
             self._greeted_for = None
+            self._dialogue_at = -1e9
         threading.Thread(target=self._maybe_greet, daemon=True, name="greet").start()
 
     def on_phone_ready(self) -> None:
@@ -464,10 +610,20 @@ class TutorSession:
                 "user": None if u is None else {"name": u["name"], "kind": u["kind"], "saves": u["kind"] == "google"},
                 "greeted": self._greeted_for is not None}
 
-    def speak_prompt(self, name: str) -> None:
+    def speak_prompt(self, name: str, who=None) -> None:
         text = PROMPTS.get(name)
         if text:
-            self.say(text)
+            self.say(text.replace("{name}", clean_name(who)))
+
+    def dialogue(self, open_: bool) -> None:
+        """The sign-in page is talking with the user (or has finished). While it is: no "I did not catch that", and no voice command runs."""
+        self._dialogue_at = time.time() if open_ else -1e9
+
+    def dialogue_active(self) -> bool:
+        return time.time() - self._dialogue_at < DIALOGUE_SECONDS
+
+    def is_speaking(self) -> bool:
+        return self._speech.locked()
 
     def on_mode(self, mode: str) -> None:
         """"Learn", "read", "quiz" or "menu" (by voice or from the website)."""
@@ -503,7 +659,7 @@ class TutorSession:
             if self.select_sheet is not None:
                 self.select_sheet(cfg["sheet"])  # switches what the camera reads for, and (through set_sheet) which cells this session knows
             if mode == "learn":
-                self.journey = Journey(_JourneyHost(self), self.progress, coach=self.coach, rng=self.rng)
+                self.journey = self._new_journey()
                 return self._learn("on_start")
             self.contracted = False  # the printed sheets are plain letters and words
             self._start_dwell_loop()
@@ -519,7 +675,7 @@ class TutorSession:
 
     def _dwell_loop(self, epoch: int) -> None:
         """In read and quiz mode, resting a finger on a spot is the answer (as in the lessons): a quiz answer, or a word to read out."""
-        dwell = Dwell()
+        dwell = Dwell(seconds=DWELL_SECONDS * self.settings.dwell_scale)
         while epoch == self._epoch:
             with self.lock:
                 if epoch != self._epoch:
@@ -1221,6 +1377,7 @@ def run_camera(session: TutorSession, cap, page_src, overlay_cells: Optional[lis
     feed = CameraFeed(page_src, overlay_cells, labels, detector, track_finger=track_finger, observe_sheet=observe_sheet,
                       show_reading=show_reading, known_sheets=known_sheets, sheet_name=sheet_name)
     wire_new_page(session, feed)
+    session.start_watching()  # says so if the camera loses the sheet, or if it did not understand what was said
     session.finger = feed.finger
     session.scan = (lambda: session.cells) if layout_scan else feed.scan
     cv2.namedWindow(title)
@@ -1272,6 +1429,7 @@ def add_setup_args(ap: argparse.ArgumentParser) -> None:
                          "menu: the website picks who is using it and whether they learn, read or take a quiz (the default of tutor_server.py)")
     ap.add_argument("--profile", default="default", help="learn mode: whose progress to keep (one file per name in ~/.braillie)")
     ap.add_argument("--no-tones", action="store_true", help="learn mode: no little sounds for right and wrong answers, only speech")
+    ap.add_argument("--speech-speed", type=float, default=1.0, help="how fast the tutor talks, 0.6 (slow) to 1.5 (fast); the learner can also say slower or faster")
     ap.add_argument("--no-llm", action="store_true", help="learn mode uses the AI coach automatically when OPENAI_API_KEY is set; this stops that")
     ap.add_argument("--sheet", choices=SHEET_NAMES, help="a printed sheet (see sheets.py). Letters mode quizzes on it "
                     "(default alphabet); word modes then read its known layout instead of running the detector")
@@ -1320,6 +1478,19 @@ def make_adaptive_planner(a) -> Optional[AdaptiveTargetPlanner]:
         return None
     client.timeout = min(client.timeout, 2.5)
     return AdaptiveTargetPlanner(client)
+
+
+def install_speed(voice, session: "TutorSession", a=None) -> None:
+    """Make the tutor's speech follow session.settings.speech_speed (a time-stretch of Deepgram's audio; see audio_speed.py). Call it AFTER the
+    phone speaker is installed, so what goes to the phone is slowed too. Nothing to do with the mock voice, which only prints."""
+    if a is not None and getattr(a, "speech_speed", 1.0) != 1.0:
+        session.apply_settings({"speech_speed": a.speech_speed})
+    if getattr(voice, "MOCK_MODE", False):
+        return
+    try:
+        audio_speed.install_speech_speed(voice, lambda: session.settings.speech_speed)
+    except RuntimeError as e:  # voice_io changed: speech still works, just not at a chosen speed
+        print(f"speech speed will not be adjustable: {e}", flush=True)
 
 
 def progress_for(a) -> tuple:
@@ -1378,6 +1549,7 @@ def main() -> None:
     report_voice(session.voice_status)  # silence must never be a mystery
     session.attach()
     phone = phonelink.start_phone(a, announce=lambda text: session.say(text), voice=voice)  # the video window then shows the QR code until a phone connects
+    install_speed(voice, session, a)
     cap, page_src = (phone[1] if phone else open_camera(a.camera)), page_source_from_args(a)
     voice.start_listening()
     try:

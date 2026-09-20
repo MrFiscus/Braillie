@@ -1,9 +1,9 @@
-import '../styles-css/App.css';
+import '../styles-css/braillie.css';
 
 
 import { Routes, Route, Navigate } from 'react-router-dom';
 
-import Layout from "../components/Layout.tsx"
+import Shell from '../components/Shell.tsx'
 import SignIn from './SignIn.tsx'
 import Modes from './Modes.tsx'
 import ConnectPhone from './ConnectPhone.tsx'
@@ -14,7 +14,7 @@ import Practice from './Practice.tsx'
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<Layout />}>
+      <Route path="/" element={<Shell />}>
         <Route index element={<Navigate to="/login" replace />} />
 
         <Route path="connect-phone" element={<ConnectPhone />} />

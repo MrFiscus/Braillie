@@ -50,8 +50,8 @@ def wait_for(pred, seconds=8.0):
     return False
 
 
-def fast_dwell():
-    return learn.Dwell(seconds=0.15)
+def fast_dwell(seconds=None):
+    return learn.Dwell(seconds=0.15)  # (whatever length was asked for)
 
 
 def hub(tmpdir=None, phone=None):
@@ -414,6 +414,40 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(http(self.base + "/api/prompt", {})[0], 400)
         self.assertEqual(http(self.base + "/api/prompt", {"name": "welcome"})[0], 202)
         self.assertTrue(wait_for(lambda: any("Welcome to Braillie. On this page you can sign in" in x["text"] for x in http(self.base + "/api/state")[2]["said"])))
+
+    def test_a_prompt_can_carry_a_cleaned_name_and_nothing_else(self):
+        n = len(http(self.base + "/api/state")[2]["said"])
+        self.assertEqual(http(self.base + "/api/prompt", {"name": "confirm_name", "who": "Sam <script>"})[0], 202)
+        self.assertTrue(wait_for(lambda: any("Is your name Sam script? Say yes" in x["text"] for x in http(self.base + "/api/state")[2]["said"][n - 1:])))
+        self.assertEqual(http(self.base + "/api/prompt", {"name": "go_guest_anon", "who": "ignored"})[0], 202)
+
+    def test_the_sign_in_conversation_silences_commands_and_the_did_not_catch_that_reply(self):
+        s = self.session
+        s.set_mode("menu")
+        self.assertEqual(http(self.base + "/api/dialogue", {"open": "yes"})[0], 400)
+        self.assertEqual(http(self.base + "/api/dialogue", {})[0], 400)
+        self.assertEqual(http(self.base + "/api/dialogue", {"open": True})[2], {"open": True})
+        self.assertFalse(s._listening_state())  # a name that no command matches is not "I did not catch that"
+        commands = getattr(s.voice, "voice", s.voice).commands  # what the voice module would run for "learn", "read", "quiz"
+        for name in ("learn", "read", "quiz"):
+            commands[name]()
+        self.assertEqual(s.hub_mode, "menu")  # a name that sounds like a command must not start a lesson before anyone has signed in
+        self.assertEqual(http(self.base + "/api/dialogue", {"open": False})[2], {"open": False})
+        self.assertTrue(s._listening_state())
+
+    def test_who_is_here_ends_the_sign_in_conversation_and_it_expires_by_itself(self):
+        s = self.session
+        s.dialogue(True)
+        s.set_user("Ivy", "guest")
+        self.assertFalse(s.dialogue_active())
+        s.dialogue(True)
+        with mock.patch.object(tutor.time, "time", return_value=time.time() + tutor.DIALOGUE_SECONDS + 1):
+            self.assertFalse(s.dialogue_active())  # the tab was closed: the tutor is not left deaf
+
+    def test_state_says_whether_the_tutor_is_talking_and_what_the_microphone_last_heard(self):
+        s = http(self.base + "/api/state")[2]
+        self.assertIn("speaking", s)
+        self.assertIn("heard", s)
 
     def test_these_endpoints_belong_to_the_menu_tutor_only_and_to_local_pages_only(self):
         for path, body in (("/api/session", {"kind": "guest", "name": "x"}), ("/api/mode", {"mode": "learn"}), ("/api/prompt", {"name": "welcome"})):

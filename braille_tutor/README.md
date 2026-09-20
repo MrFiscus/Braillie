@@ -244,6 +244,37 @@ of playing it: without `--mock` and with a key, speech is played.
 Bug fixed in `voice_io.py` on the way: it asked Deepgram for `container="wav"` without `encoding="linear16"`; Deepgram then
 defaults to mp3 and answers HTTP 400 ("container is not applicable when encoding=mp3"), so no speech ever played. One added argument.
 
+## Talking to the tutor: how voice input works, and the accessibility features
+
+**How your voice gets in.** The microphone (the laptop's default, or the one pinned with `VOICE_IO_MIC_INDEX`; when a phone is linked and
+streaming its mic, the phone's, with the laptop's as the automatic fallback) is streamed to Deepgram (model nova-3) in 100 ms pieces; a
+pause of about 0.3 s ends an utterance and only final transcripts count. A transcript is lower-cased and needs an average confidence of at
+least 0.75; it is then matched, whole words, longest phrase first, against a fixed list of command phrases (`_COMMAND_MAP` in `voice_io.py`);
+at most one command fires. The microphone is muted while the tutor speaks, so it does not hear itself.
+Known limits: only the fixed phrases (no free speech); a phrase anywhere in a sentence fires it (someone else in the room saying "let's
+stop" would stop it); you cannot interrupt the tutor while it is speaking; recognition depends on the microphone and the room.
+
+**What the tutor now does to feel like a teacher you can talk to** (`accessibility.py`, `audio_speed.py`, `earcons.py`):
+- **A small sound when it hears you**: every recognised command first plays a tiny blip, so you know you were heard even if nothing else
+  happens yet.
+- **"Sorry, I didn't catch a command there. Say help to hear what you can say."** when something was said but not understood (or "I couldn't
+  hear that clearly" for unclear speech). At most once every 20 s, never for a stray "uh", so a room full of chatter does not make it nag.
+  Needs the additive `heard` field that `voice_io.listener_status()` now reports for every final utterance.
+- **Spoken help**: say **help** (or "what can I say") and it tells you the commands that mean something right now, in the menu, a lesson,
+  the quiz or reading.
+- **It tells you when it cannot see the sheet**: during an activity, about 3 s after the sheet stops being SEEN: "I can't see the sheet. Hold it
+  flat, with the whole page in front of the camera." (The page tracker keeps reporting the old position for several seconds to ride out a
+  wobble, so this goes by when the page edges were really last found, `page_seen_now` in `tutor.py`: about 7 s after the sheet leaves.) It repeats
+  now and then (every 25 s) and says "Got it, I can see the sheet again." once it is steadily back (a flicker is not mentioned). Nothing is
+  said at the menu or between pages. "I can't see your finger" backs off (6 s, then 15, 30, then a minute), starts over when the finger comes
+  back, and is not said at all while the sheet itself is missing.
+- **Speech speed**: say **slower** or **faster** (0.6x to 1.5x in steps of 0.15; `--speech-speed` sets the start). Deepgram's current voice has
+  no speed setting, so the finished audio is time-stretched here (WSOLA: same pitch, measured on real speech: length exact, pitch and
+  spectrum unchanged, 30-50 ms). It applies on the laptop and the phone, but not to the little sounds. How natural it sounds needs a human ear.
+- **Pace**: say **take your time** and a finger may rest 1.6x longer to answer and help by itself arrives 2x later; **normal pace** undoes it.
+- **Settings over the API**: `GET/POST /api/settings` with `speech_speed`, `pace` ("normal"|"relaxed"), `tones` and `hearing_feedback`
+  (send only what should change; a bad value changes nothing and says why). `state.settings` has the current values, for a settings panel.
+
 ## Learning mode: guided lessons (`--mode learn`)
 
 ```
@@ -326,6 +357,25 @@ as `profile`; a guest never saves), `POST /api/mode {"mode": "learn"|"read"|"qui
 `{"mode", "user", "greeted"}` (see API.md). Choosing by voice needs `learn`, `read`, `quiz` and `menu` in `voice_io.py`'s command list
 (added). What is tested: the tutor side (`test_hub.py`), the user model (`node --test "tests/*.test.mjs"`), and the whole path in real Chrome
 against a running tutor with a simulated phone. NOT tested: Google sign-in past Google's own page, and a real phone and hand.
+
+### The sign-in page talks (voice on the first page)
+
+The first page can be used entirely by voice. With the tutor running (`tutor_server.py`, Deepgram voice and microphone) it starts by itself: it
+says the welcome, listens, and understands "Google" (opens Google sign-in) or "guest", then asks for a first name, repeats it back ("Is your name
+Sam?") and continues on "yes" (or "skip" for no name; "no" or a different name to correct it). Someone who is already known is asked to "continue"
+or "switch". Not understood three times in a row and it stops asking and points at the buttons; it never guesses. While this goes on the tutor
+ignores voice commands (a name that sounds like "read" must not start a lesson) and does not say "I didn't catch that" (`POST /api/dialogue`).
+Without the tutor, the page uses the browser's own speech and speech recognition (Chrome, Edge, Safari): press "Use my voice", allow the
+microphone once. "Turn voice off" is remembered in this browser. Every spoken choice is also a button, and the keyboard and screen reader work
+throughout. The rules for what is understood are in `website-frontend/src/voice/loginDialogue.ts` (tested in `tests/loginDialogue.test.mjs`).
+
+### The look of the website
+
+"Paper and ink": warm paper, black ink, one accent, hard offset shadows, dots as the only decoration (the name written in braille; each mode
+drawn as its own first letter). Fraunces and Atkinson Hyperlegible (made for low vision) are bundled in `public/fonts`. The **Display** menu in
+the top bar sets text size (three steps) and colours (match my device, light, dark, high contrast) and is remembered. Every colour pair is
+checked to WCAG AAA (7:1) by `tests/contrast.test.mjs`; all styling is in `src/styles-css/braillie.css`.
+
 
 ## Phone as the camera: scan a QR code (`--phone-camera`)
 

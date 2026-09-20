@@ -72,6 +72,8 @@ export interface TutorState {
   hub?: HubInfo | null // null unless the tutor was started as the menu-driven tutor
   learning?: LearningStatus | null // null unless the learn activity is running
   progress?: ProgressSummary | null
+  speaking?: boolean // the tutor is talking right now
+  heard?: { n: number; text: string; matched: boolean; reason: string | null } | null // the last thing the microphone made out (n counts up); null if it is not listening
 }
 
 const post = (path: string, body: unknown) =>
@@ -120,5 +122,15 @@ export const setSession = async (who: { kind: 'google' | 'guest'; name: string; 
 /** Choose what to do: learn, read, quiz, or menu to go back to the choice. */
 export const setMode = async (mode: HubMode) => ok(await post('/api/mode', { mode }), 'mode')
 
-/** Ask the tutor to say one of its prepared lines (only those it knows: "welcome"). */
-export const sayPrompt = async (name: 'welcome') => ok(await post('/api/prompt', { name }), 'prompt')
+/** Ask the tutor to say one of its prepared lines (only those it knows, see PROMPTS in tutor.py), with a first name where the line has one. */
+export const sayPrompt = async (name: string, who?: string) => ok(await post('/api/prompt', who === undefined ? { name } : { name, who }), 'prompt')
+
+/** The sign-in page is (open) or is no longer talking with the user: while it is, the tutor does not act on voice commands or say "I did not catch that". */
+export const setDialogue = async (open: boolean) => ok(await post('/api/dialogue', { open }), 'dialogue')
+
+/** The tutor's state right now (one request). */
+export async function fetchState(): Promise<TutorState> {
+  const res = await fetch(`${TUTOR_API}/api/state`, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`state: ${res.status}`)
+  return res.json()
+}
