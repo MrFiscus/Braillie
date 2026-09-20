@@ -235,6 +235,13 @@ _mic_paused: bool = False
 _listener_thread: threading.Thread | None = None
 _stop_event: threading.Event = threading.Event()
 
+# Guards start_listening()/stop_listening() so two threads racing to start
+# (e.g. two hub/menu transitions firing close together) can never both pass
+# the "not already listening" check and end up with two concurrent pa.open()
+# calls on the same device — that race is what segfaults inside PortAudio's
+# native OpenStream, below anything a Python try/except can catch.
+_lifecycle_lock = threading.RLock()
+
 
 def _normalize_transcript(transcript: str) -> str:
     """Normalize user speech without altering words inside the transcript."""
@@ -439,42 +446,59 @@ def _fire_command(command: str) -> None:
 
 
 def start_listening() -> None:
-    """Start continuous microphone capture and Deepgram streaming STT."""
+    """Start continuous microphone capture and Deepgram streaming STT.
+
+    Hard guard: refuses to start a second listener thread while one is
+    already running for this process, even under concurrent calls (e.g. two
+    hub/menu mode transitions firing close together). Two live listener
+    threads would mean two concurrent pa.open() calls racing on the same
+    microphone, which is a known crash path (see module docstring / crash
+    report): it segfaults inside PortAudio's native OpenStream, a level
+    below anything Python's exception handling can intercept. The lock makes
+    the "is one already running" check-and-set atomic, and also checks the
+    thread object itself (not just the flag), so a stale flag can never
+    slip a second pa.open() through.
+    """
     global _listening_active, _listener_thread, _stop_event
 
-    if _listening_active:
-        log.warning("start_listening() called but already listening; ignoring.")
-        return
+    with _lifecycle_lock:
+        if _listening_active or (_listener_thread is not None and _listener_thread.is_alive()):
+            log.warning("start_listening() called but already listening; ignoring.")
+            return
 
-    _stop_event = threading.Event()
-    _listening_active = True
+        _stop_event = threading.Event()
 
-    if MOCK_MODE:
-        _listener_thread = threading.Thread(
-            target=_mock_listener_loop, daemon=True, name="voice-listener"
-        )
-    else:
-        _deepgram_preflight()           # raises VoiceIOError early if deps are missing
-        _listener_thread = threading.Thread(
-            target=_deepgram_listener_loop, daemon=True, name="voice-listener"
-        )
+        if MOCK_MODE:
+            _listener_thread = threading.Thread(
+                target=_mock_listener_loop, daemon=True, name="voice-listener"
+            )
+        else:
+            _deepgram_preflight()           # raises VoiceIOError early if deps are missing
+            _listener_thread = threading.Thread(
+                target=_deepgram_listener_loop, daemon=True, name="voice-listener"
+            )
 
-    _status["mode"] = get_mode()
-    _listener_thread.start()
-    log.info("Voice listener started (mock=%s)", MOCK_MODE)
+        _status["mode"] = get_mode()
+        _listening_active = True
+        _listener_thread.start()
+        log.info("Voice listener started (mock=%s)", MOCK_MODE)
 
 
 def stop_listening() -> None:
     """Stop the microphone stream and close the Deepgram connection."""
     global _listening_active
 
-    if not _listening_active:
-        return
+    with _lifecycle_lock:
+        if not _listening_active:
+            return
+        _stop_event.set()
+        thread = _listener_thread
 
-    _stop_event.set()
-    if _listener_thread is not None:
-        _listener_thread.join(timeout=5)
-    _listening_active = False
+    if thread is not None:
+        thread.join(timeout=5)
+
+    with _lifecycle_lock:
+        _listening_active = False
     log.info("Voice listener stopped.")
 
 
@@ -620,6 +644,107 @@ def _deepgram_preflight() -> None:
         raise VoiceIOError(f"DEEPGRAM_API_KEY is not set. {_hint}")
 
 
+def _validate_input_device(pa, index: int | None) -> dict:
+    """Raise VoiceIOError unless *index* is a real input device that can still
+    open at SAMPLE_RATE/CHANNELS right now.
+
+    Re-checked immediately before every pa.open() call, never cached from an
+    earlier check: a device (especially a USB/Bluetooth mic) can disappear or
+    change capabilities between one open and the next in the same session.
+    Calling pa.open() on a stale or nonexistent index is what segfaults inside
+    PortAudio's native OpenStream — a crash below anything Python's
+    try/except can catch — so the goal here is to never make that call at all
+    for a device that cannot presently support it.
+    """
+    import pyaudio  # type: ignore[import-untyped]
+
+    try:
+        count = pa.get_device_count()
+    except Exception as exc:
+        raise VoiceIOError(f"could not query audio devices: {exc}") from exc
+
+    if index is None or index < 0 or index >= count:
+        raise VoiceIOError(
+            f"microphone device index {index!r} does not exist "
+            f"(the system currently reports {count} audio device(s))"
+        )
+
+    try:
+        info = pa.get_device_info_by_index(index)
+    except Exception as exc:
+        raise VoiceIOError(
+            f"microphone device #{index} could not be queried (it may have just "
+            f"disconnected): {exc}"
+        ) from exc
+
+    name = info.get("name", "unknown")
+    max_in = int(info.get("maxInputChannels", 0) or 0)
+    if max_in < CHANNELS:
+        raise VoiceIOError(
+            f"microphone device #{index} ({name}) has {max_in} input channel(s) "
+            f"right now, needs at least {CHANNELS}"
+        )
+
+    try:
+        pa.is_format_supported(
+            SAMPLE_RATE,
+            input_device=index,
+            input_channels=CHANNELS,
+            input_format=pyaudio.paInt16,
+        )
+    except ValueError as exc:
+        raise VoiceIOError(
+            f"microphone device #{index} ({name}) does not support "
+            f"{SAMPLE_RATE} Hz / {CHANNELS} channel(s) input right now: {exc}"
+        ) from exc
+
+    return info
+
+
+def _open_input_stream(pa, device_index: int | None, chunk_frames: int):
+    """Validate then open the microphone input stream, one device at a time.
+
+    Never calls pa.open() on a device that _validate_input_device() has not
+    just approved. If *device_index* (the pinned VOICE_IO_MIC_INDEX, or None
+    for "use the default") is invalid or fails to open, falls back to the
+    system default input device — itself validated before opening, so a
+    fully-gone audio subsystem raises VoiceIOError instead of segfaulting.
+
+    Returns (audio_stream, active_index, fell_back_to_default).
+    """
+    import pyaudio  # type: ignore[import-untyped]
+
+    open_kwargs: dict = dict(
+        format=pyaudio.paInt16,
+        channels=CHANNELS,
+        rate=SAMPLE_RATE,
+        input=True,
+        frames_per_buffer=chunk_frames,
+    )
+
+    if device_index is not None:
+        try:
+            _validate_input_device(pa, device_index)
+            return pa.open(input_device_index=device_index, **open_kwargs), device_index, False
+        except (VoiceIOError, OSError) as exc:
+            print(
+                f"voice_io: ERROR — pinned mic device index {device_index} is unusable "
+                f"right now ({exc}). Falling back to system default.",
+                flush=True,
+            )
+
+    try:
+        default_index = pa.get_default_input_device_info()["index"]
+    except Exception as exc:
+        raise VoiceIOError(f"no default input device is available: {exc}") from exc
+    _validate_input_device(pa, default_index)  # raises VoiceIOError if even this is unusable
+    return (
+        pa.open(input_device_index=default_index, **open_kwargs),
+        default_index,
+        device_index is not None,
+    )
+
+
 def _deepgram_listener_loop() -> None:
     """Background thread: streams mic audio to Deepgram and dispatches commands."""
     try:
@@ -754,34 +879,9 @@ def _deepgram_listener_loop() -> None:
                         flush=True,
                     )
 
-                open_kwargs: dict = dict(
-                    format=pyaudio.paInt16,
-                    channels=CHANNELS,
-                    rate=SAMPLE_RATE,
-                    input=True,
-                    frames_per_buffer=chunk_frames,
+                audio_stream, active_index, _fell_back = _open_input_stream(
+                    pa, device_index, chunk_frames
                 )
-                if device_index is not None:
-                    open_kwargs["input_device_index"] = device_index
-
-                _fell_back = False
-                try:
-                    audio_stream = pa.open(**open_kwargs)
-                except OSError as exc:
-                    print(
-                        f"voice_io: ERROR — could not open device index {device_index}: {exc}. "
-                        "Falling back to system default.",
-                        flush=True,
-                    )
-                    open_kwargs.pop("input_device_index", None)
-                    audio_stream = pa.open(**open_kwargs)
-                    _fell_back = True
-
-                # Determine the index that was *actually* opened.
-                if _fell_back or device_index is None:
-                    active_index = pa.get_default_input_device_info()["index"]
-                else:
-                    active_index = device_index
 
                 try:
                     _dev_name = pa.get_device_info_by_index(active_index)["name"]
@@ -960,6 +1060,15 @@ def _play_audio_stream(chunks) -> None:
     try:
         with wave.open(buf) as wf:
             pa = pyaudio.PyAudio()
+            try:
+                pa.get_default_output_device_info()
+            except Exception as exc:
+                # No output device at all (e.g. it just disconnected): calling
+                # pa.open() here is the same native-crash risk as the input
+                # side, so refuse the call instead of attempting it.
+                log.error("No default output device available for playback: %s", exc)
+                pa.terminate()
+                return
             stream = pa.open(
                 format=pa.get_format_from_width(wf.getsampwidth()),
                 channels=wf.getnchannels(),

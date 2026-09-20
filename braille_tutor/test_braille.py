@@ -54,7 +54,7 @@ class LabelTests(unittest.TestCase):
 
 
 class HomographyTests(unittest.TestCase):
-    S, MARGIN, MK = 5, 25, 30  # canvas px per mm, canvas margin mm, printed marker mm
+    S, MARGIN, MK = 5, 25, int(page.MARKER_SIZE_MM)  # canvas px per mm, canvas margin mm, printed marker mm
 
     def render(self, skip=()):
         """White page canvas with ArUco markers centred on the page corners, then warped by a known tilt."""
@@ -137,11 +137,27 @@ class DiagnoseTests(unittest.TestCase):
         self.assertIn("no markers in view", note)
         self.assertIn("very dark", self.note(np.full((480, 640, 3), 5, np.uint8))[1])
 
-    def test_missing_marker_named(self):
-        img, _ = HomographyTests().render(skip=(2,))
+    def test_three_markers_still_register(self):
+        """One marker hidden (a hand reaching in to point near it, typically) must not lose page registration
+        outright: the other 3 markers' 12 corners are enough for an exact homography fit."""
+        img, T = HomographyTests().render(skip=(2,))
+        H, note = self.note(img)
+        self.assertIsNotNone(H)
+        self.assertIn("3 of 4 markers", note)
+        self.assertIn("[2]", note)
+        worst = 0.0
+        for x, y in [(0, 0), (page.PAGE_W_MM, page.PAGE_H_MM), (95, 125), (40, 200), (150, 30)]:
+            px, py = HomographyTests().truth_px(T, x, y)
+            gx, gy = page.to_page(H, px, py)
+            worst = max(worst, abs(gx - x), abs(gy - y))
+        self.assertLess(worst, 1.0)
+
+    def test_too_few_markers_named(self):
+        img, _ = HomographyTests().render(skip=(1, 2))
         H, note = self.note(img)
         self.assertIsNone(H)
-        self.assertIn("missing marker(s) [2]", note)
+        self.assertIn("missing marker(s)", note)
+        self.assertIn("[1, 2]", note)
 
     def test_wrong_marker_ids(self):
         d = cv2.aruco.getPredefinedDictionary(page.ARUCO_DICT)
@@ -169,7 +185,7 @@ class DiagnoseTests(unittest.TestCase):
 
     def test_small_markers_warn_but_still_register(self):
         img, _ = HomographyTests().render()
-        small = cv2.resize(img, None, fx=0.15, fy=0.15, interpolation=cv2.INTER_AREA)  # markers ~21 px wide
+        small = cv2.resize(img, None, fx=0.1, fy=0.1, interpolation=cv2.INTER_AREA)  # markers ~20 px wide
         H, note = self.note(small)
         self.assertIsNotNone(H)
         self.assertIn("markers small", note)

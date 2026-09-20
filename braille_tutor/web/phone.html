@@ -209,6 +209,21 @@ async function begin(unlocked) {
   await start();
 }
 
+function videoConstraints() {
+  return { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } };
+}
+
+// Sharper pages: keep focusing, and light the desk where the phone can.
+async function applyTrackPreferences(track) {
+  try {
+    const caps = (track.getCapabilities && track.getCapabilities()) || {};
+    const advanced = [];
+    if (caps.focusMode && caps.focusMode.includes("continuous")) advanced.push({ focusMode: "continuous" });
+    if (caps.torch) advanced.push({ torch: true });
+    if (advanced.length) await track.applyConstraints({ advanced });
+  } catch (e) { /* not supported here: fine */ }
+}
+
 async function start() {
   $("go").hidden = true;
   say("Starting the camera. If your phone asks, allow camera access.");
@@ -218,14 +233,13 @@ async function start() {
     $("go").hidden = false; $("go").textContent = "Try again";
     return;
   }
-  const videoWanted = { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } };
   try {
     try {           // camera and microphone in one prompt...
-      stream = await navigator.mediaDevices.getUserMedia({ video: videoWanted,
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(),
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (first) {   // ...and if the microphone is the problem, the camera alone still works (the laptop's microphone is used)
       report("mic-error", `${first && first.name}: ${first && first.message}`);
-      stream = await navigator.mediaDevices.getUserMedia({ video: videoWanted, audio: false });
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(), audio: false });
     }
   } catch (e) {
     report("camera-error", `${e && e.name}: ${e && e.message}`);
@@ -238,14 +252,7 @@ async function start() {
   video.srcObject = stream;
   video.hidden = false; $("help").hidden = false; $("stop").hidden = false;
   await video.play().catch(() => {});
-  const track = stream.getVideoTracks()[0];
-  try {                                   // sharper pages: keep focusing, and light the desk where the phone can
-    const caps = (track.getCapabilities && track.getCapabilities()) || {};
-    const advanced = [];
-    if (caps.focusMode && caps.focusMode.includes("continuous")) advanced.push({ focusMode: "continuous" });
-    if (caps.torch) advanced.push({ torch: true });
-    if (advanced.length) await track.applyConstraints({ advanced });
-  } catch (e) { /* not supported here: fine */ }
+  await applyTrackPreferences(stream.getVideoTracks()[0]);
   try { if (navigator.wakeLock) wake = await navigator.wakeLock.request("screen"); } catch (e) { /* screen may sleep: nothing to do */ }
   running = true;
   const audioTracks = stream.getAudioTracks();
@@ -256,6 +263,7 @@ async function start() {
       ? (micOn ? "Camera, sound and microphone on. You will hear the tutor on this phone, and you can speak to it here."
                : "Camera and sound on. You will hear the tutor on this phone. The microphone is off here, so speak to the laptop.")
       : "Camera on. Sending to the laptop. The sound is off on this phone, so the laptop will speak.", "ok");
+  lastVideoTime = -1; stallSince = 0; restarting = false; restartFailures = 0;   // fresh stall-tracking for this camera session
   loop();
 }
 
@@ -273,12 +281,60 @@ function announce(info) {
   }
 }
 
+// A <video> element's own decode clock can silently stop advancing (seen on iOS Safari: after the
+// screen dims, the app backgrounds briefly, or under camera/thermal contention) while
+// getUserMedia's track still reports "live". Nothing else notices: drawImage() keeps drawing the
+// same last-decoded picture, and the loop below would otherwise upload that one dead frame 8x a
+// second forever, with the laptop unable to tell a genuinely still page from a frozen video.
+let lastVideoTime = -1, stallSince = 0, restarting = false, restartFailures = 0;
+const STALL_MS_TO_RESTART = 1800;    // this long with currentTime not moving is a freeze, not a slow tick
+const MAX_RESTART_FAILURES = 3;      // after this many failed restarts in a row, stop hammering getUserMedia
+
+async function restartCamera() {
+  const oldVideoTrack = stream && stream.getVideoTracks()[0];
+  try {
+    const fresh = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(), audio: false });
+    const newVideoTrack = fresh.getVideoTracks()[0];
+    const audioTracks = (stream && stream.getAudioTracks()) || [];
+    stream = new MediaStream([newVideoTrack, ...audioTracks]);
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    await applyTrackPreferences(newVideoTrack);
+    if (oldVideoTrack) { try { oldVideoTrack.stop(); } catch (e) { /* already gone */ } }
+    report("camera-restarted", `${video.videoWidth}x${video.videoHeight}`);
+    restartFailures = 0;
+    return true;
+  } catch (e) {
+    restartFailures += 1;
+    report("camera-restart-failed", `${e && e.name}: ${e && e.message} (attempt ${restartFailures})`);
+    if (restartFailures >= MAX_RESTART_FAILURES) {
+      say("The camera froze and could not restart. Reload this page.", "bad");
+    }
+    return false;
+  }
+}
+
 async function loop() {
   const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
   let failures = 0;
   while (running) {
     const t0 = performance.now();
     if (video.videoWidth) {
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        stallSince = 0;
+      } else if (!stallSince) {
+        stallSince = t0;
+      }
+      if (stallSince && t0 - stallSince >= STALL_MS_TO_RESTART && !restarting && restartFailures < MAX_RESTART_FAILURES) {
+        restarting = true;
+        report("camera-stalled", `video.currentTime stuck at ${video.currentTime.toFixed(2)}s`);
+        say("The camera froze. Restarting it…", "bad");
+        const ok = await restartCamera();
+        lastVideoTime = -1; stallSince = 0; restarting = false;
+        if (ok) { await sleep(200); }   // give the fresh stream a moment before drawing from it
+        continue;
+      }
       const s = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
       canvas.width = Math.round(video.videoWidth * s); canvas.height = Math.round(video.videoHeight * s);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);

@@ -21,18 +21,53 @@ SHEET_ORIGIN_MM = ((A4_MM[0] - PAGE_W_MM) / 2, (A4_MM[1] - PAGE_H_MM) / 2)
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 # id 0 top left, 1 top right, 2 bottom right, 3 bottom left -> page coordinates (mm), y down.
 MARKER_POS_MM = {0: (0.0, 0.0), 1: (PAGE_W_MM, 0.0), 2: (PAGE_W_MM, PAGE_H_MM), 3: (0.0, PAGE_H_MM)}
+MARKER_SIZE_MM = 40.0  # printed marker side; must match make_markers.py's SHEET_MARKER_MM
+# fewer point pairs than this makes findHomography's fit too loosely constrained to trust
+MIN_MARKERS_FOR_HOMOGRAPHY = 3
 
 _detector = cv2.aruco.ArucoDetector(
     cv2.aruco.getPredefinedDictionary(ARUCO_DICT), cv2.aruco.DetectorParameters()
 )
 
 
-def visible_markers(frame: np.ndarray) -> dict:
-    """Pixel centres of the corner markers (ids 0-3) currently visible, keyed by id."""
+def visible_marker_corners(frame: np.ndarray) -> dict:
+    """Pixel corners (4x2, ArUco's own corner order) of the corner markers (ids 0-3) currently visible, keyed by id."""
     corners, ids, _ = _detector.detectMarkers(frame)
     if ids is None:
         return {}
-    return {int(i): c.reshape(4, 2).mean(axis=0) for i, c in zip(ids.ravel(), corners) if int(i) in MARKER_POS_MM}
+    return {int(i): c.reshape(4, 2) for i, c in zip(ids.ravel(), corners) if int(i) in MARKER_POS_MM}
+
+
+def visible_markers(frame: np.ndarray) -> dict:
+    """Pixel centres of the corner markers (ids 0-3) currently visible, keyed by id."""
+    return {i: c.mean(axis=0) for i, c in visible_marker_corners(frame).items()}
+
+
+def _marker_corners_mm(marker_id: int) -> np.ndarray:
+    """The four corners of one printed marker in page mm, in ArUco's own corner order (top-left, top-right,
+    bottom-right, bottom-left of the marker AS PRINTED). make_sheet.py pastes every marker unrotated, so that
+    printed orientation is also its orientation on the page, whatever angle the camera views it from."""
+    cx, cy = MARKER_POS_MM[marker_id]
+    half = MARKER_SIZE_MM / 2
+    return np.float32([(cx - half, cy - half), (cx + half, cy - half), (cx + half, cy + half), (cx - half, cy + half)])
+
+
+def homography_from_marker_corners(seen: dict) -> Optional[np.ndarray]:
+    """A homography fit from whichever markers are visible (id -> its 4 corners in image px, as from
+    visible_marker_corners), using every corner as its own point correspondence rather than collapsing each
+    marker to just its centre. With only 3 of the 4 corner markers in view -- typically because a hand is
+    reaching in to point at a cell near one of them -- this still gives an exact, geometry-based registration
+    from the other 3 (12 point pairs, well over the 4 a homography needs), instead of losing marker registration
+    outright and falling back to much noisier frame-to-frame feature tracking (see PageTracker). The redundant
+    point pairs also make the ordinary 4-marker case more robust: RANSAC can shrug off one corner's detection
+    jitter instead of fitting it exactly, the way a plain 4-point transform must."""
+    if len(seen) < MIN_MARKERS_FOR_HOMOGRAPHY:
+        return None
+    ids = sorted(seen)
+    src = np.concatenate([seen[i] for i in ids]).astype(np.float32)
+    dst = np.concatenate([_marker_corners_mm(i) for i in ids]).astype(np.float32)
+    H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 3.0)
+    return H
 
 
 def _homography_from_centers(centers: dict) -> np.ndarray:
@@ -72,15 +107,23 @@ def diagnose_markers(frame: np.ndarray) -> tuple:
     if dup:
         return None, f"marker id {sorted(set(dup))} is seen more than once."
     missing = [i for i in MARKER_POS_MM if i not in seen]
-    if missing:
+    if missing and len(seen) < MIN_MARKERS_FOR_HOMOGRAPHY:
         return None, f"missing marker(s) {missing}, found {sorted(seen)}." + light
-    ctr = [seen[i].mean(axis=0) for i in range(4)]
-    for k in range(4):  # 0 -> 1 -> 2 -> 3 must turn the same way every time (top left, top right, bottom right, bottom left)
-        a, b = ctr[(k + 1) % 4] - ctr[k], ctr[(k + 2) % 4] - ctr[(k + 1) % 4]
-        if a[0] * b[1] - a[1] * b[0] <= 0:
-            return None, "markers are in the wrong corners, or the sheet is rotated or flipped (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left)."
+    ctr = {i: seen[i].mean(axis=0) for i in seen}
+    for i in seen:  # 0 -> 1 -> 2 -> 3 must turn the same way every time (top left, top right, bottom right, bottom left),
+        j, k = (i + 1) % 4, (i + 2) % 4  # checked at every vertex where both of its neighbours are also visible
+        if j in ctr and k in ctr:
+            a, b = ctr[j] - ctr[i], ctr[k] - ctr[j]
+            if a[0] * b[1] - a[1] * b[0] <= 0:
+                return None, "markers are in the wrong corners, or the sheet is rotated or flipped (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left)."
+    H = homography_from_marker_corners(seen)
+    if H is None:
+        return None, f"missing marker(s) {missing}, found {sorted(seen)}." + light
     side = min(float(np.linalg.norm(c[0] - c[1])) for c in seen.values())
-    return _homography_from_centers(dict(zip(range(4), ctr))), (f"markers small ({side:.0f} px): move the camera closer." if side < 25 else "")
+    parts = ["4 markers"] if not missing else [f"{len(seen)} of 4 markers, {missing} hidden"]
+    if side < 25:
+        parts.append(f"markers small ({side:.0f} px): move the camera closer.")
+    return H, "; ".join(parts) if missing or side < 25 else ""
 
 
 def _apply(M: np.ndarray, x: float, y: float) -> tuple[float, float]:

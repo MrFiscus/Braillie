@@ -63,7 +63,14 @@ class PageTracker:
         if M is None or self.inliers < self.min_inliers:
             self.reason = f"matches to the reference photo are inconsistent ({self.inliers} agree, need {self.min_inliers})"
             return self.last
-        self.last = self.H_ref @ np.linalg.inv(self.ref_S) @ M @ S  # frame px -> frame small -> ref small -> ref px -> mm
+        candidate = self.H_ref @ np.linalg.inv(self.ref_S) @ M @ S  # frame px -> frame small -> ref small -> ref px -> mm
+        if not np.isfinite(candidate).all():
+            # a near-degenerate point spread (matches bunched along one edge, say) can fit a singular matrix that
+            # findHomography's own checks don't catch: using it would divide by ~0 in to_page/to_image later and
+            # crash whatever called them, so it is rejected here at the source, same as any other bad fit.
+            self.reason = "matches to the reference photo fit no usable mapping"
+            return self.last
+        self.last = candidate
         return self.last
 
 
@@ -77,15 +84,18 @@ def load_calibration(path: str) -> Union[PageTracker, FixedPage]:
 class RobustPage:
     """Markers when they are visible; keeps working from the sheet's own appearance when they are not.
 
-    Marker registration is exact but brittle: one marker leaving the frame, a hand across it or motion blur loses the page
-    outright. This keeps the last marker-registered frame as a reference and, whenever fewer than four markers are readable,
-    matches the current frame to it, so a sheet can be moved, tilted or partly covered without the page being lost.
+    Exact marker registration only needs 3 of the 4 corner markers readable (each contributes its own 4 corners,
+    not just its centre: see page.homography_from_marker_corners), so a hand covering one of them -- typically
+    the one nearest whatever cell is being pointed at -- does not by itself lose exact registration. This still
+    keeps the last marker-registered frame as a reference and, whenever fewer than min_markers are readable,
+    matches the current frame to it, so a sheet can be moved, tilted or covered more than that without the page
+    being lost outright -- just less precisely followed.
 
     paper_fallback: an optional AutoPage (from --paper) used if even matching fails.
     """
 
     def __init__(self, hold_seconds: float = 4.0, refresh_seconds: float = 1.5, paper_fallback=None,
-                 min_markers: int = 4):
+                 min_markers: int = 3):
         from page import MARKER_POS_MM
 
         self.marker_pos, self.hold, self.refresh = MARKER_POS_MM, hold_seconds, refresh_seconds
@@ -97,7 +107,7 @@ class RobustPage:
     @property
     def status(self) -> str:
         if self.source == "markers":
-            return "page OK (4 markers)"
+            return f"page OK ({self.detail})" if self.detail else "page OK (4 markers)"
         if self.source == "tracking":
             return f"page OK - markers hidden, following the sheet ({self.detail})"
         if self.source == "paper":
@@ -115,13 +125,14 @@ class RobustPage:
 
     def homography(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """Image px -> page mm for this frame, or None if the page cannot be placed at all."""
-        from page import _homography_from_centers, visible_markers
+        from page import homography_from_marker_corners, visible_marker_corners
 
         now = time.time()
-        centers = visible_markers(frame)
-        if len(centers) >= self.min_markers:
-            H = _homography_from_centers(centers)
-            self.last_H, self.last_good, self.source, self.detail = H, now, "markers", ""
+        seen = visible_marker_corners(frame)
+        H = homography_from_marker_corners(seen) if len(seen) >= self.min_markers else None
+        if H is not None:
+            self.last_H, self.last_good, self.source = H, now, "markers"
+            self.detail = "" if len(seen) == 4 else f"{len(seen)} of 4 markers"
             if now - self.last_ref > self.refresh:  # keep the reference fresh so tracking starts from a recent view
                 self.tracker, self.last_ref = PageTracker(frame, H), now
             return H
@@ -137,7 +148,7 @@ class RobustPage:
                 self.last_H, self.last_good, self.source, self.detail = H, now, "paper", ""
                 return H
         if self.last_H is not None and now - self.last_good < self.hold:
-            self.source, self.detail = "holding", f"{len(centers)}/4 markers, {now - self.last_good:.0f}s"
+            self.source, self.detail = "holding", f"{len(seen)}/4 markers, {now - self.last_good:.0f}s"
             return self.last_H
         from page import diagnose_markers
 

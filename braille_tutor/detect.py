@@ -431,7 +431,7 @@ def page_status(frame: np.ndarray, page_src=None) -> tuple:
     H, note = diagnose_markers(frame)
     if H is None:
         return None, f"PAGE NOT FOUND: {note}", False
-    return H, "page OK (4 markers)" + (f" - warning: {note}" if note else ""), True
+    return H, f"page OK ({note})" if note else "page OK (4 markers)", True
 
 
 def draw_hud(view: np.ndarray, lines: list, y: int = 28, scale: float = 0.65) -> None:

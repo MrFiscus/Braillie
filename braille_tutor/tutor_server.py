@@ -22,6 +22,7 @@ import random
 import re
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -92,17 +93,23 @@ class TutorRuntime:
                 time.sleep(0.5)
                 continue
             self.camera_ok = True
-            self.feed.update(frame)
-            if self.phone is not None:  # the phone speaks this to whoever is holding it ("page found", "hold the phone higher")
-                self.phone.status = {"page_ok": bool(self.feed.page_ok and self.phone.connected), "message": self.feed.message}
-            view = self.feed.render()
-            if view.shape[1] > STREAM_WIDTH:
-                view = cv2.resize(view, (STREAM_WIDTH, int(view.shape[0] * STREAM_WIDTH / view.shape[1])))
-            ok, buf = cv2.imencode(".jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            if ok:
-                with self.cond:
-                    self.jpeg, self.seq = buf.tobytes(), self.seq + 1
-                    self.cond.notify_all()
+            try:
+                self.feed.update(frame)
+                if self.phone is not None:  # the phone speaks this to whoever is holding it ("page found", "hold the phone higher")
+                    self.phone.status = {"page_ok": bool(self.feed.page_ok and self.phone.connected), "message": self.feed.message}
+                view = self.feed.render()
+                if view.shape[1] > STREAM_WIDTH:
+                    view = cv2.resize(view, (STREAM_WIDTH, int(view.shape[0] * STREAM_WIDTH / view.shape[1])))
+                ok, buf = cv2.imencode(".jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if ok:
+                    with self.cond:
+                        self.jpeg, self.seq = buf.tobytes(), self.seq + 1
+                        self.cond.notify_all()
+            except Exception:
+                # One bad frame (e.g. a degenerate homography from an extreme camera angle) must never take the
+                # whole camera thread down with it -- that would silently freeze the video forever, with nothing
+                # left running to recover. Log it and carry on to the next frame.
+                traceback.print_exc()
             time.sleep(max(0.0, 1 / FPS - (time.time() - t0)))
 
     def wait_frame(self, last_seq: int, timeout: float = 2.0) -> tuple:

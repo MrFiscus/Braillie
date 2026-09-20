@@ -22,7 +22,7 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 
-from page import to_page
+from page import PAGE_H_MM, PAGE_W_MM, to_page
 
 WORK_WIDTH = 320  # the mask is made at this width: fast enough for every frame, sharp enough for a fingertip
 BORDER_PX = 3  # outline points this close to the picture edge are where the arm is cut off, not a fingertip
@@ -32,6 +32,7 @@ SKIN_CR = (135, 180)
 SKIN_CB = (85, 130)
 MIN_SATURATION = 40  # paper, however warm the light, is far less saturated than skin
 MIN_VALUE = 50
+PAGE_MARGIN_MM = 30.0  # how far past the printed sheet a sighting may still land and count as "on the page"
 
 
 @dataclass(frozen=True)
@@ -112,10 +113,23 @@ class FingerTracker:
     * holds the last position for `hold_seconds` after the hand leaves, then reports None"""
 
     def __init__(self, min_confidence: float = 0.3, confirm: int = 2, smooth: float = 0.5, jump_mm: float = 40.0,
-                 hold_seconds: float = 0.6, clock: Callable = time.monotonic, find: Callable = find_fingertip):
+                 hold_seconds: float = 0.6, clock: Callable = time.monotonic, find: Callable = find_fingertip,
+                 page_size_mm: tuple = (PAGE_W_MM, PAGE_H_MM), page_margin_mm: float = PAGE_MARGIN_MM):
         self.min_confidence, self.confirm, self.smooth, self.jump_mm = min_confidence, confirm, smooth, jump_mm
         self.hold_seconds, self.clock, self.find = hold_seconds, clock, find
+        self.page_size_mm, self.page_margin_mm = page_size_mm, page_margin_mm
         self.reset()
+
+    def _on_page(self, raw: tuple) -> bool:
+        """Is a page-mm point plausibly still on the printed sheet, not off in the background (a couch, a desk)?
+
+        find_fingertip() only looks at skin colour, with no idea where the page is (see its docstring: "a
+        skin-coloured desk defeats it") -- this is the one place page geometry is available, so it is where a
+        hand-shaped blob that the homography maps nowhere near the sheet gets rejected, rather than reported
+        as wherever it happened to be."""
+        w, h = self.page_size_mm
+        m = self.page_margin_mm
+        return -m <= raw[0] <= w + m and -m <= raw[1] <= h + m
 
     def reset(self) -> None:
         self.position: Optional[tuple] = None  # page mm, or image px when no page is registered
@@ -126,7 +140,11 @@ class FingerTracker:
         """Process one frame. Returns the fingertip in page mm (needs H), or None."""
         tip = self.find(frame)
         now = self.clock()
-        if tip is None or tip.confidence < self.min_confidence:
+        valid = tip is not None and tip.confidence >= self.min_confidence
+        raw = to_page(H, tip.x, tip.y) if (valid and H is not None) else None
+        if valid and raw is not None and not self._on_page(raw):
+            valid = False  # a hand-shaped blob well off the sheet: treat it as no sighting, not a new position
+        if not valid:
             self.tip, self._streak = None, 0
             if self.position is not None and now - self._seen > self.hold_seconds:
                 self.position = None
@@ -135,7 +153,6 @@ class FingerTracker:
         if H is None:  # without a page there is no mm: keep nothing that would mean the wrong thing
             self.position = None
             return None
-        raw = to_page(H, tip.x, tip.y)
         if self._streak < self.confirm and self.position is None:
             return None
         if self.position is None or np.hypot(raw[0] - self.position[0], raw[1] - self.position[1]) > self.jump_mm:

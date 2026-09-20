@@ -391,8 +391,13 @@ class Journey:
         self.asked_at = self.last_activity = self.clock()
 
     def _judge(self, pos: tuple) -> None:
-        """The learner rested on `pos`: is that the target?"""
-        cell = nearest_cell(self.host.cells(), *pos)
+        """The learner rested on `pos`: is that the target?
+
+        Uses the sheet's own printed layout (known_cells), not a live camera reading: the finger being
+        graded is resting on exactly the cell that reading would need a clear view of, which a finger
+        or hand nearby routinely spoils (see vote.py's CellLocker -- a run of misreads there can even
+        unlock a cell that was read correctly moments earlier, before the hand arrived)."""
+        cell = nearest_cell(self.host.known_cells(), *pos)
         now = self.clock()
         if cell is None:
             if now - self.off_page_since >= OFF_PAGE_AFTER:  # (once per rest: the dwell stays "answered" until the finger moves away)

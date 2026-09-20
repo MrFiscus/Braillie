@@ -58,6 +58,9 @@ class Host:
     def cells(self):
         return self.sheets[self.sheet].cells
 
+    def known_cells(self):
+        return self.sheets[self.sheet].cells
+
     def sheet_name(self):
         return self.sheet
 

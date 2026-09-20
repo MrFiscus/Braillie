@@ -271,6 +271,15 @@ class _JourneyHost:
     def cells(self) -> list:
         return self.s._explore_cells()  # a fresh reading of the page, or the sheet's layout if there is none yet
 
+    def known_cells(self) -> list:
+        """The active sheet's own printed layout -- ground truth, never the live camera reading.
+
+        Unlike cells() above (for explore mode, where hearing what the camera actually sees is the point),
+        grading a lesson answer should not depend on a clean live reading of the exact cell the learner's
+        finger is resting on: that finger is, by definition, occluding it right then. Kept in sync with the
+        active sheet by set_sheet() on every mode switch."""
+        return self.s.cells
+
     def sheet_name(self) -> str:
         return self.s.current_sheet()
 

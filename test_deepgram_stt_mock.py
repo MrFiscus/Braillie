@@ -97,6 +97,15 @@ class _FakePyAudioInstance:
     def get_default_input_device_info(self) -> dict[str, int]:
         return {"index": 0}
 
+    def get_device_count(self) -> int:
+        return 1
+
+    def get_device_info_by_index(self, index: int) -> dict[str, object]:
+        return {"index": index, "name": "fake-mic", "maxInputChannels": 1, "defaultSampleRate": 16000.0}
+
+    def is_format_supported(self, rate: int, **kwargs: object) -> bool:
+        return True
+
     def terminate(self) -> None:
         STATE["terminated"] = True
 

@@ -164,6 +164,39 @@ class TestFingerTracker(unittest.TestCase):
         for _ in range(4):
             self.assertIsNone(tr.update(np.zeros((10, 10, 3), np.uint8), identity_like()))
 
+    def test_a_hand_shaped_blob_mapped_off_the_page_is_ignored(self):
+        """A confident, well-formed sighting is still rejected if the homography puts it nowhere near the sheet --
+        e.g. a skin-coloured couch or desk beside the page (find_fingertip() only looks at colour, so it cannot
+        tell the difference on its own; see its docstring)."""
+        tr, _ = self.tracker(page_size_mm=(50.0, 50.0), page_margin_mm=5.0)
+        frame = hand_frame()  # tip (320, 150) px -> (80, 37.5) mm under identity_like(): off a 50x50 mm sheet
+        for _ in range(4):
+            self.assertIsNone(tr.update(frame, identity_like()))
+        self.assertIsNone(tr.position)
+
+    def test_the_same_sighting_is_accepted_on_a_big_enough_page(self):
+        tr, _ = self.tracker(page_size_mm=(200.0, 200.0), page_margin_mm=5.0)
+        frame = hand_frame()
+        tr.update(frame, identity_like())
+        pos = tr.update(frame, identity_like())
+        self.assertIsNotNone(pos)
+
+    def test_off_page_sighting_does_not_extend_the_hold_of_a_real_one(self):
+        """An off-page false sighting must not look like 'still seeing the finger': the hold-timer for the
+        previously tracked position should keep counting down, not get refreshed by it."""
+        tr, clock = self.tracker(page_size_mm=(90.0, 200.0), page_margin_mm=5.0, hold_seconds=0.6)
+        H = identity_like()
+        on_page = hand_frame((320, 150))   # 80, 37.5 mm: inside a 90x200 mm sheet
+        off_page = hand_frame((580, 150))  # 145 mm across: off the same sheet, but still a confident sighting
+        for _ in range(3):
+            tr.update(on_page, H)
+        held = tr.position
+        self.assertIsNotNone(held)
+        clock.t = 0.3
+        tr.update(off_page, H)  # a false sighting elsewhere: must not refresh the hold timer
+        clock.t = 1.0
+        self.assertIsNone(tr.update(off_page, H))  # the real position's hold has now expired
+
 
 class TestFeedIntegration(unittest.TestCase):
     def test_tracked_finger_feeds_the_tutor_and_a_click_overrides_it(self):
