@@ -50,6 +50,24 @@ class LLMClient:
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             return json.loads(r.read())["choices"][0]["message"]["content"].strip()
 
+    def chat_json(self, system: str, user: str, schema: dict) -> dict:
+        """Request a strictly schema-shaped JSON reply from Chat Completions."""
+        body = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "response_format": {"type": "json_schema", "json_schema": schema},
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions", data=body, method="POST",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            result = json.loads(r.read())["choices"][0]["message"]["content"]
+        parsed = json.loads(result)
+        if not isinstance(parsed, dict):
+            raise ValueError("OpenAI returned a non-object adaptive plan")
+        return parsed
+
 
 class Pending:
     """A background call whose result may or may not arrive in time."""

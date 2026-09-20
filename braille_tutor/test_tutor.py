@@ -43,6 +43,25 @@ class FakeVoice:
         self.commands[name] = callback
 
 
+class PlanningClient:
+    """Deterministic stand-in for OpenAI's structured target-plan reply."""
+
+    model = "fake-adaptive-model"
+
+    def __init__(self, error=None):
+        self.calls, self.error = [], error
+
+    def chat_json(self, _system, user, _schema):
+        self.calls.append(__import__("json").loads(user))
+        if self.error:
+            raise self.error
+        payload = self.calls[-1]
+        candidates = payload["candidate_targets"]
+        history = payload["miss_history"]
+        ordered = sorted(candidates, key=lambda key: (-history.get(key, {}).get("misses", 0), key))
+        return {"targets": ordered[:payload["target_count"]], "reason": "recent misses first, then variety"}
+
+
 def session(mode="letters", cells=None, scan=None, finger=None, **kw):
     voice = FakeVoice()
     cells = make_sheet.sheet_cells() if cells is None else cells
@@ -140,6 +159,67 @@ class LetterQuizTests(unittest.TestCase):
         self.assertEqual(v.said[-1], "Goodbye.")
         self.assertEqual(v.debriefs, [])
         self.assertTrue(s.finished.is_set())
+
+
+@unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")
+class AdaptiveQuizTests(unittest.TestCase):
+    @staticmethod
+    def wait_for_plan(planner):
+        for _ in range(100):
+            if planner._pending and planner._pending.done.is_set():
+                return
+            time.sleep(0.01)
+        raise AssertionError("adaptive plan did not complete")
+
+    def test_missed_letter_is_prioritized_in_the_next_round(self):
+        client = PlanningClient()
+        planner = tutor.AdaptiveTargetPlanner(client)
+        s, _ = session(questions=1, max_tries=1, adaptive_planner=planner)
+        s.on_start()  # first plan is not ready, so this deliberately uses fallback
+        missed = s.items[0]
+        wrong = "a" if missed != "a" else "b"
+        cell = s._target_cell(wrong)
+        s.finger = lambda: (cell["x"], cell["y"])
+        s.on_found_it()  # completes the round and prefetches the history-aware plan
+        self.wait_for_plan(planner)
+        self.assertFalse(s.finished.is_set(), "adaptive mode must allow another live round")
+
+        s.on_start()
+        self.assertEqual(s.miss_history[missed]["misses"], 1)
+        self.assertEqual(s.items, [missed])
+        self.assertEqual(s.last_selection["source"], "openai")
+        self.assertEqual(client.calls[-1]["miss_history"][missed]["misses"], 1)
+        s.on_stop()
+        self.assertTrue(s.finished.is_set())
+
+    def test_word_quiz_uses_the_same_history_aware_planner(self):
+        client = PlanningClient()
+        planner = tutor.AdaptiveTargetPlanner(client)
+        s, _ = session(mode="word-quiz", cells=[], words=("cap", "dog", "sun"), questions=2,
+                       max_tries=1, scan=lambda: [], adaptive_planner=planner)
+        s.on_start()
+        self.assertEqual(s.items, ["cap", "dog"])
+        s._check_word((0, 0))  # miss cap; the fake scan has no matching word
+        s._check_word((0, 0))  # miss dog and finish the round
+        self.wait_for_plan(planner)
+
+        s.on_start()
+        self.assertEqual(s.items, ["cap", "dog"])
+        self.assertEqual(s.last_selection["source"], "openai")
+        self.assertEqual(s.miss_history["cap"]["misses"], 1)
+        self.assertEqual(s.miss_history["dog"]["misses"], 1)
+
+    def test_failed_openai_plan_uses_the_existing_fallback(self):
+        planner = tutor.AdaptiveTargetPlanner(PlanningClient(error=ConnectionError("bad API key")))
+        s, _ = session(questions=1, adaptive_planner=planner)
+        s.miss_history = {"a": {"misses": 3, "last_missed_quiz": 1}}
+        candidates = s._candidate_targets()
+        planner.prefetch(candidates, 1, s.mode, s._selection_history(False))
+        self.wait_for_plan(planner)
+        picked = s._pick_items()
+        self.assertEqual(len(picked), 1)
+        self.assertEqual(s.last_selection["source"], "fallback")
+        self.assertIn("ConnectionError", s.last_selection["reason"])
 
 
 @unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")

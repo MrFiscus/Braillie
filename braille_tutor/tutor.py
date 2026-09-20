@@ -12,6 +12,8 @@ The finger is not tracked yet, so click on the camera view where the fingertip i
 from __future__ import annotations
 
 import argparse
+import json
+import logging
 import os
 import random
 import sys
@@ -24,12 +26,87 @@ import numpy as np
 
 import reader
 from detect import GREEN, RED, _Detector, braille_status, dot_distance, draw_detections, draw_hud, draw_page_outline, letter_of, nearest_cell, open_camera, page_source_from_args, page_status
-from llm import Coach, LLMClient
+from drill import drill as _drill
+from llm import Coach, LLMClient, Pending
 from fingertip import FingerTracker
 from page import to_image, to_page
 from sheets import Symbol, get_sheet, letter_symbol
 
 ROOT = Path(__file__).resolve().parents[1]
+log = logging.getLogger(__name__)
+
+
+class AdaptiveTargetPlanner:
+    """Asynchronously ask OpenAI to order the next quiz's known targets."""
+
+    _SYSTEM = (
+        "You are an adaptive braille-literacy quiz planner. Choose and order the next "
+        "targets from the supplied candidate list. Prioritize targets with more misses, "
+        "especially recent misses, but include variety so one or two hard targets do not "
+        "crowd out all other practice. Return only the requested structured data."
+    )
+    _SCHEMA = {
+        "name": "braillie_adaptive_targets",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "targets": {"type": "array", "items": {"type": "string"}},
+                "reason": {"type": "string"},
+            },
+            "required": ["targets", "reason"],
+            "additionalProperties": False,
+        },
+    }
+
+    def __init__(self, client: LLMClient):
+        self.client = client
+        self._pending: Optional[Pending] = None
+        self._signature: Optional[str] = None
+        self.last_response: Optional[dict] = None
+
+    @staticmethod
+    def _signature_for(candidates: list[str], count: int, mode: str, history: dict) -> str:
+        return json.dumps(
+            {"candidates": candidates, "count": count, "mode": mode, "history": history},
+            sort_keys=True,
+        )
+
+    def prefetch(self, candidates: list[str], count: int, mode: str, history: dict) -> None:
+        """Start the next-plan request without holding up the learner."""
+        signature = self._signature_for(candidates, count, mode, history)
+        if self._pending is not None and self._signature == signature:
+            return
+        payload = json.dumps({
+            "mode": mode,
+            "candidate_targets": candidates,
+            "target_count": count,
+            "miss_history": history,
+        }, sort_keys=True)
+        self._signature = signature
+        self._pending = Pending(lambda: self.client.chat_json(self._SYSTEM, payload, self._SCHEMA))
+
+    def take_ready(self, candidates: list[str], count: int, mode: str, history: dict) -> tuple[Optional[list[str]], str]:
+        """Return a validated ready plan, or a reason to use the local fallback."""
+        signature = self._signature_for(candidates, count, mode, history)
+        if self._pending is None or self._signature != signature:
+            return None, "no matching OpenAI plan is ready"
+        if not self._pending.done.is_set():
+            return None, "OpenAI plan is still pending"
+        result = self._pending.value
+        if isinstance(result, Exception):
+            return None, f"OpenAI request failed: {type(result).__name__}: {result}"
+        if not isinstance(result, dict):
+            return None, "OpenAI returned no adaptive plan"
+        targets = result.get("targets")
+        if not isinstance(targets, list) or len(targets) != count:
+            return None, "OpenAI returned the wrong number of targets"
+        if any(not isinstance(target, str) for target in targets):
+            return None, "OpenAI returned a non-string target"
+        if len(set(targets)) != len(targets) or any(target not in candidates for target in targets):
+            return None, "OpenAI returned unknown or duplicate targets"
+        self.last_response = result
+        return targets, "OpenAI adaptive plan"
 
 
 def load_teammate_modules(mock: bool = False):
@@ -58,7 +135,8 @@ class TutorSession:
 
     def __init__(self, voice, wc, cells: list, finger: Callable, scan: Optional[Callable] = None, mode: str = "letters",
                  questions: int = 5, words: tuple = (), max_tries: int = 3, rng: Optional[random.Random] = None,
-                 names: Optional[dict] = None, coach: Optional[Coach] = None, contracted: bool = False):
+                 names: Optional[dict] = None, coach: Optional[Coach] = None, contracted: bool = False,
+                 adaptive_planner: Optional[AdaptiveTargetPlanner] = None):
         self.contracted = contracted  # read words as contracted (Grade 2) braille: for a real page; printed sheets are plain letters
         self.coach, self.confusions, self.last_debrief = coach, {}, None  # coach = optional LLM extras; see llm.py
         self.names = names  # (row, col) -> sheets.Symbol for every cell of a printed sheet; None = every letter cell is a letter
@@ -67,6 +145,11 @@ class TutorSession:
         self.rng, self.lock, self.finished = rng or random.Random(), threading.RLock(), threading.Event()
         self.state, self.items, self.index, self.tries, self.hints = "idle", [], 0, 0, 0
         self.asked, self.correct, self.slips = 0, 0, {}
+        self.quiz_correct: dict[str, int] = {}     # per-symbol correct count for the running quiz
+        self.miss_history: dict[str, dict[str, int]] = {}
+        self.quiz_number = 0
+        self.adaptive_planner = adaptive_planner
+        self.last_selection = {"source": "unselected", "reason": ""}
 
     # ---- wiring ---------------------------------------------------------------------------------
     def attach(self) -> None:
@@ -91,8 +174,10 @@ class TutorSession:
     # ---- commands -------------------------------------------------------------------------------
     def on_start(self) -> None:
         with self.lock:
+            self._merge_slips_into_history()
             self.asked = self.correct = self.index = 0
             self.slips = {}
+            self.quiz_number += 1
             if self.mode == "read":
                 self.state = "reading"
                 return self.say("Read mode. Put your finger on a word, then say found it.")
@@ -156,7 +241,7 @@ class TutorSession:
 
     def on_stop(self) -> None:
         with self.lock:
-            self._finish()
+            self._finish(stop=True)
 
     # ---- quiz internals -------------------------------------------------------------------------
     def _symbol(self, cell: dict) -> Optional[Symbol]:
@@ -196,10 +281,73 @@ class TutorSession:
                 "trouble": trouble}
 
     def _pick_items(self) -> list:
+        candidates = self._candidate_targets()
+        count = min(self.questions, len(candidates))
+        history = self._selection_history(include_current=False)
+        if self.adaptive_planner is not None and count:
+            planned, reason = self.adaptive_planner.take_ready(candidates, count, self.mode, history)
+            if planned is not None:
+                self.last_selection = {"source": "openai", "reason": self.adaptive_planner.last_response.get("reason", "")}
+                log.info("Adaptive target selection used OpenAI: %s", self.last_selection["reason"])
+                self.adaptive_planner.prefetch(candidates, count, self.mode, history)
+                return planned
+            self.adaptive_planner.prefetch(candidates, count, self.mode, history)
+            self.last_selection = {"source": "fallback", "reason": reason}
+            log.warning("Adaptive target selection fallback: %s", reason)
+        return self._fallback_items(candidates, count)
+
+    def _candidate_targets(self) -> list[str]:
         if self.mode == "word-quiz":
-            return list(self.words)[: self.questions]
-        keys = sorted({s.key for s in map(self._symbol, self.cells) if s is not None})
-        return self.rng.sample(keys, min(self.questions, len(keys)))
+            return list(dict.fromkeys(self.words))
+        return sorted({s.key for s in map(self._symbol, self.cells) if s is not None})
+
+    def _fallback_items(self, candidates: list[str], count: int) -> list:
+        """Miss-weighted selection (LetterDrill) when no OpenAI plan is ready.
+
+        word-quiz: unchanged — ordered slice of self.words.
+        letters:   weighted draw via (1 + 2*misses)/(1 + correct); falls back to
+                   uniform random when the pool has no history (first quiz).
+        Returns list[str] of exactly min(count, len(candidates)) symbols,
+        same shape as the former rng.sample() call.
+        """
+        if self.mode == "word-quiz":
+            return list(self.words)[:count]
+        stats = self._selection_history(include_current=False)
+        # exclude_first: last item from the previous quiz so we don't open with
+        # the same letter twice in a row; self.items still holds the old list here.
+        exclude_first = self.items[-1] if self.items else None
+        return _drill.pick(candidates, count, stats, self.rng, exclude_first=exclude_first)
+
+    def _merge_slips_into_history(self) -> None:
+        for key, misses in self.slips.items():
+            record = self.miss_history.setdefault(key, {"misses": 0, "correct": 0, "last_missed_quiz": 0})
+            record["misses"] += misses
+            record["last_missed_quiz"] = self.quiz_number
+        for key, correct in self.quiz_correct.items():
+            record = self.miss_history.setdefault(key, {"misses": 0, "correct": 0, "last_missed_quiz": 0})
+            record["correct"] = record.get("correct", 0) + correct
+        self.quiz_correct = {}      # reset for the next quiz
+
+    def _selection_history(self, include_current: bool) -> dict[str, dict[str, int]]:
+        history = {key: dict(value) for key, value in self.miss_history.items()}
+        if include_current:
+            for key, misses in self.slips.items():
+                record = history.setdefault(key, {"misses": 0, "correct": 0, "last_missed_quiz": 0})
+                record["misses"] += misses
+                record["last_missed_quiz"] = self.quiz_number
+            for key, correct in self.quiz_correct.items():
+                record = history.setdefault(key, {"misses": 0, "correct": 0, "last_missed_quiz": 0})
+                record["correct"] = record.get("correct", 0) + correct
+        return history
+
+    def _prefetch_adaptive_selection(self) -> None:
+        if self.adaptive_planner is None or self.mode == "read":
+            return
+        candidates = self._candidate_targets()
+        self.adaptive_planner.prefetch(
+            candidates, min(self.questions, len(candidates)), self.mode,
+            self._selection_history(include_current=True),
+        )
 
     def _prompt(self) -> str:
         item = self.items[self.index]
@@ -219,8 +367,10 @@ class TutorSession:
         """Count one finished question; a miss also goes in the slips list that feeds the debrief."""
         self.asked += 1
         self.correct += ok
-        if not ok and slip:
-            item = self.items[self.index]
+        item = self.items[self.index]
+        if ok:
+            self.quiz_correct[item] = self.quiz_correct.get(item, 0) + 1
+        elif slip:
             self.slips[item] = self.slips.get(item, 0) + 1
 
     def _advance(self) -> None:
@@ -230,7 +380,7 @@ class TutorSession:
         else:
             self._ask()
 
-    def _finish(self) -> None:
+    def _finish(self, stop: bool = False) -> None:
         if self.asked:
             order = [k for k, _ in sorted(self.slips.items(), key=lambda kv: -kv[1])]
             missed = [k.upper() if self.mode == "word-quiz" else self._symbol(self._target_cell(k)).short for k in order]
@@ -248,6 +398,10 @@ class TutorSession:
                 self.voice.speak_debrief(accuracy, missed)  # the built-in debrief (also the fallback if the LLM is slow or off)
         else:
             self.say("Goodbye.")
+        self._prefetch_adaptive_selection()
+        if self.adaptive_planner is not None and not stop:
+            self.state = "idle"
+            return self.say("Round complete. Say start quiz when you're ready for the next round.")
         self.state = "done"
         self.finished.set()
 
@@ -448,6 +602,8 @@ def add_setup_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--llm", action="store_true", help="optional LLM extras (memory aids, praise, personal debrief); "
                     "needs OPENAI_API_KEY. Never slows the tutor: see llm.py")
     ap.add_argument("--llm-model", default=None, help="model name for the LLM helper (default gpt-4o-mini, or $BRAILLIE_LLM_MODEL)")
+    ap.add_argument("--adaptive", action="store_true", help="use OpenAI to prioritize targets from this session's miss history; "
+                    "falls back safely when no plan is ready")
 
 
 def make_coach(a) -> Optional[Coach]:
@@ -461,6 +617,18 @@ def make_coach(a) -> Optional[Coach]:
     print(f"LLM helper on ({client.model}). Only lesson facts (cell names, dot numbers, scores) are sent, never camera images "
           "or audio. If the service is slow or fails, the built-in wording is used.", flush=True)
     return Coach(client)
+
+
+def make_adaptive_planner(a) -> Optional[AdaptiveTargetPlanner]:
+    """Return the opt-in, bounded-latency OpenAI target planner."""
+    if not getattr(a, "adaptive", False):
+        return None
+    client = LLMClient.from_env(a.llm_model)
+    if client is None:
+        log.warning("Adaptive target selection is enabled but OPENAI_API_KEY is not set; using fallback selection.")
+        return None
+    client.timeout = min(client.timeout, 2.5)
+    return AdaptiveTargetPlanner(client)
 
 
 def setup_from_args(a, ap: argparse.ArgumentParser) -> Setup:
@@ -496,7 +664,8 @@ def main() -> None:
     setup = setup_from_args(a, ap)
     voice, wc = load_teammate_modules(a.mock)
     session = TutorSession(voice, wc, setup.cells, finger=lambda: None, mode=a.mode, questions=a.questions, words=setup.words,
-                           rng=random.Random(a.seed), names=setup.names, coach=make_coach(a), contracted=setup.contracted)
+                           rng=random.Random(a.seed), names=setup.names, coach=make_coach(a), contracted=setup.contracted,
+                           adaptive_planner=make_adaptive_planner(a))
     session.attach()
     cap, page_src = open_camera(a.camera), page_source_from_args(a)
     voice.start_listening()
