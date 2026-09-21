@@ -120,6 +120,8 @@ class AdaptiveTargetPlanner:
         self.last_response = result
         return targets, "OpenAI adaptive plan"
 
+SPEECH_TIMEOUT = 8.0  # a single say() call gives up after this long (see TutorSession.say): no legitimate
+# utterance takes anywhere near this, so past it something downstream (network, audio device) is stuck
 EXPLORE_DWELL_SECONDS = 0.7  # a finger resting this long on one spot is "feeling" it
 NO_FINGER_SECONDS = 4.0  # in quiz/read: how long with no fingertip before the tutor says it cannot see one
 NO_FINGER_AGAIN = 12.0  # ...and how long between those reminders
@@ -134,6 +136,10 @@ MENU_LINE = ("Choose an option. Learn teaches the letters a few at a time on the
              "Read says a word aloud when you rest your finger on it on the words sheet. "
              "Quiz names a letter on the look-alikes sheet and you find it. "
              "Say learn, read, or quiz.")
+# What each mode does is explained in full once, in the opening greeting (see greeting() / _maybe_greet());
+# every later return to the menu (from "stop"/"finish", or saying it again while already there) uses this
+# short prompt instead, so the same three explanations are not repeated on every round of a demo.
+MENU_LINE_SHORT = "Choose an option. Say learn, read, or quiz."
 PROMPTS = {  # canned things the website may ask the tutor to say (it cannot make the tutor say anything else; {name} is a cleaned first name)
     "welcome": "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. To sign in, say Google. "
                "To carry on without an account, say guest. Or use the tab key to move between the options. If you sign in, your progress "
@@ -458,8 +464,25 @@ class TutorSession:
                 print(f"voice: this voice_io does not know the command {name!r}", flush=True)
 
     def say(self, text: str) -> None:
+        # say() is called from almost every command handler while self.lock is held (set_mode, on_stop,
+        # _check_symbol...), so a voice.speak() call that never returns -- a hung network request, or a
+        # stuck audio-device write, neither of which is guaranteed to have its own timeout -- would freeze
+        # every voice command and button in the whole session, not just narration. Running it in its own
+        # thread and giving up after SPEECH_TIMEOUT bounds that: a hang is logged and the caller carries on;
+        # the abandoned thread is a daemon, so it cannot block shutdown, and _speech (below) still keeps two
+        # calls from writing to the speaker at once in the normal, non-hung case.
         with self._speech:
-            self.voice.speak(text)
+            done = threading.Event()
+
+            def run() -> None:
+                try:
+                    self.voice.speak(text)
+                finally:
+                    done.set()
+
+            threading.Thread(target=run, daemon=True, name="speak").start()
+            if not done.wait(SPEECH_TIMEOUT):
+                log.warning("say() timed out after %.0fs; giving up so the session is not stuck (text=%r)", SPEECH_TIMEOUT, text)
 
     def status(self) -> dict:
         """A snapshot for displays (no lock: commands hold it while they speak, and a display must not wait for that)."""
@@ -665,6 +688,11 @@ class TutorSession:
 
     def _maybe_greet(self) -> None:
         """"What do you want to do today, <name>?" once, when we know who it is and (if a phone is the camera) the phone is linked."""
+        # Polled every camera frame (see TutorRuntime._loop) so a hiccup in the one-shot phone-ready callback
+        # can't permanently skip the greeting; this fast, lock-free check keeps that polling from contending
+        # for self.lock ~15 times a second once greeted, which is the overwhelmingly common case.
+        if not self.hub or self.user is None or self.hub_mode != "menu" or self._greeted_for == self.user["key"]:
+            return
         with self.lock:
             if not self.hub or self.user is None or self.hub_mode != "menu" or self._greeted_for == self.user["key"]:
                 return
@@ -735,7 +763,7 @@ class TutorSession:
             self.finished.clear()
             if mode == "menu":
                 self.mode, self.hub_mode, self.state = "menu", "menu", "menu"
-                return self.say(f"Okay. {MENU_LINE}")
+                return self.say(f"Okay. {MENU_LINE_SHORT}")
             cfg = HUB_MODES[mode]
             self.mode, self.hub_mode = cfg["mode"], mode
             if self.select_sheet is not None:
@@ -903,7 +931,7 @@ class TutorSession:
             return
         with self.lock:
             if self.hub and self.hub_mode == "menu":
-                return self.say(MENU_LINE)
+                return self.say(MENU_LINE_SHORT)
             self._finish(stop=True)  # "stop" always ends it (with the adaptive planner on, a plain _finish() only ends the ROUND and stays in the mode)
 
     def on_explore(self) -> None:

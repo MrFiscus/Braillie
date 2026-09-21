@@ -99,6 +99,12 @@ class TutorRuntime:
                 self.feed.update(frame)
                 if self.phone is not None:  # the phone speaks this to whoever is holding it ("page found", "hold the phone higher")
                     self.phone.status = {"page_ok": bool(self.feed.page_ok and self.phone.connected), "message": self.feed.message}
+                # _maybe_greet() is cheap and self-guarding (it no-ops once greeted, or until its
+                # preconditions hold) -- polling it here, rather than relying only on the one-shot
+                # on_phone_ready() callback, means a transient hiccup during the phone's connect handshake
+                # (a brief drop in link.connected right when that single callback fires) can no longer
+                # permanently skip the "what do you want to do today" menu greeting for the whole session.
+                self.session._maybe_greet()
                 view = self.feed.render()
                 if view.shape[1] > STREAM_WIDTH:
                     view = cv2.resize(view, (STREAM_WIDTH, int(view.shape[0] * STREAM_WIDTH / view.shape[1])))

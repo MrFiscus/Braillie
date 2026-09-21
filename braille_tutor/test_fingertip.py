@@ -280,7 +280,8 @@ class TestFeedIntegration(unittest.TestCase):
         self.assertLess(pos[1], 50.0)
 
     def test_off_page_skin_does_not_move_the_grade_point(self):
-        """A desk/couch blob may move the green ring, but grading stays on the last on-page pad."""
+        """An off-page desk/couch blob must not move the grade point (or the green ring, which shares the
+        same on-page gate -- see test_the_ring_does_not_follow_a_skin_toned_background)."""
         spots = {"now": Tip(320, 150, 0.9, (320, 300), 2.2)}
 
         def find(_frame):
@@ -294,6 +295,29 @@ class TestFeedIntegration(unittest.TestCase):
         spots["now"] = Tip(580, 150, 0.95, (580, 300), 2.2)  # off the 90 mm-wide page
         tr.update(np.zeros((10, 10, 3), np.uint8), H)
         self.assertEqual(tr.position, held)
+
+    def test_the_ring_does_not_follow_a_skin_toned_background(self):
+        """The ring (tip) always shows the newest camera sighting, for responsiveness -- but a skin-toned
+        background merged into the hand's blob (a carpet, a desk) reads as a confident, well-formed sighting
+        too, just nowhere near the real hand. Without this gate the ring would jump there every time it
+        happens, not only when the page briefly drops out (which is what the gate still allows through)."""
+        spots = {"now": Tip(320, 150, 0.9, (320, 300), 2.2)}  # on a 90x200 mm page
+
+        def find(_frame):
+            return spots["now"]
+
+        tr = FingerTracker(find=find, page_size_mm=(90.0, 200.0), page_margin_mm=5.0)
+        H = identity_like()
+        tr.update(np.zeros((10, 10, 3), np.uint8), H)
+        on_page_tip = tr.tip
+        self.assertIsNotNone(on_page_tip)
+        spots["now"] = Tip(580, 150, 0.95, (580, 300), 2.2)  # off the page: a merged background blob, not a real finger
+        tr.update(np.zeros((10, 10, 3), np.uint8), H)
+        self.assertEqual(tr.tip, on_page_tip, "the ring must not jump to an off-page sighting")
+        # ...but with no page registered at all, there is nothing to judge "on-page" against, so the newest
+        # sighting is still shown rather than frozen on a stale one from before the page was lost.
+        tr.update(np.zeros((10, 10, 3), np.uint8), None)
+        self.assertEqual(tr.tip, spots["now"])
 
     def test_the_default_hold_outlasts_a_rest_that_counts_as_an_answer(self):
         """Resting a finger for ~3 s must not make the tracker forget it mid-answer."""

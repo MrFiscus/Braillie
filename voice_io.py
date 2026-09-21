@@ -1083,12 +1083,19 @@ def _deepgram_speak(text: str) -> None:
         # Join the stream while the SDK's response is still open, then pad: the phone speaker
         # intercepts _play_audio_stream, so any silence written only inside pyaudio never reaches
         # the phone (that is why 'cat' was still heard as 'ca' after the laptop-side waits).
+        #
+        # timeout_in_seconds: without a bound, a hung network call here hangs forever -- and say()
+        # (voice_io callers) is routinely called while a caller holds its own session lock (see
+        # tutor.py's TutorSession.lock), so one stuck TTS request can freeze every voice command and
+        # button that needs that same lock, not just narration. 12s is generous for even a long
+        # debrief sentence under a normal connection, but still a hard ceiling instead of none.
         raw = b"".join(
             client.speak.v1.audio.generate(
                 text=_for_tts(text),
                 model=DEEPGRAM_TTS_MODEL,
                 encoding="linear16",  # request PCM; default is MP3 which wave.open() rejects
                 container="wav",
+                request_options={"timeout_in_seconds": 12},
             )
         )
         _play_audio_stream([_pad_wav_silence(raw)])

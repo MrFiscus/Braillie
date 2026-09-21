@@ -32,7 +32,11 @@ SKIN_CR = (135, 180)
 SKIN_CB = (85, 130)
 MIN_SATURATION = 30  # paper, however warm the light, is far less saturated than skin
 MIN_VALUE = 40
-PAGE_MARGIN_MM = 40.0  # how far past the printed sheet a sighting may still land and count as "on the page"
+PAGE_MARGIN_MM = 20.0  # how far past the printed sheet a sighting may still land and count as "on the page"
+# (was widened to 40 for demo-sheet edge cells; tightened back down after a live false positive -- a
+# background merged into the hand's blob -- mapped to ~184mm on a 150mm-wide page and was still accepted.
+# 20 keeps comfortable room for genuine edge-of-sheet pointing (cells sit within ~10mm of the real edges)
+# while meaningfully narrowing that false-accept window.)
 
 
 @dataclass(frozen=True)
@@ -148,9 +152,12 @@ class FingerTracker:
         now = self.clock()
         raw = to_page(H, tip.x, tip.y) if (tip is not None and H is not None) else None
         on_page = raw is not None and self._on_page(raw)
-        # Green ring: always the latest camera tip so it stays on the finger through page flicker and
-        # sheet swaps. Grading (see contact_mm / CameraFeed.finger) only accepts on-page tips.
-        if tip is not None:
+        # Green ring: the latest camera tip so it stays on the finger through page flicker and sheet
+        # swaps, same as grading (see contact_mm / CameraFeed.finger) -- but still gated on being
+        # plausibly on the page (skipped only when there is no H yet to judge that against). Without
+        # this a skin-toned background merged into the hand's blob (a carpet, a desk) can send the ring
+        # anywhere find_fingertip() decided was "farthest from the hand", nowhere near a real finger.
+        if tip is not None and (H is None or on_page):
             self.tip, self._tip_seen = tip, now
         elif now - self._tip_seen > 1.0:
             self.tip = None
