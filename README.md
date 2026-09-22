@@ -137,7 +137,7 @@ cd website-frontend && node --test "tests/*.test.mjs"            # sign-in voice
 
 ## Team
 
-Built at a hackathon by **Smaran Pokharel** (braille detection, the tutor, phone pairing, the accessible
+Built at HACKMIT by **Smaran Pokharel** (braille detection, the tutor, phone pairing, the accessible
 website), **Tenzing Gurung** (voice I/O, word-checking, demo-night reliability fixes), **Reagan Spurlock**
 (the first version of the website), and **Sage Peterson** (the physical braille sheets, video and technical
 support).
