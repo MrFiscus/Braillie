@@ -1,12 +1,14 @@
-"""Optional LLM helper for the tutor (any OpenAI-compatible chat API). Standard library only.
+"""Optional LLM helper for the tutor, using Claude (the Anthropic Python SDK).
 
 Rules that keep it from ever hurting the app:
-  * off unless asked for (--llm) and a key is set (OPENAI_API_KEY); with it off the tutor behaves exactly as before
+  * off unless asked for (--llm) and a key is set (ANTHROPIC_API_KEY); with it off the tutor behaves exactly as before
   * nothing the learner waits for depends on it: extras are fetched in the background and are a lookup when needed; the
     one call that is waited on (the debrief) has a hard time limit and falls back to the built-in debrief
-  * only lesson facts are sent (cell names, dot numbers, scores): never camera images, audio or names
+  * only lesson facts are sent (cell names, dot numbers, scores): never camera images, audio or names. Braillo (AskTutor) also
+    gets the text of what the learner said to it: a question after the wake word, or speech that matched no command
   * replies are checked before use: no digits that were not in the facts, no position words that don't apply, length limits
-  * after the first error or timeout the helper switches itself off for the rest of the session
+  * after the first error or timeout the coach switches itself off for the rest of the session; Braillo does after three in a row,
+    or at once if the key is refused
 """
 from __future__ import annotations
 
@@ -14,63 +16,70 @@ import json
 import os
 import re
 import threading
-import urllib.request
 from typing import Optional
 from urllib.parse import urlparse
 
-DEFAULT_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_MODEL = "gpt-4o-mini"  # override with --llm-model or BRAILLIE_LLM_MODEL: use any model your key can call
+import anthropic
+
+DEFAULT_BASE_URL = "https://api.anthropic.com"
+# The cheapest current Claude model, and fast: plenty for short spoken replies. Override with --llm-model or BRAILLIE_LLM_MODEL
+# (claude-sonnet-5-5 or claude-opus-5-5 for smarter, costlier answers).
+DEFAULT_MODEL = "claude-haiku-5-5"
 POSITION_WORDS = {"top", "middle", "bottom", "left", "right"}
+REPLY_EFFORT = "low"  # everything asked for here is a short spoken line or a small plan: low effort answers soonest
+MAX_TOKENS = 4000  # the model's thinking counts toward this too; the prompts themselves keep what is said short
+FALLBACK_BETA = "server-side-fallback-2026-07-01"  # a declined request is re-run on Anthropic's recommended fallback model
+NO_FALLBACK_PREFIXES = ("claude-haiku",)  # Haiku has no server-side fallback model: the request is sent without one
+
+
+class LLMError(RuntimeError):
+    """The model answered, but not with something usable (declined, or cut off)."""
 
 
 class LLMClient:
-    """A minimal chat-completions client. Only https (or a localhost address) is accepted."""
+    """A minimal Claude client (Messages API). Only https (or a localhost address) is accepted as the endpoint."""
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL, base_url: str = DEFAULT_BASE_URL, timeout: float = 8.0):
         url = urlparse(base_url)
         if url.scheme != "https" and url.hostname not in ("localhost", "127.0.0.1"):
             raise ValueError("the LLM base URL must be https (or localhost)")
-        self.api_key, self.model, self.base_url, self.timeout = api_key, model, base_url.rstrip("/"), timeout
+        self.model, self.base_url, self.timeout = model, base_url.rstrip("/"), timeout
+        # one quick retry at most: a spoken reply that arrives much later is no use to anyone
+        self._client = anthropic.Anthropic(api_key=api_key, base_url=self.base_url, max_retries=1)
 
     @classmethod
     def from_env(cls, model: Optional[str] = None) -> Optional["LLMClient"]:
-        """A client using OPENAI_API_KEY (and optional BRAILLIE_LLM_MODEL / BRAILLIE_LLM_BASE_URL), or None if no key."""
-        key = os.environ.get("OPENAI_API_KEY", "").strip()
+        """A client using ANTHROPIC_API_KEY (or CLAUDE_API_KEY; and optional BRAILLIE_LLM_MODEL / BRAILLIE_LLM_BASE_URL), or None
+        if there is no key."""
+        key = (os.environ.get("ANTHROPIC_API_KEY", "").strip() or os.environ.get("CLAUDE_API_KEY", "").strip())
         if not key:
             return None
         return cls(key, model or os.environ.get("BRAILLIE_LLM_MODEL", DEFAULT_MODEL),
                    os.environ.get("BRAILLIE_LLM_BASE_URL", DEFAULT_BASE_URL))
 
-    def chat(self, system: str, user: str, max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> str:
+    def _text(self, system: str, user: str, max_tokens: Optional[int], output: Optional[dict] = None) -> str:
+        """One request; the reply's text. Raises on any error, and on a reply that was declined or cut off."""
+        request = dict(model=self.model, max_tokens=max_tokens or MAX_TOKENS, system=system,
+                       messages=[{"role": "user", "content": user}],
+                       output_config={"effort": REPLY_EFFORT, **(output or {})}, timeout=self.timeout)
+        if self.model.startswith(NO_FALLBACK_PREFIXES):
+            response = self._client.messages.create(**request)
+        else:
+            response = self._client.beta.messages.create(**request, betas=[FALLBACK_BETA], fallbacks="default")
+        if response.stop_reason in ("refusal", "max_tokens"):
+            raise LLMError(f"no usable reply (stop_reason={response.stop_reason})")
+        return "".join(b.text for b in response.content if b.type == "text").strip()
+
+    def chat(self, system: str, user: str, max_tokens: Optional[int] = None) -> str:
         """One request; returns the reply text. Raises on any error."""
-        payload: dict = {"model": self.model, "messages": [{"role": "system", "content": system},
-                                                           {"role": "user", "content": user}]}
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if temperature is not None:
-            payload["temperature"] = temperature
-        body = json.dumps(payload).encode()
-        req = urllib.request.Request(f"{self.base_url}/chat/completions", data=body, method="POST",
-                                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"})
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            return json.loads(r.read())["choices"][0]["message"]["content"].strip()
+        return self._text(system, user, max_tokens)
 
     def chat_json(self, system: str, user: str, schema: dict) -> dict:
-        """Request a strictly schema-shaped JSON reply from Chat Completions."""
-        body = json.dumps({
-            "model": self.model,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "response_format": {"type": "json_schema", "json_schema": schema},
-        }).encode()
-        req = urllib.request.Request(
-            f"{self.base_url}/chat/completions", data=body, method="POST",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            result = json.loads(r.read())["choices"][0]["message"]["content"]
-        parsed = json.loads(result)
+        """A reply shaped exactly by `schema` (a JSON schema, or {"name", "schema"} around one), as a dict."""
+        shape = schema.get("schema", schema)
+        parsed = json.loads(self._text(system, user, None, {"format": {"type": "json_schema", "schema": shape}}))
         if not isinstance(parsed, dict):
-            raise ValueError("OpenAI returned a non-object adaptive plan")
+            raise ValueError("Claude returned a non-object reply")
         return parsed
 
 
@@ -221,12 +230,59 @@ _ASK_WAKE_RE = re.compile(
     re.IGNORECASE,
 )
 ASK_CANCEL = frozenset({"stop", "cancel", "never mind", "nevermind", "nothing", "forget it"})
+def _braille_facts() -> str:
+    """The alphabet's dots and where each dot sits, so even a small model never has to remember them (and get them wrong)."""
+    first = {"a": "1", "b": "12", "c": "14", "d": "145", "e": "15", "f": "124", "g": "1245", "h": "125", "i": "24", "j": "245"}
+    dots = dict(first)
+    dots.update({chr(ord(k) + 10): v + "3" for k, v in first.items()})  # k to t: a to j plus dot 3
+    dots.update({u: first[a] + "36" for u, a in zip("uvxyz", "abcde")})  # u v x y z: a to e plus dots 3 and 6
+    dots["w"] = "2456"
+    letters = "; ".join(f"{k} {', '.join(sorted(v))}" for k, v in sorted(dots.items()))
+    return ("Braille facts (use these, never guess): dot 1 top-left, dot 2 middle-left, dot 3 bottom-left, dot 4 top-right, "
+            f"dot 5 middle-right, dot 6 bottom-right. Letters and their dots: {letters}.")
+
+
+BRAILLE_FACTS = _braille_facts()
 ASK_SYSTEM = (
     "You are Braillo, the spoken tutor inside Braillie, a braille learning app for people who may be blind or have "
     "low vision. Answer like a real tutor who knows the topic. Prefer plain speech for text-to-speech: no markdown, "
-    "bullet lists, emoji, or URLs. Keep answers under 60 words unless they clearly ask for more detail. Help with "
-    "braille, reading, and the app when relevant, but answer any honest question."
+    "bullet lists, emoji, URLs, or braille symbols (they cannot be spoken: name the letters and dots instead). Keep answers under 60 words unless they clearly ask for more detail. Help with "
+    "braille, reading, and the app when relevant, but answer any honest question. You may be given what is happening "
+    "in the app right now (the activity, the letter being asked for and its dots, what you said last): use it so your "
+    "answer fits the moment, and never just repeat your last line word for word. " + BRAILLE_FACTS
 )
+# What free speech (no exact command phrase) may be turned into; the tutor runs the matching command.
+TALK_ACTIONS = ("none", "repeat", "hint", "found it", "next", "next page", "start", "stop", "menu", "learn", "read", "quiz",
+                "explore", "practice", "help", "slower", "faster")
+TALK_SYSTEM = (
+    "You are Braillo, the voice of Braillie, a braille tutor for people who may be blind or have low vision. You get what "
+    "the microphone just heard (speech to text, so it may be garbled), what is happening in the app, and the last few "
+    "exchanges. Decide what to do:\n"
+    "- addressed: false if this was not said to you (other people talking, the TV, noise, half a word). Then action none, say empty.\n"
+    "- action: the app command they want, if they clearly want one (for example 'what was that letter again' is repeat, "
+    "'I'm stuck' or 'where is it' is hint, 'I'm on it now' is found it, 'skip this one' is next, 'let's do something "
+    "else' is menu, 'I want to practise reading' is read). Otherwise none.\n"
+    "- say: what to say back, for text to speech: at most two short sentences, under 40 words, plain words, no lists or "
+    "markdown, and no braille symbols (say the letters and dot numbers instead). Leave it empty when the action speaks for itself (repeat, hint, next and so on already talk). Answer "
+    "questions about braille, the letters and the app directly. If they did not understand your last line, explain it "
+    "differently instead of repeating it. Only use dot numbers and letters from the facts you are given or that you are "
+    "certain of (a is dot 1, b is dots 1 2, c is dots 1 4, and so on)." + " " + BRAILLE_FACTS
+)
+TALK_SCHEMA = {
+    "name": "braillo_reply",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "addressed": {"type": "boolean"},
+            "action": {"type": "string", "enum": list(TALK_ACTIONS)},
+            "say": {"type": "string"},
+        },
+        "required": ["addressed", "action", "say"],
+        "additionalProperties": False,
+    },
+}
+HISTORY_TURNS = 6  # exchanges kept, so "what about the next one?" means something
 
 
 def strip_ask_wake(text: str) -> str:
@@ -242,11 +298,27 @@ def looks_like_question(text: str) -> bool:
     return bool(words) and (len(words) >= 2 or text.endswith("?") or len(text) >= 8)
 
 
-class AskTutor:
-    """Fast spoken Q&A via ChatGPT. Armed by the braillo wake word; answers are kept short for TTS."""
+def _spoken(raw) -> Optional[str]:
+    """A reply fit to speak: as it is if it passes clean_line, else with the markup stripped."""
+    line = clean_line(raw, 480, allow_digits=True)
+    if line:
+        return line
+    plain = " ".join(str(raw or "").replace("\n", " ").split())
+    plain = re.sub(r"[*_`#<>{}\[\]|~]", "", plain)
+    return plain[:480] if plain else None
 
-    def __init__(self, client: Optional[LLMClient] = None, timeout: float = 6.0):
+
+class AskTutor:
+    """Fast spoken Q&A via Claude, aware of what is happening in the app and of the last few exchanges.
+
+    answer()  a question after the braillo wake word
+    respond() anything else the learner said that was not a command: what to do (a command) and what to say back, or
+              nothing at all when it was not said to the tutor"""
+
+    def __init__(self, client: Optional[LLMClient] = None, timeout: float = 10.0):
         self.client, self.off_reason = client, ""
+        self.history: list = []  # [(what they said, what was said back)], newest last
+        self.failures = 0
         if self.client is not None and hasattr(self.client, "timeout"):
             self.client.timeout = min(self.client.timeout, timeout)
 
@@ -260,22 +332,57 @@ class AskTutor:
             return "off"
         return f"off after an error: {self.off_reason}" if self.off_reason else f"on ({self.client.model})"
 
-    def answer(self, question: str) -> Optional[str]:
-        """Blocking ChatGPT reply fit to speak, or None. Failures switch this helper off for the session."""
+    def _failed(self, e: Exception) -> None:
+        """A key that is refused switches the helper off for the session; a slow or dropped request only does after three in a row."""
+        self.failures += 1
+        if self.failures >= 3 or getattr(e, "status_code", None) in (401, 403):
+            self.off_reason = f"{type(e).__name__}: {e}"[:120]
+
+    def _remember(self, heard: str, said: str) -> None:
+        self.history = (self.history + [(heard, said)])[-HISTORY_TURNS:]
+
+    def _prompt(self, text: str, context: Optional[dict]) -> str:
+        if not context and not self.history:
+            return text
+        return json.dumps({"app_now": context or {}, "earlier": [{"learner": h, "you": s} for h, s in self.history],
+                           "learner_said": text})
+
+    def answer(self, question: str, context: Optional[dict] = None) -> Optional[str]:
+        """Blocking Claude reply fit to speak, or None. `context`: what is happening in the app right now."""
         if not self.enabled:
             return None
         q = " ".join(str(question or "").split()).strip()
         if not q:
             return None
         try:
-            raw = self.client.chat(ASK_SYSTEM, q, max_tokens=160, temperature=0.4)
+            raw = self.client.chat(ASK_SYSTEM, self._prompt(q, context))
         except Exception as e:
-            self.off_reason = f"{type(e).__name__}: {e}"[:120]
+            self._failed(e)
             return None
-        line = clean_line(raw, 480, allow_digits=True)
+        self.failures = 0
+        line = _spoken(raw)  # (if the model used markup, still speak a plain version)
         if line:
-            return line
-        # Model used forbidden markup: still speak a compressed plain version if we can.
-        plain = " ".join(str(raw or "").replace("\n", " ").split())
-        plain = re.sub(r"[*_`#<>{}\[\]|~]", "", plain)
-        return plain[:480] if plain else None
+            self._remember(q, line)
+        return line
+
+    def respond(self, heard: str, context: Optional[dict] = None) -> Optional[dict]:
+        """What to do about free speech: {"action": one of TALK_ACTIONS, "say": text or ""}, or None if the helper is off or
+        failed (the caller then falls back to its own "I didn't catch that"). Speech not meant for the tutor gives action none
+        and nothing to say."""
+        if not self.enabled:
+            return None
+        text = " ".join(str(heard or "").split()).strip()
+        if not text:
+            return None
+        try:
+            reply = self.client.chat_json(TALK_SYSTEM, self._prompt(text, context), TALK_SCHEMA)
+        except Exception as e:
+            self._failed(e)
+            return None
+        self.failures = 0
+        action = reply.get("action") if reply.get("action") in TALK_ACTIONS else "none"
+        if reply.get("addressed") is False:
+            return {"action": "none", "say": ""}
+        say = _spoken(reply.get("say")) or ""
+        self._remember(text, say or f"({action})")
+        return {"action": action, "say": say}

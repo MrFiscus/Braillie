@@ -22,8 +22,9 @@ phone says its sound is ready (and whenever it is not connected) speech plays on
 Microphone: the phone's microphone is used for the spoken commands too (`--mic phone`, the default with the phone camera). The page
 sends 16 kHz mono 16-bit audio; the laptop wraps the one place voice_io reads its microphone (pyaudio's `Stream.read`, every
 100 ms) so that the chunk sent on to Deepgram comes from the phone while it is streaming audio and from the laptop microphone
-otherwise. Nothing else in voice_io changes: same Deepgram connection, same command matching, same muting while it speaks, and the
-laptop microphone is the automatic fallback.
+otherwise. Nothing else in voice_io changes: same Deepgram connection, same command matching, and the laptop microphone is the
+automatic fallback. The microphone stays live while a clip plays (the phone's own echo cancellation keeps the clip out of it), so
+the learner can cut the tutor off: the clip is then stopped on the phone (`hush` in the frame reply).
 
 For someone who cannot see a QR code: the laptop says a short "scan the QR on the screen" line (`spoken_instructions`);
 an iPhone with VoiceOver can also read a QR code aloud from its Camera app. Someone sighted can scan it for them.
@@ -179,10 +180,12 @@ def install_phone_speaker(voice, link: "PhoneLink") -> Callable:
         raise RuntimeError(f"voice_io no longer has {', '.join(missing)}: cannot move the sound to the phone (use --sound laptop)")
     original = {n: getattr(voice, n) for n in names}
 
+    cut_off = getattr(voice, "playback_interrupted", None)  # the learner talked over it: stop the clip on the phone too
+
     def routed(name: str, kind: str):
         def play(chunks) -> None:
             data = fix_wav_header(b"".join(chunks)) if kind == "audio/wav" else b"".join(chunks)
-            if not link.play_audio(data, kind):
+            if not link.play_audio(data, kind, cancelled=cut_off):
                 original[name]([data])  # the phone is not ready or could not play it: the laptop does
         return play
 
@@ -331,6 +334,7 @@ class PhoneLink:
         self.frame: Optional[np.ndarray] = None
         self.seq, self.last_frame_time, self.frames, self._connected = 0, -1e9, 0, False
         self.status: dict = {"page_ok": False, "message": "waiting for the camera"}  # what the phone is told: set by the tutor
+        self.theme: Optional[str] = None  # the laptop page's colours, so the phone's page looks the same (set by the tutor)
         self._bad, self._locked_until = 0, 0.0
         self._lock = threading.Lock()
         # what has happened so far, to tell WHERE a phone that "doesn't work" got stuck (see diagnose())
@@ -344,6 +348,7 @@ class PhoneLink:
         self.mic_last, self._mic_was_live, self.mic_bytes, self._mic_mute_until = -1e9, False, 0, 0.0
         self._clips: dict = {}  # id -> {"data", "type", "fetched", "done", "error"}
         self._clip_id = 0
+        self.hush_clip = 0  # the last clip the learner cut off: the phone stops it if it is still playing
         self._clip_lock = threading.Lock()
 
     # -- what happened --
@@ -528,11 +533,12 @@ class PhoneLink:
             clip["error"] = error
             clip["done"].set()
 
-    def play_audio(self, data: bytes, kind: str = "audio/wav") -> bool:
-        """Send one finished clip to the phone and WAIT until it has played (speech blocks while it talks, so the microphone stays
-        muted and lines never overlap). False means it did NOT play there (the phone is not ready, never picked the clip up, or could
-        not play it): the caller then plays it on the laptop instead. Once the phone has the clip it is trusted to play it, even
-        through a blip in the video connection: replaying it on the laptop would say every line twice."""
+    def play_audio(self, data: bytes, kind: str = "audio/wav", cancelled: Optional[Callable] = None) -> bool:
+        """Send one finished clip to the phone and WAIT until it has played (speech blocks while it talks, so lines never overlap).
+        False means it did NOT play there (the phone is not ready, never picked the clip up, or could not play it): the caller then
+        plays it on the laptop instead. Once the phone has the clip it is trusted to play it, even through a blip in the video
+        connection: replaying it on the laptop would say every line twice. `cancelled()` turning true (the learner cut it off)
+        stops it: the phone is told to hush that clip, and it counts as played."""
         if not self.sound_ready():
             return False
         with self._clip_lock:
@@ -542,6 +548,9 @@ class PhoneLink:
         length, offered = audio_seconds(data, kind), self.clock()
         try:
             while not clip["done"].wait(0.1):
+                if cancelled is not None and cancelled():
+                    self.hush_clip = cid  # told to the phone in the next frame reply
+                    return True
                 if clip["fetched"]:
                     if self.clock() > clip["fetched_at"] + length + self.audio_slack:
                         self.note("the phone took a clip but never said it finished: assuming it played")
@@ -806,7 +815,7 @@ def make_handler(link: PhoneLink):
                 self._send(200, clip["data"], clip["type"])
             elif path == "/phone/check":  # the page asks whether a typed code is right, before turning the camera on
                 ok = link.check_code(self._query().get("t"))
-                self._json(200 if ok else 403, {"ok": ok})
+                self._json(200 if ok else 403, {"ok": ok, **({"theme": link.theme} if ok else {})})
             else:
                 self._send(404, b"not found")
 
@@ -859,7 +868,8 @@ def make_handler(link: PhoneLink):
                 return self._json(413 if length > MAX_FRAME_BYTES else 400, {"error": "bad size"})
             if not link.push(self.rfile.read(length)):
                 return self._json(400, {"error": "not a usable image"})
-            self._json(200, {"ok": True, **link.status, "say": link.next_clip()})  # the reply tells the phone what to say and play
+            # the reply tells the phone what to say and play, and which clip to stop (the learner cut it off)
+            self._json(200, {"ok": True, **link.status, "say": link.next_clip(), "hush": link.hush_clip, "theme": link.theme})
 
     return Handler
 

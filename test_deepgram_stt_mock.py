@@ -127,6 +127,8 @@ def main() -> None:
         )
     }
     original_key = voice_io.DEEPGRAM_API_KEY
+    original_condition = voice_io.CONDITION_AUDIO
+    original_aec, original_canceller = voice_io.AEC, voice_io._canceller
     original_stop_event = voice_io._stop_event
     original_callbacks = voice_io._callbacks
     try:
@@ -150,6 +152,8 @@ def main() -> None:
             ),
         })
         voice_io.DEEPGRAM_API_KEY = "test-key"
+        voice_io.CONDITION_AUDIO = False  # (this test checks the bytes go through untouched; the clean-up has its own tests)
+        voice_io.AEC, voice_io._canceller = False, None  # (and so has the echo canceller)
         voice_io._stop_event = voice_io.threading.Event()
         fired: list[str] = []
         voice_io._callbacks = {"hint": [lambda: fired.append("hint")]}
@@ -157,7 +161,8 @@ def main() -> None:
         voice_io._deepgram_listener_loop()
 
         assert STATE["api_key"] == "test-key"
-        assert STATE["options"]["interim_results"] is False  # type: ignore[index]
+        assert STATE["options"]["interim_results"] == "true"  # type: ignore[index]  (barge-in, UtteranceEnd)
+        assert STATE["options"]["utterance_end_ms"] == voice_io.UTTERANCE_END_MS  # type: ignore[index]
         assert STATE["handler_events"] == ["open", "message", "error"]
         assert STATE["start_listening"] is True
         assert STATE["media"] == [b"mic-chunk"]
@@ -169,6 +174,8 @@ def main() -> None:
         print("Passed offline Deepgram event startup, transcript, and shutdown checks.")
     finally:
         voice_io.DEEPGRAM_API_KEY = original_key
+        voice_io.CONDITION_AUDIO = original_condition
+        voice_io.AEC, voice_io._canceller = original_aec, original_canceller
         voice_io._stop_event = original_stop_event
         voice_io._callbacks = original_callbacks
         for name, module in original_modules.items():

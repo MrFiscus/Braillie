@@ -232,3 +232,20 @@ class MergeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReteachTests(unittest.TestCase):
+    def test_missed_or_mixed_up_letters_need_teaching_again_and_clean_ones_do_not(self):
+        p = Progress()
+        p.record("a", True)  # found cleanly: up a box
+        p.record("b", False)  # missed
+        p.record("c", True, hints=1)  # found, but with help: still in the first box
+        p.record("d", True)
+        p.record_confusion("e", "d")
+        p.record_confusion("e", "d")  # mixed up twice, not yet known well
+        weak = p.needs_reteaching("abcdz", n=5)
+        self.assertNotIn("a", weak)
+        self.assertNotIn("z", weak, "never met: nothing to teach again")
+        self.assertEqual(set(weak), {"b", "c", "d"})
+        self.assertEqual(len(p.needs_reteaching("abcdz", n=2)), 2)
+

@@ -8,7 +8,7 @@ const load = async (rel) => {
   const js = ts.transpileModule(readFileSync(new URL(rel, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
   return import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
 }
-const { parseChoice, parseBack, parseYesNo, parseName, runLoginDialogue, PROMPT_TEXT } = await load('../src/voice/loginDialogue.ts')
+const { parseChoice, parseBack, parseYesNo, parseName, runLoginDialogue, PROMPT_TEXT, ALL_VERSIONS, nextVersion } = await load('../src/voice/loginDialogue.ts')
 
 test('Google or guest, however it is said', () => {
   for (const t of ['Google', 'google.', 'sign in with Google please', 'Gogle', 'goggle', 'sign in', 'log in', 'gmail']) assert.equal(parseChoice(t), 'google', t)
@@ -39,6 +39,13 @@ test('someone already known can carry on or switch', () => {
   for (const t of ['switch', 'no', 'not me', 'someone else', 'sign out']) assert.equal(parseBack(t), 'switch', t)
   assert.equal(parseBack('pardon'), 'repeat')
   assert.equal(parseBack('banana'), 'none')
+})
+
+test('the everyday ways of saying carry on, switch, or no name are understood', () => {
+  for (const t of ['skip it', "let's go", 'keep going', 'next', 'go', 'alright', 'fine', 'sure thing', "yeah that's me"]) assert.equal(parseBack(t), 'continue', t)
+  for (const t of ['nope', 'somebody else', 'start over', 'new account']) assert.equal(parseBack(t), 'switch', t)
+  for (const t of ["I don't want to", 'no thanks', 'not telling', "it doesn't matter", 'skip it']) assert.equal(parseName(t), 'skip', t)
+  for (const t of ['I', 'i', 'it', 'me', 'wait', 'can you repeat that']) assert.equal(parseName(t), null, t) // never "Is your name I?"
 })
 
 // A scripted person: `heard` is what the microphone will hear, in order (null is silence). Records what Braillie said and did.
@@ -97,6 +104,25 @@ test('not understood: asked again, then it stops asking and points to the button
   assert.deepEqual(log.did, [], 'it must not guess')
 })
 
+test('heard while Braillie was still talking: an answer is taken, anything else is let go without a "sorry"', async () => {
+  // [text, caught over Braillie's voice?]: "brail" and "lee" are Braillie's own words misheard; "guest" is the person answering over it
+  const heard = [['brail', true], ['guest', true], ['lee', true], ['sam', false], ['yes', false]]
+  const said = []
+  const did = []
+  let last = null
+  const ac = new AbortController()
+  const channel = {
+    say: async (prompt, who) => void said.push(who === undefined ? prompt : `${prompt}(${who})`),
+    listen: async () => (heard.length ? ((last = heard.shift()), last[0]) : (ac.abort(), null)),
+    heardOverSpeech: () => !!last?.[1],
+  }
+  const actions = { google: () => did.push('google'), guest: (n) => did.push(`guest:${n}`), carryOn: () => {}, switchAccount: () => {} }
+  const outcome = await runLoginDialogue({ channel, actions, returning: null, signal: ac.signal, onStatus: () => {} })
+  assert.equal(outcome, 'guest')
+  assert.deepEqual(said, ['welcome', 'ask_name', 'confirm_name(Lee)', 'confirm_name(Sam)', 'go_guest(Sam)'])
+  assert.deepEqual(did, ['guest:Sam'])
+})
+
 test('a wrong turn does not use up the patience for the next question', async () => {
   const { log, run } = conversation(['banana', 'guest', 'um', 'sam', 'yes'])
   assert.equal(await run, 'guest')
@@ -138,8 +164,24 @@ test('the browser voice says the same lines the tutor does', () => {
   const server = [...block.matchAll(/^\s{4}"(\w+)":/gm)].map((m) => m[1]).sort()
   assert.deepEqual(Object.keys(PROMPT_TEXT).sort(), server, 'add a line in both places (tutor.py PROMPTS and PROMPT_TEXT)')
   assert.match(PROMPT_TEXT.confirm_name('Sam'), /Sam/)
-  for (const key of Object.keys(PROMPT_TEXT)) {
-    const words = PROMPT_TEXT[key]('Sam').split(/\s+/).slice(0, 4).join(' ')
-    assert.ok(block.replace(/"\s*\n\s*"/g, '').includes(words.replace('Sam', '{name}')) || block.includes(words), `${key} starts differently in tutor.py: ${words}`)
+  const joined = block.replace(/"\s*\n\s*"/g, '')
+  for (const [key, versions] of Object.entries(ALL_VERSIONS)) {
+    for (const version of versions) {
+      const words = version('Sam').split(/\s+/).slice(0, 4).join(' ')
+      assert.ok(joined.includes(words.replace('Sam', '{name}')) || block.includes(words), `a version of ${key} starts differently in tutor.py: ${words}`)
+    }
+  }
+})
+
+test('the lines heard at every start come in other words each time, and the words on screen match what is said', () => {
+  for (const key of ['welcome', 'welcome_back', 'ask_name', 'go_guest', 'go_guest_anon', 'connect_phone']) {
+    assert.equal(ALL_VERSIONS[key].length, 10, key)
+    const said = []
+    for (let i = 0; i < 12; i++) {
+      assert.equal(PROMPT_TEXT[key]('Sam'), PROMPT_TEXT[key]('Sam'), 'asking twice gives the same version (the caption matches the voice)')
+      said.push(PROMPT_TEXT[key]('Sam'))
+      nextVersion(key)
+    }
+    assert.ok(said.every((t, i) => i === 0 || t !== said[i - 1]), `${key} repeated itself`)
   }
 })

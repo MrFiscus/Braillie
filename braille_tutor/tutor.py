@@ -14,6 +14,7 @@ The fingertip is tracked from the camera (fingertip.py); clicking the video over
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import logging
 import os
@@ -38,7 +39,7 @@ import audio_speed
 import phonelink
 from earcons import Earcons
 from fingertip import FingerTracker
-from learn import DWELL_SECONDS, Dwell, Journey
+from learn import DOTS as LETTER_DOTS, DWELL_SECONDS, LESSONS, Dwell, Journey
 from page import to_image, to_page
 from progress import Progress, progress_path
 from sheets import Symbol, get_sheet, letter_symbol
@@ -49,7 +50,7 @@ log = logging.getLogger(__name__)
 
 
 class AdaptiveTargetPlanner:
-    """Asynchronously ask OpenAI to order the next quiz's known targets."""
+    """Asynchronously ask Claude to order the next quiz's known targets."""
 
     _SYSTEM = (
         "You are an adaptive braille-literacy quiz planner. Choose and order the next "
@@ -102,26 +103,33 @@ class AdaptiveTargetPlanner:
         """Return a validated ready plan, or a reason to use the local fallback."""
         signature = self._signature_for(candidates, count, mode, history)
         if self._pending is None or self._signature != signature:
-            return None, "no matching OpenAI plan is ready"
+            return None, "no matching Claude plan is ready"
         if not self._pending.done.is_set():
-            return None, "OpenAI plan is still pending"
+            return None, "Claude plan is still pending"
         result = self._pending.value
         if isinstance(result, Exception):
-            return None, f"OpenAI request failed: {type(result).__name__}: {result}"
+            return None, f"Claude request failed: {type(result).__name__}: {result}"
         if not isinstance(result, dict):
-            return None, "OpenAI returned no adaptive plan"
+            return None, "Claude returned no adaptive plan"
         targets = result.get("targets")
         if not isinstance(targets, list) or len(targets) != count:
-            return None, "OpenAI returned the wrong number of targets"
+            return None, "Claude returned the wrong number of targets"
         if any(not isinstance(target, str) for target in targets):
-            return None, "OpenAI returned a non-string target"
+            return None, "Claude returned a non-string target"
         if len(set(targets)) != len(targets) or any(target not in candidates for target in targets):
-            return None, "OpenAI returned unknown or duplicate targets"
+            return None, "Claude returned unknown or duplicate targets"
         self.last_response = result
-        return targets, "OpenAI adaptive plan"
+        return targets, "Claude adaptive plan"
 
 SPEECH_TIMEOUT = 8.0  # a single say() call gives up after this long (see TutorSession.say): no legitimate
 # utterance takes anywhere near this, so past it something downstream (network, audio device) is stuck
+SPEECH_SECONDS_PER_WORD = 0.5  # ...plus this much per word, so a long answer from Braillo is not cut short by that limit
+# Reminders nobody asked for ("I can't see your finger", "I'm waiting for the sheet"): said at once the first time, then only after
+# these gaps while nothing changes, and not at all after NAG_MAX times, until the learner says something (see TutorSession.nag).
+NAG_GAPS = (0.0, 30.0, 60.0, 120.0)
+NAG_MAX = 4
+TALK_MIN_WORDS = 2  # free speech shorter than this is not sent to Braillo to work out (a cough, "um")
+OVER_SPEECH = "heard over speech"  # voice_io's reason for a word or two caught while the tutor was talking
 EXPLORE_DWELL_SECONDS = 0.7  # a finger resting this long on one spot is "feeling" it
 NO_FINGER_SECONDS = 4.0  # in quiz/read: how long with no fingertip before the tutor says it cannot see one
 NO_FINGER_AGAIN = 12.0  # ...and how long between those reminders
@@ -141,20 +149,125 @@ MENU_LINE = ("Choose an option. Learn teaches the letters a few at a time on the
 # short prompt instead, so the same three explanations are not repeated on every round of a demo.
 MENU_LINE_SHORT = "Choose an option. Say learn, read, or quiz."
 PROMPTS = {  # canned things the website may ask the tutor to say (it cannot make the tutor say anything else; {name} is a cleaned first name)
-    "welcome": "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. To sign in, say Google. "
-               "To carry on without an account, say guest. Or use the tab key to move between the options. If you sign in, your progress "
-               "is remembered. If you continue without an account, it is not.",
-    "welcome_back": "Welcome back, {name}. Say continue to carry on as {name}, or say switch to choose another way.",
+    # The lines heard at every start have a few versions, each saying the same thing in other words, so it never sounds like one script
+    # read again and again (next_prompt picks; never the same one twice running). The short replies stay one line each.
+    "welcome": (
+        "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. To sign in, say"
+        " Google. To carry on without an account, say guest. Or use the tab key to move between the options. If you "
+        "sign in, your progress is remembered. If you continue without an account, it is not.",
+        "Hi, and welcome to Braillie. You can sign in with Google, so your progress is remembered, or carry on as a "
+        "guest, and nothing is saved. Say Google, or say guest. You can also press tab to move between the options.",
+        "Hello! I'm Braillo, and this is Braillie. To keep your progress, say Google to sign in. To try it without an "
+        "account, say guest, but your progress won't be saved. Or press tab to move between the options.",
+        "Hi there, welcome to Braillie. There are two ways in. Say Google to sign in and keep your progress, or say "
+        "guest to start straight away without saving anything. The tab key moves between the options too.",
+        "Welcome! I'm Braillo, your braille tutor. Would you like to sign in? Say Google, and I'll remember how you're "
+        "getting on. Or say guest to carry on without an account, and nothing is kept. You can press tab to move "
+        "between the options instead.",
+        "Hello, and welcome to Braillie. Say Google to sign in with your Google account, and your progress is saved. "
+        "Say guest to carry on without one, and it is not. Or use tab to move between the options.",
+        "Good to have you here. This is Braillie, and I'm Braillo. To save your progress, sign in by saying Google. To "
+        "just try it out, say guest, and nothing will be saved. Pressing tab moves between the options as well.",
+        "Welcome to Braillie! First, how would you like to start? Say Google to sign in, so I can remember your "
+        "progress. Say guest to go without an account, and your progress won't be kept. Or press tab to move between "
+        "the options.",
+        "Hi! Braillo here, welcome to Braillie. You can say Google to sign in and keep your progress from one visit to "
+        "the next, or say guest to carry on without an account, which saves nothing. The tab key moves between the "
+        "options too.",
+        "Hello, welcome to Braillie. Two choices: say Google to sign in, and your progress is remembered, or say guest "
+        "to continue without an account, and it is forgotten when you leave. You can also use tab to move between them.",
+    ),
+    "welcome_back": (
+        "Welcome back, {name}. Say continue to carry on as {name}, or say switch to choose another way.",
+        "Hi again, {name}! Say continue to pick up where you left off, or say switch to use another way in.",
+        "Good to see you, {name}. Say continue to carry on, or say switch if this isn't you.",
+        "Hello again, {name}. To carry on, say continue. To sign in another way, say switch.",
+        "Nice to have you back, {name}! Say continue to keep going, or switch to choose a different way in.",
+        "{name}, welcome back. Say continue, and we'll carry on. Say switch if you'd like another way in.",
+        "Hey, {name}, good to hear from you again. Say continue to carry on as {name}, or say switch.",
+        "Welcome back! Is that you, {name}? Say continue to carry on, or say switch to choose another way.",
+        "Hi, {name}, back for more? Say continue to pick up where you left off, or say switch if it's someone else.",
+        "There you are, {name}. Say continue to carry on, or say switch to sign in another way.",
+    ),
     "retry_back": "Sorry, I did not catch that. Say continue, or say switch.",
     "again_name": "Okay. Please say your first name again, or say skip.",
     "retry_choice": "Sorry, I did not catch that. Say Google to sign in, or say guest to continue without an account.",
-    "ask_name": "Okay, without an account. Your progress will not be saved. What is your first name? Or say skip.",
+    "ask_name": (
+        "Okay, without an account. Your progress will not be saved. What is your first name? Or say skip.",
+        "Okay, no account. Just so you know, your progress won't be saved. What's your first name? You can also say "
+        "skip.",
+        "Sure, let's go without an account. Nothing will be saved. What should I call you? Say your first name, or say "
+        "skip.",
+        "Alright, as a guest, then. Your progress won't be kept. What's your first name? Or just say skip.",
+        "No account, no problem. Remember, nothing is saved this way. Tell me your first name, or say skip.",
+        "Great, we'll carry on without an account, so your progress won't be saved. What's your first name? Say skip if"
+        " you'd rather not.",
+        "Okay, guest it is. Your progress won't be saved. What would you like me to call you? Say your first name, or "
+        "say skip.",
+        "Got it, no account. Just a heads up, nothing gets saved. What's your first name? Or say skip.",
+        "Fine by me. Without an account, your progress isn't kept. Could you tell me your first name? Or say skip.",
+        "Okay, let's skip the account. Your progress won't be saved. What's your first name? You can say skip, too.",
+    ),
     "confirm_name": "Is your name {name}? Say yes, or say your name again.",
     "retry_name": "Sorry, I did not catch that. Please say your first name, or say skip.",
-    "go_guest": "Nice to meet you, {name}. Let us connect your phone.",
-    "go_guest_anon": "Okay. Let us connect your phone.",
+    "go_guest": (
+        "Nice to meet you, {name}. Let us connect your phone.",
+        "Lovely to meet you, {name}. Next, let's connect your phone.",
+        "Hi, {name}! Now let's get your phone connected.",
+        "Great to meet you, {name}. Now, your phone.",
+        "Hello, {name}! Let's connect your phone next.",
+        "Welcome, {name}. Next up, connecting your phone.",
+        "Nice one, {name}. Now let's link your phone.",
+        "Pleased to meet you, {name}. Let's set up your phone.",
+        "Hi there, {name}! Time to connect your phone.",
+        "Good to meet you, {name}. Let's get your phone ready.",
+    ),
+    "go_guest_anon": (
+        "Okay. Let us connect your phone.",
+        "No problem. Next, let's connect your phone.",
+        "Alright. Now let's get your phone connected.",
+        "Sure thing. Now, your phone.",
+        "That's fine. Let's connect your phone next.",
+        "Okay then. Next up, connecting your phone.",
+        "No worries. Now let's link your phone.",
+        "Fair enough. Let's set up your phone.",
+        "Alright then. Time to connect your phone.",
+        "Okay. Let's get your phone ready.",
+    ),
     "go_google": "Opening Google. From here, use your keyboard or screen reader on the Google page.",
     "give_up": "I will stop listening now. You can use the buttons on the screen: press tab to move between them.",
+    "connect_phone": (
+        "Now let us connect your phone. Open the camera on your phone and point it at the code on the screen, then tap "
+        "the link that appears. When the page opens, tap the big button, and I will greet you. If the code cannot be "
+        "scanned, open the address shown on the screen in the phone's browser, and type the code {code}.",
+        "Next, your phone. Point your phone's camera at the code on the screen, and tap the link that pops up. When the"
+        " page opens, tap the big Start button, and I'll say hello. Can't scan it? Open the address on the screen in "
+        "your phone's browser, and type the code {code}.",
+        "Let's link your phone. Open its camera, aim it at the code on the screen, and tap the link. Then tap the big "
+        "Start button on the page that opens. If scanning doesn't work, type the address on the screen into your "
+        "phone's browser, and enter the code {code}.",
+        "Time to connect your phone. Open the phone's camera and hold it up to the code on the screen. Tap the link it "
+        "shows, then tap the big Start button, and I'll greet you. If it won't scan, open the address on the screen in "
+        "the phone's browser and type the code {code}.",
+        "Now for your phone. Use its camera to scan the code on the screen, then tap the link. On the page that opens, "
+        "tap the big Start button. No luck scanning? Type the address shown on the screen into the phone's browser, "
+        "with the code {code}.",
+        "Let's get your phone ready. Point the phone's camera at the code on the screen until a link appears, and tap "
+        "it. Then tap the big Start button, and you'll hear me say hello. If that doesn't work, open the address on the"
+        " screen in the phone's browser and type the code {code}.",
+        "Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. Tap "
+        "the big Start button on the new page, and I'll greet you. If the code won't scan, go to the address on the "
+        "screen in the phone's browser and enter the code {code}.",
+        "Okay, the phone. Scan the code on the screen with your phone's camera, then tap the link. When the page loads,"
+        " tap the big Start button. If scanning is tricky, type the address on the screen into the phone's browser, and"
+        " the code {code}.",
+        "Now we'll connect your phone. Hold its camera up to the code on the screen and tap the link that appears. Then"
+        " press the big Start button, and I'll say hello. Or, if it won't scan, open the address on the screen in your "
+        "phone's browser and type the code {code}.",
+        "Let's bring in your phone. Point its camera at the code on the screen and tap the link. On the page that "
+        "opens, tap the big Start button, and I'll greet you. Can't scan? Type the address from the screen into the "
+        "phone's browser, then the code {code}.",
+    ),
 }
 DIALOGUE_SECONDS = 30.0  # the sign-in page keeps the conversation open by pinging; if it stops (tab closed) the tutor goes back to normal
 
@@ -165,8 +278,61 @@ def clean_name(name) -> str:
     return " ".join(text.split())[:40].strip() or "friend"
 
 
+_prompt_rng = random.Random()
+_planned: dict = {}  # prompt name -> the version it will say next (chosen ahead, so only that one is prepared: see common_lines)
+_planned_lock = threading.Lock()
+
+
+def _versions(name: str) -> tuple:
+    v = PROMPTS[name]
+    return (v,) if isinstance(v, str) else v
+
+
+def planned_prompt(name: str) -> str:
+    """The version of a prepared line that will be said next."""
+    with _planned_lock:
+        if name not in _planned:
+            _planned[name] = _prompt_rng.choice(_versions(name))
+        return _planned[name]
+
+
+def next_prompt(name: str) -> str:
+    """The version to say now (the planned one), and the one after chosen at once: another version, never the same twice running."""
+    text = planned_prompt(name)
+    with _planned_lock:
+        others = [v for v in _versions(name) if v != text] or [text]
+        _planned[name] = _prompt_rng.choice(others)
+    return text
+
+
+def common_lines() -> list:
+    """The tutor's fixed lines, the ones it says most (the sign-in conversation, the menu, "I didn't catch that"), to prepare ahead.
+    (Only the version of each that will be said next: preparing every version would cost several times as much speech.)"""
+    lines = [t for t in (planned_prompt(n) for n in PROMPTS) if "{" not in t]
+    lines += [f"Okay. {MENU_LINE_SHORT}", MENU_LINE_SHORT, acc.NOT_UNDERSTOOD, acc.NOT_CLEAR, acc.LOST, acc.FOUND, "Okay.", "What's your question?"]
+    return lines
+
+
+GREETINGS = (
+    "What do you want to do today, {name}?",
+    "Hi, {name}! What would you like to do?",
+    "Welcome, {name}. What shall we do today?",
+    "Great, {name}, you're all set. What would you like to do?",
+    "Hello, {name}! What are we doing today?",
+    "Okay, {name}, we're ready. What would you like to try?",
+    "Lovely, {name}, everything is ready. What shall we do?",
+    "Right, {name}. What do you feel like doing today?",
+    "All set, {name}! Where would you like to start?",
+    "Hi again, {name}. What would you like to do now?",
+)
+_last_greeting: list = [None]
+
+
 def greeting(name: str) -> str:
-    return f"What do you want to do today, {name}? {MENU_LINE}"
+    """The opening question, in one of a few ways (not the same as last time), then the choices in full."""
+    opener = _prompt_rng.choice([g for g in GREETINGS if g != _last_greeting[0]])
+    _last_greeting[0] = opener
+    return f"{opener.format(name=name)} {MENU_LINE}"
 
 
 IDENTIFY_SECONDS = 30.0  # after "next page": how long to keep trying to work out which sheet is on the desk
@@ -330,6 +496,9 @@ class _JourneyHost:
     def say(self, text: str) -> None:
         self.s.say(text)
 
+    def nag(self, text: str) -> None:
+        self.s.nag(text)
+
     def tone(self, kind: str) -> None:
         self.s.earcons.play(kind)
 
@@ -397,7 +566,7 @@ class TutorSession:
                  ask: Optional[AskTutor] = None):
         self.contracted = contracted  # read words as contracted (Grade 2) braille: for a real page; printed sheets are plain letters
         self.coach, self.confusions, self.last_debrief = coach, {}, None  # coach = optional LLM extras; see llm.py
-        self.ask = ask  # optional ChatGPT Q&A: say "braillo" then ask anything
+        self.ask = ask  # optional Claude Q&A: say "braillo" then ask anything
         self._ask_armed = False
         self._ask_heard_n = 0
         self.names = names  # (row, col) -> sheets.Symbol for every cell of a printed sheet; None = every letter cell is a letter
@@ -414,6 +583,8 @@ class TutorSession:
         self._dialogue_at = -1e9
         self._speech = threading.Lock()  # one voice at a time: the explore loop, commands and the phone announcer never talk over each other
         self._heard, self._last_said, self._ex = set(), "", None
+        self._nags: dict = {}  # reminder text -> (when last said, how many times), cleared when the learner says something
+        self._recent: collections.deque = collections.deque(maxlen=6)  # the last lines said, for Braillo's sense of the moment
         self.voice_status: Optional[dict] = None  # set by the apps from voice_check(): whether speech will actually be heard
         self.new_page: Optional[Callable] = None  # set by the apps: forgets the old page (its reading and its registration)
         self.identifies_sheets = False  # set by the apps: "next page" also works out which printed sheet is now on the desk
@@ -434,7 +605,9 @@ class TutorSession:
         self.user: Optional[dict] = None  # {"name", "kind": "google" | "guest", "profile"}
         self.select_sheet: Optional[Callable] = None  # set by the apps: read this printed sheet now (no need to recognise it)
         self.phone_ready_fn: Optional[Callable] = None  # set by the apps when a phone is the camera: is it connected?
+        self.phone_code_fn: Optional[Callable] = None  # set by the apps when a phone is the camera: the code to type on it
         self._greeted_for: Optional[str] = None
+        self.muted = False  # the learner turned the microphone off with the mute key (see set_muted)
         self._epoch = 0  # bumped whenever the mode changes: the loops of the previous mode notice and stop
         self._learn_epoch = -1
 
@@ -443,35 +616,49 @@ class TutorSession:
         """Register the voice commands. Each one plays a tiny sound first, so a learner who cannot see the screen knows they were heard."""
         def heard(handler):
             def run() -> None:
-                if self.dialogue_active():  # someone is answering the sign-in page: a name must not start a lesson
+                if self.dialogue_active() or self.muted:  # someone is answering the sign-in page (a name must not start a lesson), or muted
                     return
                 if self._ask_armed and handler is not self.on_braillo:
                     self._ask_armed = False  # another command: drop the pending question
+                self._nags.clear()  # the learner is here and talking: reminders may start over
                 self.earcons.play("locked")
                 handler()
             return run
 
-        for name, handler in (("start quiz", self.on_start), ("repeat", self.on_repeat), ("hint", self.on_hint),
-                              ("found it", self.on_found_it), ("next", self.on_next), ("next page", self.on_next_page),
-                              ("explore", self.on_explore), ("practice", self.on_practice), ("learn", self.on_mode_learn),
-                              ("read", self.on_mode_read), ("quiz", self.on_mode_quiz), ("menu", self.on_mode_menu),
-                              ("help", self.on_help), ("slower", self.on_slower), ("faster", self.on_faster),
-                              ("take your time", self.on_relaxed), ("normal pace", self.on_normal), ("stop", self.on_stop),
-                              ("braillo", self.on_braillo)):
+        for name, handler in self._commands().items():
             try:
                 self.voice.register_command(name, heard(handler))
             except ValueError:  # an older voice_io that does not know this phrase: the others still work
                 print(f"voice: this voice_io does not know the command {name!r}", flush=True)
+        defer = getattr(self._voice_module(), "set_defer_long_utterances", None)
+        if callable(defer):  # Braillo can judge a long sentence: a command word buried in one is not run blindly
+            defer(self.ask is not None and self.ask.enabled)
+
+    def _commands(self) -> dict:
+        """Voice command name -> handler (also what Braillo's understanding of free speech can run, see _talk)."""
+        return {"start quiz": self.on_start, "repeat": self.on_repeat, "hint": self.on_hint, "found it": self.on_found_it,
+                "next": self.on_next, "next page": self.on_next_page, "explore": self.on_explore, "practice": self.on_practice,
+                "learn": self.on_mode_learn, "read": self.on_mode_read, "quiz": self.on_mode_quiz, "menu": self.on_mode_menu,
+                "help": self.on_help, "slower": self.on_slower, "faster": self.on_faster, "take your time": self.on_relaxed,
+                "normal pace": self.on_normal, "stop": self.on_stop, "hush": self.on_hush, "braillo": self.on_braillo}
+
+    def _voice_module(self):
+        return getattr(self.voice, "voice", self.voice)  # (a wrapped voice keeps the real module as .voice)
 
     def say(self, text: str) -> None:
         # say() is called from almost every command handler while self.lock is held (set_mode, on_stop,
         # _check_symbol...), so a voice.speak() call that never returns -- a hung network request, or a
         # stuck audio-device write, neither of which is guaranteed to have its own timeout -- would freeze
         # every voice command and button in the whole session, not just narration. Running it in its own
-        # thread and giving up after SPEECH_TIMEOUT bounds that: a hang is logged and the caller carries on;
+        # thread and giving up after a time limit bounds that: a hang is logged and the caller carries on;
         # the abandoned thread is a daemon, so it cannot block shutdown, and _speech (below) still keeps two
         # calls from writing to the speaker at once in the normal, non-hung case.
+        cuts = getattr(self._voice_module(), "interrupt_count", None)
+        asked_at = cuts() if callable(cuts) else 0
         with self._speech:
+            if callable(cuts) and cuts() != asked_at:
+                return  # the learner cut the tutor off after this line was queued: it is out of date, drop it
+            self._recent.append(text)
             done = threading.Event()
 
             def run() -> None:
@@ -480,9 +667,21 @@ class TutorSession:
                 finally:
                     done.set()
 
+            limit = SPEECH_TIMEOUT + SPEECH_SECONDS_PER_WORD * len(text.split()) / max(self.settings.speech_speed, 0.5)
             threading.Thread(target=run, daemon=True, name="speak").start()
-            if not done.wait(SPEECH_TIMEOUT):
-                log.warning("say() timed out after %.0fs; giving up so the session is not stuck (text=%r)", SPEECH_TIMEOUT, text)
+            if not done.wait(limit):
+                log.warning("say() timed out after %.0fs; giving up so the session is not stuck (text=%r)", limit, text)
+
+    def nag(self, text: str, now: Optional[float] = None) -> bool:
+        """Say a reminder nobody asked for, unless it has been said too recently or too often (see NAG_GAPS): the same line over and
+        over is what makes a tutor sound broken. Returns True if it was said."""
+        now = time.monotonic() if now is None else now
+        last, times = self._nags.get(text, (-1e9, 0))
+        if times >= NAG_MAX or now - last < NAG_GAPS[min(times, len(NAG_GAPS) - 1)]:
+            return False
+        self._nags[text] = (now, times + 1)
+        self.say(text)
+        return True
 
     def status(self) -> dict:
         """A snapshot for displays (no lock: commands hold it while they speak, and a display must not wait for that)."""
@@ -508,7 +707,17 @@ class TutorSession:
             self.journey.set_pace(self.settings.dwell_scale, self.settings.hint_scale)
         return self.settings.to_dict()
 
+    def set_muted(self, muted: bool) -> bool:
+        """The mute key: turn the microphone off (nothing is sent to Deepgram or acted on) or back on. Returns the new state."""
+        self.muted = bool(muted)
+        mute = getattr(self._voice_module(), "set_muted", None)
+        if callable(mute):
+            mute(self.muted)
+        return self.muted
+
     def _voice_heard(self) -> Optional[dict]:
+        if self.muted:  # not listening: the pages show the microphone as off
+            return None
         module = getattr(self.voice, "voice", self.voice)
         status = getattr(module, "listener_status", None)
         if status is None or getattr(module, "MOCK_MODE", False):
@@ -516,7 +725,7 @@ class TutorSession:
         return (status() or {}).get("heard")
 
     def _listening_state(self) -> bool:
-        if self.dialogue_active() or self._ask_armed:
+        if self.dialogue_active() or self._ask_armed or self.muted:
             return False
         # At the choose-learn/read/quiz screen: stay quiet. Only those three commands (and help/settings)
         # should get a reply; do not say "I didn't catch that" for every other sound in the room.
@@ -549,11 +758,95 @@ class TutorSession:
                 return None
         page_ok = self.page_ok_fn() if self.page_ok_fn is not None else True
         msg = self.awareness.update(now, bool(page_ok), self._activity_running() and self.page_ok_fn is not None)
-        if msg is None and self.heard_fn is not None:
-            msg = self.hearing.update(self.heard_fn(), now, self._listening_state(), self.settings.hearing_feedback)
-        if msg:
+        if msg == acc.FOUND:
+            self._nags.pop(acc.LOST, None)
+            self._nags.pop(acc.STILL_LOST, None)
             self.say(msg)
-        return msg
+            return msg
+        if msg:
+            return msg if self.nag(msg, now) else None
+        if self.heard_fn is not None:
+            heard = self.heard_fn()
+            if self._wants_talk(heard):
+                self.hearing.seen = int(heard["n"])  # dealt with here: Hearing must not also say "I didn't catch that"
+                return self._talk(str(heard.get("text") or ""))
+            msg = self.hearing.update(heard, now, self._listening_state(), self.settings.hearing_feedback)
+        if msg:
+            return msg if self.nag(msg, now) else None
+        return None
+
+    # ---- talking with Braillo: free speech that is not a command ------------------------------------
+    def _wants_talk(self, heard: Optional[dict]) -> bool:
+        """Something new was said that matched no command, and Braillo is on to work out what was meant."""
+        if not heard or heard.get("matched") or self.ask is None or not self.ask.enabled or self.dialogue_active() or self.muted:
+            return False
+        if heard.get("reason") == OVER_SPEECH:  # a word or two caught while it was talking: only an answer the page expects counts
+            return False
+        n = int(heard.get("n", 0))
+        if self.hearing.seen is None or n <= self.hearing.seen:
+            return False
+        return len(str(heard.get("text") or "").split()) >= TALK_MIN_WORDS
+
+    def talk_context(self) -> dict:
+        """What is happening right now, for Braillo (lesson facts only: no names, images or audio). No lock: a command may hold it
+        while it speaks."""
+        ctx: dict = {"activity": self.hub_mode if self.hub else self.mode, "state": self.state}
+        try:
+            ctx["sheet"] = self.current_sheet()
+        except Exception:
+            pass
+        j = self.journey
+        if j is not None:
+            st = j.status()
+            ctx["lesson_phase"] = st["phase"]
+            if st["lesson"]:
+                ctx["lesson"] = st["lesson"]["title"]
+            if st["target"]:
+                ctx.update(target_letter=st["target"], target_dots=st["target_dots"], hints_given=st["hints"], wrong_tries=st["tries"])
+        elif self.state == "asking":
+            try:
+                ctx["quiz_prompt"] = self._prompt()
+                ctx["question"] = f"{self.index + 1} of {len(self.items)}"
+            except (IndexError, StopIteration, AttributeError):
+                pass
+        ctx["you_said_last"] = list(self._recent)[-3:]
+        ctx["commands"] = acc.help_text(self.hub_mode if self.hub else None, self.mode, self.state)
+        return ctx
+
+    def _talk(self, text: str) -> Optional[str]:
+        """Let Braillo work out what free speech meant: run the command it names and/or say its reply. Falls back to the plain
+        "I didn't catch that" when Braillo cannot answer just now."""
+        reply = self.ask.respond(text, self.talk_context())
+        if reply is None:
+            msg = acc.NOT_UNDERSTOOD if self._listening_state() and self.settings.hearing_feedback else None
+            return msg if msg and self.nag(msg) else None
+        self._nags.clear()  # they are talking to us
+        action, line = reply["action"], reply["say"]
+        if line:
+            self.say(line)
+            if action in ("repeat", "hint", "help"):
+                return line  # those only talk, and Braillo has just answered: running one too would say it all twice
+        handler = self._commands().get("start quiz" if action == "start" else action)
+        if handler is not None and action not in ("none", "braillo", "hush"):
+            handler()
+        return line or None
+
+    def cut_speech(self) -> None:
+        """Stop the line being spoken now (the voice module cuts its playback; lines queued behind it are dropped, see say())."""
+        cut = getattr(self._voice_module(), "interrupt", None)
+        if callable(cut):
+            cut()
+
+    def on_hush(self) -> None:
+        """"Quiet" / "wait" / "stop" while it talks: the line is cut off (a spoken one already has been, by the voice module). If
+        more was said after the word ("wait, which dots does D have?"), that is worked out like any other free speech."""
+        self.cut_speech()
+        heard = self.heard_fn() if self.heard_fn is not None else None
+        text = str((heard or {}).get("text") or "")
+        rest = re.sub(r"^\W*(?:be quiet|stop talking|hold on|hang on|quiet|hush|shh|shush|wait|pause|enough|stop)\b\W*", "", text,
+                      flags=re.IGNORECASE)
+        if len(rest.split()) >= 3 and self.ask is not None and self.ask.enabled:
+            self._talk(rest)
 
     def start_watching(self) -> None:
         """Start the background watcher (once): it tells the learner when the camera loses the sheet, and when they were not understood."""
@@ -571,7 +864,7 @@ class TutorSession:
         self._watcher.start()
 
     def on_braillo(self) -> None:
-        """Wake word for ChatGPT Q&A: answer a question in the same utterance, or wait for the next one."""
+        """Wake word for Claude Q&A: answer a question in the same utterance, or wait for the next one."""
         heard = self.heard_fn() if self.heard_fn is not None else None
         text = str((heard or {}).get("text") or "")
         question = strip_ask_wake(text)
@@ -584,15 +877,15 @@ class TutorSession:
         self.say("What's your question?")
 
     def _answer_ask(self, question: str) -> None:
-        """Fetch a short ChatGPT answer and speak it. Network wait is outside the speech lock."""
+        """Fetch a short Claude answer and speak it. Network wait is outside the speech lock."""
         q = " ".join(str(question or "").split()).strip()
         if not q:
             self.say("I did not catch a question. Say braillo, then ask again.")
             return
         if self.ask is None or not self.ask.enabled:
-            self.say("I cannot answer questions right now. Add an OpenAI API key to the .env file to turn Braillo on.")
+            self.say("I cannot answer questions right now. Add an Anthropic API key to the .env file to turn Braillo on.")
             return
-        answer = self.ask.answer(q)
+        answer = self.ask.answer(q, context=self.talk_context())
         if not answer:
             self.say("Sorry, I could not get an answer just then. Try again in a moment.")
             return
@@ -707,14 +1000,19 @@ class TutorSession:
         if not self.hub:
             return None
         u = self.user
+        nxt = self.progress.next_lesson(LESSONS) if u is not None else None  # what "Continue" on the home screen starts
         return {"mode": self.hub_mode, "modes": {k: {"title": v["title"], "sheet": v["sheet"]} for k, v in HUB_MODES.items()},
                 "user": None if u is None else {"name": u["name"], "kind": u["kind"], "saves": u["kind"] == "google"},
-                "greeted": self._greeted_for is not None}
+                "greeted": self._greeted_for is not None,
+                "next_lesson": None if nxt is None else {"id": nxt.id, "title": nxt.title, "index": LESSONS.index(nxt) + 1,
+                                                         "of": len(LESSONS), "letters": [l.upper() for l in nxt.letters]}}
 
     def speak_prompt(self, name: str, who=None) -> None:
-        text = PROMPTS.get(name)
+        text = next_prompt(name) if name in PROMPTS else None
         if text:
-            self.say(text.replace("{name}", clean_name(who)))
+            code = self.phone_code_fn() if self.phone_code_fn is not None else ""
+            spelled = " ".join(code) if code else "shown on the screen"  # one digit at a time: "6 7 9 9 7 0", not a large number
+            self.say(text.replace("{name}", clean_name(who)).replace("{code}", spelled))
 
     def dialogue(self, open_: bool) -> None:
         """The sign-in page is talking with the user (or has finished). While it is: no "I did not catch that", and no voice command runs."""
@@ -823,7 +1121,7 @@ class TutorSession:
                         elif kind == "word" and self.mode == "read" and self.state == "reading":
                             self._read_word(pos)
                 elif nag and not self.is_speaking():
-                    self.say("I can't see your finger. Rest it on the page, or click the picture where it is.")
+                    self.nag("I can't see your finger. Rest it on the page, or click the picture where it is.")
             except Exception:
                 traceback.print_exc()
             time.sleep(0.1)
@@ -1002,7 +1300,10 @@ class TutorSession:
             if (force or now - ex["since"] >= EXPLORE_OFF_CELL_SECONDS) and not ex["off_told"]:
                 ex["off_told"] = True
                 self._last_said = "I don't see any braille there."
-                self.say(self._last_said)
+                if force:  # asked for ("found it"): always answered
+                    self.say(self._last_said)
+                else:
+                    self.nag(self._last_said)
             return
         sym = self._explore_symbol(cell)
         key = sym.key if sym else tuple(sorted(cell["dots"]))
@@ -1027,7 +1328,7 @@ class TutorSession:
                 ex["lost"] = now
             if ex["seen"] and not ex["told_lost"] and now - ex["lost"] >= EXPLORE_LOST_SECONDS:
                 ex["told_lost"] = True
-                self.say("I can't see your finger.")
+                self.nag("I can't see your finger.")
             ex["anchor"] = ex["cell"] = None
             return
         ex["lost"], ex["told_lost"], ex["seen"] = None, False, True
@@ -1097,8 +1398,8 @@ class TutorSession:
         if self.adaptive_planner is not None and count:
             planned, reason = self.adaptive_planner.take_ready(candidates, count, self.mode, history)
             if planned is not None:
-                self.last_selection = {"source": "openai", "reason": self.adaptive_planner.last_response.get("reason", "")}
-                log.info("Adaptive target selection used OpenAI: %s", self.last_selection["reason"])
+                self.last_selection = {"source": "claude", "reason": self.adaptive_planner.last_response.get("reason", "")}
+                log.info("Adaptive target selection used Claude: %s", self.last_selection["reason"])
                 self.adaptive_planner.prefetch(candidates, count, self.mode, history)
                 return planned
             self.adaptive_planner.prefetch(candidates, count, self.mode, history)
@@ -1112,7 +1413,7 @@ class TutorSession:
         return sorted({s.key for s in map(self._symbol, self.cells) if s is not None})
 
     def _fallback_items(self, candidates: list[str], count: int) -> list:
-        """Miss-weighted selection (LetterDrill) when no OpenAI plan is ready.
+        """Miss-weighted selection (LetterDrill) when no Claude plan is ready.
 
         word-quiz: unchanged — ordered slice of self.words.
         letters:   weighted draw via (1 + 2*misses)/(1 + correct); falls back to
@@ -1182,6 +1483,12 @@ class TutorSession:
             self.quiz_correct[item] = self.quiz_correct.get(item, 0) + 1
         elif slip:
             self.slips[item] = self.slips.get(item, 0) + 1
+        if self._is_letter(item):  # the quiz counts towards what the lessons know: a letter missed here is taught again in the next lesson
+            self.progress.record(item, ok, hints=self.hints, tries=self.tries + (1 if ok else 0))
+            self.save_progress()
+
+    def _is_letter(self, key) -> bool:
+        return self.mode == "letters" and isinstance(key, str) and len(key) == 1 and key in LETTER_DOTS
 
     def _advance(self) -> None:
         self.index += 1
@@ -1233,6 +1540,8 @@ class TutorSession:
             return self._advance()
         self.tries += 1
         self.slips[target] = self.slips.get(target, 0) + 1
+        if found is not None and self._is_letter(target) and self._is_letter(found.key):
+            self.progress.record_confusion(found.key, target)  # (the lessons go over this pair again)
         got_text = found.spoken if found else "a mark"
         self.confusions.setdefault(target, set()).add(got_text)
         if self.tries >= self.max_tries:
@@ -1623,7 +1932,7 @@ def add_setup_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--profile", default="default", help="learn mode: whose progress to keep (one file per name in ~/.braillie)")
     ap.add_argument("--no-tones", action="store_true", help="learn mode: no little sounds for right and wrong answers, only speech")
     ap.add_argument("--speech-speed", type=float, default=1.0, help="how fast the tutor talks, 0.6 (slow) to 1.5 (fast); the learner can also say slower or faster")
-    ap.add_argument("--no-llm", action="store_true", help="learn mode uses the AI coach automatically when OPENAI_API_KEY is set; this stops that")
+    ap.add_argument("--no-llm", action="store_true", help="learn mode uses the AI coach automatically when ANTHROPIC_API_KEY is set; this stops that")
     ap.add_argument("--sheet", choices=SHEET_NAMES, help="a printed sheet (see sheets.py). Letters mode quizzes on it "
                     "(default alphabet); word modes then read its known layout instead of running the detector")
     ap.add_argument("--detect", action="store_true", help="with --sheet in a word mode: read with the camera detector anyway")
@@ -1636,14 +1945,14 @@ def add_setup_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--no-finger-tracking", action="store_true",
                     help="do not track the fingertip with the camera (fingertip.py); click the video to point instead")
     ap.add_argument("--llm", action="store_true", help="optional LLM extras (memory aids, praise, personal debrief); "
-                    "needs OPENAI_API_KEY. Never slows the tutor: see llm.py")
-    ap.add_argument("--llm-model", default=None, help="model name for the LLM helper (default gpt-4o-mini, or $BRAILLIE_LLM_MODEL)")
-    ap.add_argument("--adaptive", action="store_true", help="use OpenAI to prioritize targets from this session's miss history; "
+                    "needs ANTHROPIC_API_KEY. Never slows the tutor: see llm.py")
+    ap.add_argument("--llm-model", default=None, help="model name for the LLM helper (default claude-haiku-5-5, or $BRAILLIE_LLM_MODEL)")
+    ap.add_argument("--adaptive", action="store_true", help="use Claude to prioritize targets from this session's miss history; "
                     "falls back safely when no plan is ready")
 
 
 def make_coach(a) -> Optional[Coach]:
-    """The LLM helper if asked for (--llm) or, in learn mode, whenever OPENAI_API_KEY is set (--no-llm stops that); else None and the
+    """The LLM helper if asked for (--llm) or, in learn mode, whenever ANTHROPIC_API_KEY is set (--no-llm stops that); else None and the
     tutor uses its built-in wording. Only lesson facts are ever sent."""
     explicit = getattr(a, "llm", False)
     automatic = getattr(a, "mode", "") in ("learn", "menu") and not getattr(a, "no_llm", False)
@@ -1652,9 +1961,9 @@ def make_coach(a) -> Optional[Coach]:
     client = LLMClient.from_env(getattr(a, "llm_model", None))
     if client is None:
         if explicit:
-            print("--llm was given but OPENAI_API_KEY is not set: the LLM helper stays off.", flush=True)
+            print("--llm was given but ANTHROPIC_API_KEY is not set: the LLM helper stays off.", flush=True)
         else:
-            print("AI coach off: add OPENAI_API_KEY=... to the .env file to turn it on (the built-in coaching works without it).", flush=True)
+            print("AI coach off: add ANTHROPIC_API_KEY=... to the .env file to turn it on (the built-in coaching works without it).", flush=True)
         return None
     print(f"AI coach on ({client.model}). Only lesson facts (letter names, dot numbers, scores) are sent, never camera images "
           "or audio. If the service is slow or fails, the built-in wording is used.", flush=True)
@@ -1662,13 +1971,13 @@ def make_coach(a) -> Optional[Coach]:
 
 
 def make_ask_tutor(a=None) -> Optional[AskTutor]:
-    """ChatGPT Q&A for the braillo wake word. On whenever OPENAI_API_KEY is set, unless --no-llm."""
+    """Claude Q&A for the braillo wake word. On whenever ANTHROPIC_API_KEY is set, unless --no-llm."""
     if a is not None and getattr(a, "no_llm", False):
         return None
     model = getattr(a, "llm_model", None) if a is not None else None
     client = LLMClient.from_env(model)
     if client is None:
-        print("Braillo Q&A off: add OPENAI_API_KEY=... to the .env file, then say braillo and ask a question.", flush=True)
+        print("Braillo Q&A off: add ANTHROPIC_API_KEY=... to the .env file, then say braillo and ask a question.", flush=True)
         return None
     ask = AskTutor(client)
     print(f"Braillo Q&A on ({client.model}). Say braillo, then ask anything.", flush=True)
@@ -1676,12 +1985,12 @@ def make_ask_tutor(a=None) -> Optional[AskTutor]:
 
 
 def make_adaptive_planner(a) -> Optional[AdaptiveTargetPlanner]:
-    """Return the opt-in, bounded-latency OpenAI target planner."""
+    """Return the opt-in, bounded-latency Claude target planner."""
     if not getattr(a, "adaptive", False):
         return None
     client = LLMClient.from_env(a.llm_model)
     if client is None:
-        log.warning("Adaptive target selection is enabled but OPENAI_API_KEY is not set; using fallback selection.")
+        log.warning("Adaptive target selection is enabled but ANTHROPIC_API_KEY is not set; using fallback selection.")
         return None
     client.timeout = min(client.timeout, 2.5)
     return AdaptiveTargetPlanner(client)

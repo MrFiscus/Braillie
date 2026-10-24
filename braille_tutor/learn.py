@@ -40,6 +40,7 @@ LOST_BACKOFF = (6.0, 15.0, 30.0, 60.0)  # ...then less and less often (someone w
 OFF_PAGE_AFTER = 3.0
 REVIEW_LENGTH = 8
 EXTRA_REVIEW = 2  # older letters mixed into a lesson's practice
+WARMUP_MAX = 3  # letters that went wrong before, taught again at the start of the next lesson (see _lesson_intro)
 
 
 @dataclass(frozen=True)
@@ -219,10 +220,15 @@ class Journey:
         self.dwell.seconds = DWELL_SECONDS * dwell_scale
         self.hint_scale = hint_scale
 
+    def _nag(self, text: str) -> None:
+        """A reminder nobody asked for: the host may hold it back if it has been said too often (a host without nag() just says it)."""
+        nag = getattr(self.host, "nag", None)
+        (nag or self.host.say)(text)
+
     # ---- public commands (voice) --------------------------------------------------------------
     def on_start(self) -> None:
         """"Start": begin, or continue where we were."""
-        if self.phase in ("teach", "practice", "review"):
+        if self.phase in ("teach", "warmup", "practice", "review"):
             return self.on_repeat()
         if self.phase in ("recap", "explore", "idle", "done"):
             return self._begin_or_continue()
@@ -230,7 +236,7 @@ class Journey:
             return self._remind_sheet()
 
     def on_repeat(self) -> None:
-        if self.phase in ("teach", "practice", "review") and self.target:
+        if self.phase in ("teach", "warmup", "practice", "review") and self.target:
             self._ask(repeat=True)
         elif self.phase == "await_sheet":
             self._remind_sheet()
@@ -242,13 +248,13 @@ class Journey:
             self.host.say("Say start to begin a lesson.")
 
     def on_hint(self) -> None:
-        if self.phase in ("teach", "practice", "review") and self.target:
+        if self.phase in ("teach", "warmup", "practice", "review") and self.target:
             self._hint()
         else:
             self.host.say("Say start to begin a lesson.")
 
     def on_found_it(self) -> None:
-        if self.phase in ("teach", "practice", "review") and self.target:
+        if self.phase in ("teach", "warmup", "practice", "review") and self.target:
             pos = self.host.finger()
             if pos is None:
                 return self.host.say("I can't see your finger yet. Put it on the page.")
@@ -258,7 +264,7 @@ class Journey:
 
     def on_next(self) -> None:
         """"Next": skip this letter, or move on from a recap, or leave free exploring."""
-        if self.phase in ("teach", "practice", "review") and self.target:
+        if self.phase in ("teach", "warmup", "practice", "review") and self.target:
             self._give_up(skipped=True)
         elif self.phase in ("recap", "explore", "idle", "done"):
             self._begin_or_continue()
@@ -266,7 +272,7 @@ class Journey:
             self._remind_sheet()
 
     def on_explore(self) -> None:
-        if self.phase in ("teach", "practice", "review", "await_sheet"):
+        if self.phase in ("teach", "warmup", "practice", "review", "await_sheet"):
             self._abandon_round()
         self.phase, self.target = "explore", None
         self.host.explore_reset()
@@ -277,7 +283,7 @@ class Journey:
         """"Practice": an adaptive review of the letters that need it most."""
         if not self.progress.practised():
             return self.host.say("Let's do a lesson first, so there is something to practise. Say start.")
-        if self.phase in ("teach", "practice", "review", "await_sheet"):
+        if self.phase in ("teach", "warmup", "practice", "review", "await_sheet"):
             self._abandon_round()
         pool = [l for l in self.progress.practised()]
         self._start_review(self.progress.pick_practice(pool, REVIEW_LENGTH, self.rng))
@@ -299,9 +305,9 @@ class Journey:
         if self.phase == "recap":
             if now - self.last_activity >= REMIND_EVERY:
                 self.last_activity = now
-                self._say_options()
+                self._say_options(nag=True)
             return
-        if self.phase not in ("teach", "practice", "review") or not self.target:
+        if self.phase not in ("teach", "warmup", "practice", "review") or not self.target:
             return
         pos = self.host.finger()
         if pos is None:
@@ -310,7 +316,7 @@ class Journey:
             if now - self.last_lost >= gap and now - self.asked_at >= LOST_AFTER and (visible is None or visible()):
                 self.last_lost = now
                 self.lost_notices += 1
-                self.host.say("I can't see your finger. Put it on the page.")
+                self._nag("I can't see your finger. Put it on the page.")
             self.dwell.update(None, now)
         else:
             self.last_lost, self.lost_notices = now, 0
@@ -366,10 +372,14 @@ class Journey:
             return
         self._lesson_intro()
 
-    def _remind_sheet(self) -> None:
+    def _remind_sheet(self, nag: bool = False) -> None:
         self._await_since = self.clock()
         self.host.request_sheet(self.lesson.sheet)
-        self.host.say(f"I'm waiting for the {self.lesson.sheet} sheet. Put it in front of the camera and hold it steady.")
+        text = f"I'm waiting for the {self.lesson.sheet} sheet. Put it in front of the camera and hold it steady."
+        if nag:
+            self._nag(text)
+        else:
+            self.host.say(text)
 
     def _tick_sheet(self, now: float) -> None:
         if self.host.sheet_name() == self.lesson.sheet and self.host.cells():
@@ -377,10 +387,21 @@ class Journey:
                 return self._start_review(self._pending_review)
             return self._lesson_intro()
         if now - self._await_since >= REMIND_EVERY:
-            self._remind_sheet()
+            self._remind_sheet(nag=True)
 
-    def _lesson_intro(self) -> None:
+    def _lesson_intro(self, warmed: bool = False) -> None:
+        """Start the lesson. First, if letters from earlier went wrong (here or in the quiz), a short warm-up teaches them again, each
+        with how it differs from the letter it was mixed up with; then the new letters."""
         lesson = self.lesson
+        if not warmed:
+            weak = [l for l in self.progress.needs_reteaching([l for l in self.taught if l not in lesson.letters], WARMUP_MAX)
+                    if self.host_has(l)]
+            if weak:
+                self.host.tone("ready")
+                self.host.say(f"{lesson.title}. Before the new letters, let's go back over "
+                              f"{'one' if len(weak) == 1 else 'a few'} from before that went wrong: {_and([l.upper() for l in weak])}.")
+                self.phase, self.queue = "warmup", list(weak)
+                return self._next_item()
         self.host.tone("ready")
         self.host.say(f"{lesson.title}. {lesson.intro} {lesson.insight}")
         if self.coach is not None:
@@ -398,7 +419,11 @@ class Journey:
 
     def _ask(self, repeat: bool = False) -> None:
         t = self.target
-        if self.phase == "teach":
+        if self.phase == "warmup":  # taught again: the dots, and what it was mixed up with
+            mixed = self.progress.confused_with(t)
+            careful = f" Careful: it's been mixed up with {name(mixed[0])}. {contrast(mixed[0], t)}" if mixed and not repeat else ""
+            text = f"{cap(name(t))}. {dot_words(t)}{careful} Find it and rest your finger on it."
+        elif self.phase == "teach":
             rel = relation(t, self.taught) if self.lesson else None
             text = f"{cap(name(t))}. {dot_words(t)} {rel + ' ' if rel else ''}Find it and rest your finger on it."
             if repeat:
@@ -425,7 +450,7 @@ class Journey:
         if cell is None:
             if now - self.off_page_since >= OFF_PAGE_AFTER:
                 self.off_page_since = now
-                self.host.say("I don't feel any braille there. Move your finger over the sheet.")
+                self._nag("I don't feel any braille there. Move your finger over the sheet.")
             return
         touched = letter_of_dots(cell["dots"])
         if touched is None and self.host.known_cells():
@@ -471,7 +496,7 @@ class Journey:
         self._record(t, True, clean)
         praise = self.coach.next_praise() if (self.coach is not None and self.rng.random() < 0.5) else None
         text = praise or self.rng.choice(PRAISE)
-        if self.phase == "teach":
+        if self.phase in ("teach", "warmup"):
             text += f" That's {name(t)}. {dot_words(t)}"
         if self.phase != "teach" and self.in_a_row in (3, 5, 8):  # (teaching is meant to be easy: a streak means something in practice)
             text += f" That's {self.in_a_row} in a row!"
@@ -509,7 +534,7 @@ class Journey:
 
     # ---- bookkeeping --------------------------------------------------------------------------
     def _record(self, letter: str, correct: bool, clean: bool) -> None:
-        if self.phase in ("practice", "review"):
+        if self.phase in ("practice", "review", "warmup"):
             self.progress.record(letter, correct, hints=self.hints, tries=self.tries + 1)
             self._save()
         elif self.phase == "teach" and correct:
@@ -527,6 +552,9 @@ class Journey:
 
     def _phase_done(self) -> None:
         self.target = None
+        if self.phase == "warmup":
+            self.host.say("Good. Now, the new letters.")
+            return self._lesson_intro(warmed=True)
         if self.phase == "teach":
             return self._start_practice()
         if self.phase == "practice":
@@ -538,12 +566,17 @@ class Journey:
         self.phase = "practice"
         letters = list(self.lesson.letters)
         older = [l for l in self.taught if l not in letters and self.host_has(l)]
-        extra = self.progress.pick_practice(older, EXTRA_REVIEW, self.rng) if older else []
+        # the letters that went wrong before come back here too, first; then a couple of others to keep them fresh
+        weak = self.progress.needs_reteaching(older, WARMUP_MAX)
+        rest = [l for l in older if l not in weak]
+        extra = weak + (self.progress.pick_practice(rest, EXTRA_REVIEW, self.rng) if rest else [])
         self.rng.shuffle(letters)
         self.queue = letters + [l for l in extra if l not in letters]
         self.rng.shuffle(self.queue)
         self.host.tone("ready")
-        self.host.say("Now let's practise. I'll ask for the letters in a different order." + (" A couple of older ones are mixed in to keep them fresh." if extra else ""))
+        mixed = (" The ones that went wrong before are mixed in, with a couple of others to keep them fresh." if weak
+                 else " A couple of older ones are mixed in to keep them fresh." if extra else "")
+        self.host.say("Now let's practise. I'll ask for the letters in a different order." + mixed)
         self._next_item()
 
     def host_has(self, letter: str) -> bool:
@@ -568,7 +601,7 @@ class Journey:
             text = f"Lesson complete! You found {len(got)} of {len(letters)} letters first time, with no help."
             text += f" The tricky ones were {_and([l.upper() for l in tricky])}." if tricky else " Every one."
         else:
-            text = f"That's the end of the lesson. You found {len(got)} of {len(letters)} first time; {_and([l.upper() for l in tricky])} need more practice. We'll come back to them."
+            text = f"That's the end of the lesson. You found {len(got)} of {len(letters)} first time; {_and([l.upper() for l in tricky])} need more practice. I'll bring them back at the start of the next lesson."
         confused = self.progress.top_confusions(1)
         if confused and confused[0][2] >= 2:
             text += f" You have been mixing up {name(confused[0][0])} and {name(confused[0][1])}: practice will focus on those."
@@ -576,14 +609,18 @@ class Journey:
         self.phase, self.last_activity = "recap", self.clock()
         self._say_options(after_lesson=True, next_lesson=nxt)
 
-    def _say_options(self, after_lesson: bool = False, next_lesson=None) -> None:
+    def _say_options(self, after_lesson: bool = False, next_lesson=None, nag: bool = False) -> None:
         nxt = next_lesson or self.progress.next_lesson(self.lessons)
         parts = []
         if nxt is not None:
             repeat = self.lesson is not None and nxt.id == self.lesson.id  # the lesson just done was not mastered: it comes round again
             parts.append("say next to try this lesson again" if repeat else f"say next for {nxt.title}")
         parts += ["practice for a review", "explore to feel the letters freely", "or stop"]
-        self.host.say("You can " + ", ".join(parts) + ".")
+        text = "You can " + ", ".join(parts) + "."
+        if nag:
+            self._nag(text)
+        else:
+            self.host.say(text)
 
     # ---- review (adaptive practice) -----------------------------------------------------------
     def _start_review(self, letters: list) -> None:

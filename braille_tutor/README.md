@@ -102,10 +102,10 @@ repeat, hint, found it, next, next page, stop. The same things are on the window
 
 ## Optional LLM extras (`--llm`)
 
-`llm.py` can add polish with any OpenAI-compatible chat API, without ever sitting on the critical path:
+`llm.py` can add polish with Claude (the Anthropic API, `claude-haiku-5-5` by default), without ever sitting on the critical path:
 
 ```
-export OPENAI_API_KEY=...            # never commit this; set BRAILLIE_LLM_MODEL (or --llm-model) to a model your key can call
+export ANTHROPIC_API_KEY=...         # never commit this; BRAILLIE_LLM_MODEL (or --llm-model) picks another Claude model
 python tutor.py --mock --llm --autostart
 ```
 
@@ -310,7 +310,7 @@ The website uses that to keep it in the learner's Supabase account: run `supabas
 row level security), and the Learn screen loads the account's copy on start and saves back a few seconds after each change. Signed out or
 offline it just says progress is kept on this computer.
 
-**AI coach**: with `OPENAI_API_KEY=...` in the repo's `.env` learn mode turns the coach on by itself (`--no-llm` stops that): it writes
+**AI coach**: with `ANTHROPIC_API_KEY=...` in the repo's `.env` learn mode turns the coach on by itself (`--no-llm` stops that): it writes
 memory aids for the letters in a lesson (used as the second hint), varied praise, and a personal debrief. Only lesson facts (letter names, dot
 numbers, scores) are ever sent, never pictures or audio; if it is slow or fails, the built-in wording is used. Without a key, everything
 above works the same with the built-in wording.

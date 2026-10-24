@@ -1,8 +1,12 @@
-/* Braillie: paper and ink.
-   A printed braille sheet is paper with raised dots, so that is the whole look: warm paper, black ink, one vermilion accent, hard offset
-   shadows like a stamped card, and dots as the only decoration. Every colour pair below is checked to WCAG AAA (7:1) by
-   tests/contrast.test.mjs; sizes are in rem so the "Text size" control scales the whole page; focus is a thick ring that never relies on colour.
-   Themes are set by data-theme on <html> (light | dark | contrast); display/display.ts resolves "match my device" to one of them. */
+/* Braillie: one thing at a time, in big type.
+   The layout follows a simple step-by-step flow: a top bar, a thick progress bar, one large heading per screen, and the choices as wide
+   rows. The colours are made for people with low vision: near-black with white text and one
+   bright yellow (the classic low-vision pairing), or white with near-black text and a deep blue; plus two strongest themes. Every colour
+   pair below is checked to WCAG AAA (7:1) by tests/contrast.test.mjs.
+   Low-vision rules kept throughout: one typeface made for legibility (Atkinson Hyperlegible) at a large base size, no small or uppercase
+   labels, no thin grey lines (edges are 3px or more and at least 3:1), meaning never carried by colour alone, big targets, a thick focus
+   ring, sizes in rem so the "Text size" control scales everything, and no motion for anyone who asks for less.
+   Themes are set by data-theme on <html> (light | dark | contrast-light | contrast); display/display.ts resolves "match my device". */
 
 @font-face {
   font-family: 'Atkinson Hyperlegible Next';
@@ -10,44 +14,45 @@
   font-weight: 200 800;
   font-display: swap;
 }
-@font-face {
-  font-family: 'Fraunces';
-  src: url('/fonts/fraunces.woff2') format('woff2');
-  font-weight: 100 900;
-  font-display: swap;
-}
 
 :root {
   --body: 'Atkinson Hyperlegible Next', 'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --display: 'Fraunces', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  --bw: 3px; /* border width: thicker in the high-contrast themes */
+  --bw: 3px; /* edge width: thicker in the strongest themes */
+  --radius: 14px;
+  --radius-lg: 22px;
+  --voicebar: 4.75rem;
+  --lift: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.12); /* cards sit a little above the page */
+  --gutter: clamp(1rem, 5vw, 5rem);
+  --topbar: 4rem;
 
-  --paper: #f6f0e2;
-  --paper-sunk: #e8dec6;
-  --card: #fffdf6;
-  --ink: #0f0d09;
-  --ink-soft: #2b261c;
-  --accent: #7a1c04;
-  --on-accent: #fffaf0;
-  --good: #0f4a22;
-  --warn: #5c3400;
-  --grain: rgba(15, 13, 9, 0.09);
-  --camera: #0e0d0a;
+  --paper: #ffffff;
+  --paper-sunk: #ebebec;
+  --card: #f4f4f5;
+  --ink: #0a0a0b;
+  --ink-soft: #2e2f31;
+  --accent: #0b3ab0;
+  --on-accent: #ffffff;
+  --good: #0b5323;
+  --warn: #7a3300;
+  --camera: #0a0a0b;
+  --tint: #f0f3fa; /* every other section of the landing page: one soft tint of the page, so it reads as one piece */
   color-scheme: light;
 }
+/* Near-black with white text and one bright yellow: the hero theme. */
 :root[data-theme='dark'] {
-  --paper: #0e0d0a;
-  --paper-sunk: #050504;
-  --card: #1a1812;
-  --ink: #fbf5e6;
-  --ink-soft: #e0d8c4;
-  --accent: #ffb590;
-  --on-accent: #170800;
-  --good: #93f0b3;
-  --warn: #ffd97a;
-  --grain: rgba(251, 245, 230, 0.08);
+  --paper: #0a0a0b;
+  --paper-sunk: #000000;
+  --card: #18191b;
+  --ink: #ffffff;
+  --ink-soft: #d9d9db;
+  --accent: #ffd60a;
+  --on-accent: #000000;
+  --good: #7cf2a8;
+  --warn: #ffb36b;
   --camera: #000;
+  --lift: 0 0.75rem 2rem rgba(0, 0, 0, 0.55);
+  --tint: #121722;
   color-scheme: dark;
 }
 /* Black on white: the strongest light theme. The accent is blue, which stays apart from black and from the other colours for people who
@@ -63,11 +68,11 @@
   --on-accent: #ffffff;
   --good: #00461a;
   --warn: #5a3000;
-  --grain: transparent;
   --camera: #000;
+  --tint: var(--paper);
   color-scheme: light;
 }
-/* Yellow on black: the classic low-vision combination. */
+/* Yellow on black, nothing in between: the strongest dark theme. */
 :root[data-theme='contrast'] {
   --bw: 4px;
   --paper: #000000;
@@ -79,8 +84,8 @@
   --on-accent: #000000;
   --good: #7cffb2;
   --warn: #ffe14d;
-  --grain: transparent;
   --camera: #000;
+  --tint: var(--paper);
   color-scheme: dark;
 }
 
@@ -107,7 +112,7 @@ body {
   min-height: 100vh;
   background: var(--paper);
   color: var(--ink);
-  font: 400 1.125rem/1.6 var(--body);
+  font: 400 1.25rem/1.6 var(--body);
   letter-spacing: 0.01em;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -120,26 +125,26 @@ body {
 h1,
 h2,
 h3 {
-  font-family: var(--display);
-  font-weight: 700;
-  font-optical-sizing: auto;
+  font-family: var(--body);
+  font-weight: 800;
   line-height: 1.08;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.01em;
   margin: 0;
   text-wrap: balance;
 }
 h1 {
-  font-size: clamp(2rem, 3vw + 0.9rem, 3.3rem);
+  font-size: clamp(2.2rem, 2.2vw + 1.2rem, 3.6rem);
+  line-height: 1.02;
 }
 h2 {
-  font-size: clamp(1.3rem, 1vw + 1rem, 1.65rem);
+  font-size: clamp(1.6rem, 1.4vw + 1.1rem, 2.25rem);
 }
 h3 {
-  font-size: 1.3rem;
+  font-size: 1.4rem;
 }
 p {
   margin: 0;
-  max-width: 62ch;
+  max-width: 60ch;
 }
 a {
   color: var(--ink);
@@ -152,36 +157,34 @@ strong {
 }
 code {
   font-family: var(--mono);
-  font-size: 0.92em;
-  padding: 0.1em 0.4em;
+  font-size: 0.9em;
+  padding: 0.1em 0.45em;
   border: 2px solid var(--ink);
-  border-radius: 6px;
-  background: var(--paper-sunk);
+  border-radius: 8px;
+  background: var(--card);
 }
 [tabindex='-1']:focus {
   outline: none; /* the heading that receives focus on arrival is not a control: the screen reader announces it, nothing needs a ring */
+  box-shadow: none;
 }
 
-/* ---- focus: a thick ring, offset so it can be seen on any surface, in any theme ---- */
+/* ---- focus: a thick ring in the accent with an ink edge, offset so it shows on any surface, in any theme ---- */
 :where(a, button, input, summary, select, textarea, [tabindex]):focus-visible {
-  outline: 5px solid var(--ink);
+  outline: 5px solid var(--accent);
   outline-offset: 4px;
-}
-.btn:focus-visible,
-.field input:focus-visible {
-  outline-offset: 5px;
+  box-shadow: 0 0 0 4px var(--paper), 0 0 0 7px var(--ink);
 }
 
 .skip {
   position: absolute;
   left: 1rem;
-  top: -6rem;
+  top: -8rem;
   z-index: 50;
-  padding: 0.9rem 1.2rem;
-  background: var(--ink);
-  color: var(--paper);
-  font-weight: 700;
-  border-radius: 12px;
+  padding: 1rem 1.4rem;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 800;
+  border-radius: var(--radius);
 }
 .skip:focus {
   top: 1rem;
@@ -198,20 +201,18 @@ code {
   border: 0;
 }
 
-/* ---- the frame: a masthead like a printed page, then the work ---- */
-.masthead {
-  border-bottom: var(--bw) solid var(--ink);
-  background: var(--paper);
-}
-.masthead__row {
-  max-width: 76rem;
-  margin: 0 auto;
-  padding: 0.55rem clamp(1rem, 4vw, 2.5rem);
+/* ---- the frame: a top bar, the step's progress, then the screen ---- */
+.topbar {
+  position: relative;
+  z-index: 30;
+  min-height: var(--topbar);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.75rem 1.25rem;
   flex-wrap: wrap;
+  padding: 0.6rem var(--gutter);
+  background: var(--paper);
 }
 .brand {
   display: inline-flex;
@@ -219,42 +220,262 @@ code {
   gap: 0.7rem;
   color: var(--ink);
   text-decoration: none;
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: 1.5rem;
-  letter-spacing: -0.02em;
+  font-weight: 800;
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
+  min-height: 3rem;
 }
-.masthead__tools {
+.brand__dot {
+  color: var(--accent);
+}
+.topbar__tools {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.75rem 1rem;
   flex-wrap: wrap;
 }
 .who {
-  font-weight: 600;
+  font-weight: 700;
+}
+.progress {
+  position: relative;
+  z-index: 30;
+  height: 0.6rem;
+  background: var(--card);
+  border-bottom: 2px solid var(--ink-soft);
+}
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 450ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .stage {
+  position: relative;
+  z-index: 1;
   flex: 1;
   width: 100%;
-  max-width: 76rem;
-  margin: 0 auto;
-  padding: clamp(1rem, 2.4vw, 2rem) clamp(1rem, 4vw, 2.5rem) clamp(1.25rem, 3vw, 2.25rem);
-  background-image: radial-gradient(circle at center, var(--grain) 0 2.4px, transparent 3px);
-  background-size: 38px 38px;
-  background-position: 19px 19px;
-}
-.colophon {
-  border-top: var(--bw) solid var(--ink);
-  padding: 0.7rem clamp(1rem, 4vw, 2.5rem);
-  color: var(--ink-soft);
-  font-size: 1rem;
   display: flex;
-  gap: 0.6rem 1.5rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  padding: clamp(1.25rem, 3.5vh, 2.5rem) var(--gutter) clamp(1.5rem, 4vh, 3rem);
+}
+.stage > * {
+  width: 100%; /* the whole width: paragraphs keep their own reading length (p, .lede) */
+  animation: rise 500ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* ---- the app: a sidebar to move around in, and Braillie's voice bar at the foot ---- */
+.app {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.app--nav {
+  display: grid;
+  grid-template-columns: 15.5rem minmax(0, 1fr);
+  align-items: stretch;
+}
+.app > .stage {
+  min-width: 0;
+}
+.sidebar {
+  position: sticky; /* stays put while the page scrolls, as an app's navigation does */
+  top: 0;
+  align-self: start;
+  height: calc(100vh - var(--voicebar)); /* (down to the voice bar, which stays at the foot) */
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   justify-content: space-between;
-  max-width: 76rem;
-  margin: 0 auto;
+  gap: 1.5rem;
+  padding: 1.25rem 1rem;
+  background: var(--card);
+  border-right: var(--bw) solid var(--ink);
+  border-top: var(--bw) solid var(--ink);
+}
+.sidebar__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+  align-content: start;
+}
+.navitem {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
   width: 100%;
+  min-height: 3.6rem;
+  padding: 0.45rem 0.9rem;
+  border: var(--bw) solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 800;
+  font-size: 1.3rem;
+  text-align: left;
+  cursor: pointer;
+}
+.navitem:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+.navitem[aria-current='page'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.navitem[aria-current='page'] .cell-dot--accent {
+  fill: var(--on-accent);
+}
+.navitem[aria-current='page'] .cell-frame,
+.navitem[aria-current='page'] .cell-dot--off {
+  stroke: var(--on-accent);
+}
+.navitem:disabled {
+  color: var(--ink-soft);
+  cursor: not-allowed;
+}
+.navitem__icon {
+  flex: none;
+  width: 1.15rem;
+  height: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  overflow: visible;
+}
+.sidebar__who {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding-top: 1rem;
+  border-top: var(--bw) solid var(--ink);
+}
+.topbar .topbar__account--app {
+  display: none; /* in the sidebar instead (on a narrow screen it is back here: see below) */
+}
+.sidebar__who p {
+  display: grid;
+}
+.voicebar {
+  position: sticky;
+  bottom: 0;
+  z-index: 30;
+  min-height: var(--voicebar);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  padding: 0.7rem var(--gutter);
+  background: var(--card);
+  border-top: var(--bw) solid var(--ink);
+}
+.voicebar[data-on='speaking'] {
+  box-shadow: inset 0.6rem 0 0 var(--accent);
+}
+.voicebar__state {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 11rem;
+}
+.voicebar__label {
+  font-weight: 800;
+  font-size: 1.25rem;
+  white-space: nowrap;
+}
+.voicebar__words {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.voicebar__words p {
+  max-width: none;
+  font-size: 1.15rem;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; /* (a screen reader gets the whole line) */
+}
+.voicebar__said {
+  font-weight: 700;
+}
+.voicebar__who {
+  font-weight: 800;
+  color: var(--accent);
+}
+.voicebar__keys {
+  display: flex;
+  gap: 0.6rem;
+}
+@media (max-width: 64rem) {
+  .app--nav {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sidebar {
+    border-right: 0;
+    border-bottom: var(--bw) solid var(--ink);
+    padding: 0.6rem var(--gutter);
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .sidebar {
+    position: static;
+    height: auto;
+    padding: 0.4rem var(--gutter);
+  }
+  .sidebar__list {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto; /* one row that scrolls sideways, not three rows of page */
+    width: 100%;
+  }
+  .navitem {
+    width: auto;
+    min-height: 3rem;
+    font-size: 1.15rem;
+    white-space: nowrap;
+  }
+  .sidebar__who {
+    display: none;
+  }
+  .topbar .topbar__account--app {
+    display: grid;
+  }
+  .voicebar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.4rem 0.75rem;
+    padding-block: 0.5rem;
+  }
+  .voicebar__state {
+    min-width: 0;
+  }
+  .voicebar__words {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .voicebar__words p {
+    -webkit-line-clamp: 1;
+  }
+  .voicebar__heard.hint {
+    display: none;
+  }
 }
 
 /* ---- the display menu: text size and colours, kept for next time ---- */
@@ -265,17 +486,20 @@ code {
   list-style: none;
   cursor: pointer;
   font-weight: 700;
-  padding: 0.6rem 1rem;
+  padding: 0.55rem 1.1rem;
   border: var(--bw) solid var(--ink);
-  border-radius: 12px;
-  background: var(--card);
-  min-height: 2.75rem;
+  border-radius: var(--radius);
+  background: var(--paper);
+  min-height: 3rem;
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
 }
 .display > summary::-webkit-details-marker {
   display: none;
+}
+.display > summary:hover {
+  background: var(--card);
 }
 .display[open] > summary {
   background: var(--ink);
@@ -285,15 +509,15 @@ code {
   position: absolute;
   right: 0;
   top: calc(100% + 0.75rem);
-  z-index: 20;
-  width: min(30rem, calc(100vw - 2rem));
+  z-index: 40;
+  width: min(32rem, calc(100vw - 2rem));
   display: grid;
-  gap: 1.25rem;
-  padding: 1.25rem;
-  background: var(--card);
+  gap: 1.4rem;
+  padding: 1.4rem;
+  background: var(--paper);
   border: var(--bw) solid var(--ink);
-  border-radius: 18px;
-  box-shadow: 6px 6px 0 var(--ink);
+  border-radius: calc(var(--radius) + 4px);
+  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.45);
 }
 .display fieldset {
   border: 0;
@@ -302,9 +526,9 @@ code {
   min-width: 0;
 }
 .display legend {
-  font-weight: 700;
+  font-weight: 800;
   padding: 0;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.6rem;
 }
 .seg {
   display: flex;
@@ -328,8 +552,8 @@ code {
   min-height: 3.25rem;
   padding: 0.4rem 0.9rem;
   border: var(--bw) solid var(--ink);
-  border-radius: 12px;
-  font-weight: 600;
+  border-radius: var(--radius);
+  font-weight: 700;
   text-align: center;
   background: var(--paper);
 }
@@ -342,135 +566,123 @@ code {
   margin-right: 0.45rem;
 }
 .seg input:focus-visible + span {
-  outline: 5px solid var(--ink);
+  outline: 5px solid var(--accent);
   outline-offset: 4px;
 }
 
-/* ---- pages ---- */
+/* ---- a screen: a big heading, a line under it, then what to do ---- */
 .page {
   display: grid;
-  gap: clamp(1.25rem, 2.6vw, 2.5rem);
-  align-items: start;
-}
-.page--split {
-  grid-template-columns: minmax(0, 1fr);
-}
-@media (min-width: 62rem) {
-  .page--split {
-    grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  }
+  gap: clamp(1.25rem, 2.2vw, 2rem);
+  align-content: start;
 }
 .intro {
   display: grid;
-  gap: 1rem;
+  gap: 0.8rem;
   align-content: start;
 }
 .eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.6rem;
-  font-weight: 700;
-  font-size: 1rem;
-  letter-spacing: 0.02em;
+  font-weight: 800;
+  font-size: 1.25rem;
   color: var(--accent);
 }
-.eyebrow::before {
-  content: '';
-  width: 0.7rem;
-  height: 0.7rem;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: none;
-}
 .lede {
-  font-size: 1.15rem;
-  line-height: 1.45;
+  font-size: clamp(1.25rem, 0.6vw + 1rem, 1.55rem);
+  line-height: 1.35;
+  font-weight: 500;
   color: var(--ink-soft);
-}
-.sheet {
-  background: var(--card);
-  border: var(--bw) solid var(--ink);
-  border-radius: 22px;
-  box-shadow: 8px 8px 0 var(--ink);
-  padding: clamp(1rem, 2vw, 1.6rem);
-  display: grid;
-  gap: 1.1rem;
-  min-width: 0;
-}
-.sheet__part {
-  display: grid;
-  gap: 0.6rem;
-}
-.sheet__part + .sheet__part {
-  border-top: var(--bw) dashed var(--ink);
-  padding-top: 1.1rem;
-}
-.sheet h2 {
-  display: flex;
-  align-items: baseline;
-  gap: 0.7rem;
+  max-width: 44ch;
 }
 .hint {
   color: var(--ink-soft);
 }
 .small {
-  font-size: 1rem;
+  font-size: 1.1rem;
+}
+.status {
+  font-size: 1.35rem;
+  font-weight: 700;
+  max-width: 50ch;
 }
 
-/* ---- buttons: keys you press. The shadow is real height; pressing takes it away. ---- */
+/* the options on a screen, one per row, between strong rules */
+.sheet {
+  display: grid;
+  border-top: var(--bw) solid var(--ink);
+  min-width: 0;
+}
+.sheet__part {
+  display: grid;
+  gap: 0.6rem;
+  padding: clamp(1rem, 1.8vw, 1.4rem) 0;
+  border-bottom: var(--bw) solid var(--ink);
+  align-content: start;
+}
+.sheet__part .sheet__part {
+  padding: 0;
+  border: 0;
+}
+.sheet__part > .btn,
+.sheet__part form > .btn {
+  justify-self: start;
+}
+.sheet > .hint,
+.sheet > [role='alert'],
+.sheet > [role='status'] {
+  padding-top: 1.25rem;
+}
+
+/* ---- buttons: solid (the thing to do) or outlined (another way) ---- */
 .btn {
   appearance: none;
   font: inherit;
-  font-weight: 700;
-  font-size: 1.15rem;
-  line-height: 1.25;
-  min-height: 4rem;
-  width: 100%;
-  padding: 0.6rem 1.2rem;
-  margin-bottom: 6px;
+  font-weight: 800;
+  font-size: 1.25rem;
+  line-height: 1.2;
+  min-height: 3.75rem;
+  padding: 0.6rem 1.8rem;
   border: var(--bw) solid var(--ink);
-  border-radius: 16px;
-  background: var(--card);
+  border-radius: var(--radius);
+  background: var(--paper);
   color: var(--ink);
-  box-shadow: 0 6px 0 var(--ink);
   cursor: pointer;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
   text-align: center;
   text-decoration: none;
-  transition: transform 80ms ease, box-shadow 80ms ease, background-color 120ms ease;
+  transition: background-color 150ms ease, color 150ms ease, transform 80ms ease;
 }
 .btn:hover:not(:disabled) {
-  background: var(--paper-sunk);
+  background: var(--ink);
+  color: var(--paper);
 }
 .btn:active:not(:disabled) {
-  transform: translateY(4px);
-  box-shadow: 0 2px 0 var(--ink);
+  transform: translateY(2px);
 }
 .btn--primary {
   background: var(--accent);
+  border-color: var(--accent);
   color: var(--on-accent);
 }
 .btn--primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 86%, var(--ink));
+  border-color: var(--ink);
+  color: var(--on-accent);
 }
 .btn--quiet {
   min-height: 3rem;
-  width: auto;
-  padding: 0.5rem 1.1rem;
-  font-size: 1.05rem;
-  box-shadow: 0 4px 0 var(--ink);
-  margin-bottom: 4px;
+  padding: 0.5rem 1.2rem;
+  font-size: 1.1rem;
+  font-weight: 700;
 }
 .btn:disabled {
   cursor: not-allowed;
-  background: var(--paper-sunk);
+  background: var(--paper);
   color: var(--ink-soft);
+  border-color: var(--ink-soft);
   border-style: dashed;
-  box-shadow: none;
-  transform: translateY(4px);
 }
 .btn__note {
   font-weight: 400;
@@ -480,29 +692,30 @@ code {
 .field {
   display: grid;
   gap: 0.5rem;
+  max-width: 34rem;
 }
 .field label {
   font-weight: 700;
 }
 .field input {
   font: inherit;
-  font-size: 1.3rem;
+  font-size: 1.4rem;
   width: 100%;
-  min-height: 3.75rem;
-  padding: 0.5rem 1rem;
+  min-height: 4rem;
+  padding: 0.5rem 1.1rem;
   border: var(--bw) solid var(--ink);
-  border-radius: 14px;
+  border-radius: var(--radius);
   background: var(--paper);
   color: var(--ink);
 }
 .note {
-  padding: 0.85rem 1rem 0.85rem 1.1rem;
-  border-left: 8px solid var(--accent);
-  background: var(--paper-sunk);
-  border-radius: 4px 12px 12px 4px;
+  padding: 1rem 1.2rem;
+  border-left: 0.6rem solid var(--accent);
+  background: var(--card);
+  border-radius: 6px var(--radius) var(--radius) 6px;
   font-weight: 600;
-  font-size: 1rem;
-  line-height: 1.4;
+  line-height: 1.45;
+  max-width: 60ch;
 }
 .note--error {
   border-left-color: var(--warn);
@@ -517,55 +730,66 @@ code {
   display: none;
 }
 
-/* ---- the voice panel on the sign-in page ---- */
+/* ---- talking to Braillie: one row, the sound bars say whether it is speaking or listening ---- */
 .voice {
   display: grid;
   gap: 0.5rem;
-  padding: 0.8rem 1rem;
+  padding: 0.85rem 1.1rem;
   border: var(--bw) solid var(--ink);
-  border-radius: 18px;
-  background: var(--paper-sunk);
+  border-radius: calc(var(--radius) + 4px);
+  background: var(--card);
+  max-width: 44rem;
 }
 .voice__row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.6rem 1rem;
+  gap: 0.75rem 1.1rem;
 }
 .voice__row .btn {
-  width: auto;
   margin-left: auto;
 }
 .voice__label {
+  font-weight: 800;
+  font-size: 1.35rem;
+}
+.voice__saying {
+  font-size: 1.35rem;
   font-weight: 700;
-  font-size: 1.2rem;
+  line-height: 1.35;
+  padding-left: 0.9rem;
+  border-left: 0.5rem solid var(--accent);
+}
+.voice__saying .caption__who {
+  font-weight: 800;
+  color: var(--accent);
 }
 .voice__heard {
-  font-family: var(--display);
-  font-size: 1.25rem;
-  font-style: italic;
+  font-size: 1.35rem;
+  font-weight: 600;
   min-height: 1.5em;
   line-height: 1.3;
 }
 .wave {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 2.2rem;
+  gap: 6px;
+  height: 2.4rem;
   flex: none;
 }
 .wave i {
   display: block;
-  width: 7px;
-  height: 0.7rem;
+  width: 8px;
+  height: 0.75rem;
   border-radius: 4px;
-  background: var(--ink);
+  background: var(--ink-soft);
 }
 .wave[data-on='listening'] i {
   background: var(--accent);
   animation: wave 1s ease-in-out infinite;
 }
 .wave[data-on='speaking'] i {
+  background: var(--ink);
   animation: wave 0.6s ease-in-out infinite;
 }
 .wave i:nth-child(2) {
@@ -591,39 +815,608 @@ code {
 }
 .wave[data-on='listening'] i,
 .wave[data-on='speaking'] i {
-  height: 1.5rem; /* still: the tall bars are the only motion, and reduced-motion removes them */
+  height: 1.6rem; /* still: the tall bars are the only motion, and reduced-motion removes them */
 }
-.saysbox {
+
+/* ---- what Braillie is saying, like the words of a song: the sentence being spoken, large, each word filling in as it is said, and
+   the next one waiting below. Words still to come stay readable (ink-soft is 10:1 or more); the word now is in the accent, underlined
+   (so it is not shown by colour alone). ---- */
+.lyrics {
+  display: grid;
+  gap: 0.4rem;
+}
+.lyrics__count {
+  font-weight: 800;
+  font-size: 1rem;
+  color: var(--accent);
+}
+.lyrics__line {
+  max-width: 34ch;
+  font-weight: 800;
+  font-size: clamp(1.7rem, 1.4vw + 1.2rem, 2.5rem);
+  line-height: 1.25;
+  color: var(--ink-soft);
+}
+.lyrics__line .is-said {
+  color: var(--ink);
+}
+.lyrics__line .is-now {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 0.12em;
+  text-underline-offset: 0.18em;
+}
+.lyrics__next {
+  max-width: 50ch;
+  font-weight: 600;
+  font-size: 1.2rem;
+  color: var(--ink-soft);
+}
+.voicebar .lyrics {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 0.75rem;
+}
+.voicebar .lyrics > div {
+  display: contents;
+}
+.voicebar .lyrics__line {
+  max-width: none;
+  font-size: 1.35rem;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.voicebar .lyrics__next {
+  display: none;
+}
+
+/* ---- sign in: the voice card on the left, and the ways in as matching cards on the right ---- */
+.signin .intro {
+  display: flex;
+  flex-direction: column;
+}
+.voicecard {
+  display: grid;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+.option__icon {
+  display: grid;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  border: var(--bw) solid var(--ink);
+  flex: none;
+}
+.option__icon svg {
+  width: 1.9rem;
+  height: 1.9rem;
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.voicecard__stage {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 1.25rem clamp(1.5rem, 3vw, 3rem);
+}
+.voicecard .mascot {
+  width: clamp(9rem, 17vw, 17rem);
+  height: auto;
+}
+.voicecard__words {
+  display: grid;
+  gap: 0.6rem;
+  min-width: 0;
+}
+.voicecard__body {
+  display: grid;
+  align-content: center;
+  min-height: 12rem; /* room for a sentence of captions, so the page does not jump when Braillie starts talking */
+}
+.voicecard__words .voice__heard:empty {
+  display: none;
+}
+.voicecard__hint {
+  font-size: clamp(1.7rem, 1.4vw + 1.1rem, 2.6rem); /* subtitle size, like the captions it stands in for */
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink-soft);
+}
+.voicecard__hint b {
+  color: var(--ink);
+  white-space: nowrap; /* (a quoted word stays whole) */
+}
+.voicecard .lyrics__line {
+  font-size: clamp(1.9rem, 1.8vw + 1.2rem, 3.1rem);
+}
+.voicecard .lyrics__next {
+  font-size: clamp(1.2rem, 0.6vw + 1rem, 1.5rem);
+}
+.voicecard__foot {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
 }
-.saysbox li {
-  padding: 0.3rem 0.85rem;
-  border: 2px solid var(--ink);
-  border-radius: 999px;
+.voicecard__foot .voice__heard {
+  font-size: 1.15rem;
+  min-height: 0;
+}
+.voicecard__foot .voice__heard:empty {
+  display: none; /* (nothing heard yet: it must not push the button along) */
+}
+.options {
+  display: grid;
+  gap: 1.75rem;
+  align-content: start;
+  min-width: 0;
+}
+.option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 1.1rem;
+  row-gap: 0.6rem;
+}
+.option > :not(.option__icon) {
+  grid-column: 2;
+}
+.option__icon {
+  grid-row: 1 / span 4;
+  align-self: center;
+}
+.option__optional {
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+.option--main .option__icon {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.option--main .option__icon svg {
+  stroke: var(--on-accent);
+}
+.option h2 {
+  font-size: 1.35rem;
+}
+.option p {
+  color: var(--ink-soft);
+  font-size: 1.1rem;
+}
+.option .field label {
+  font-size: 1.05rem;
+}
+.option .field input {
+  min-height: 3.4rem;
+  font-size: 1.2rem;
+}
+.option .btn {
+  min-height: 3.4rem;
+  font-size: 1.15rem;
+}
+.option__icon {
+  width: 3rem;
+  height: 3rem;
+}
+.option__icon svg {
+  width: 1.6rem;
+  height: 1.6rem;
+}
+.option__form {
+  display: grid;
+  gap: 0.6rem;
+}
+.option .field {
+  max-width: none;
+}
+.option__go {
+  width: 100%;
+  margin-top: 0.3rem;
+}
+/* someone already known: one big greeting and two big keys, using the room the two ways in would take */
+.back {
+  display: grid;
+  gap: 1.25rem;
+}
+.back h2 {
+  font-size: clamp(2.4rem, 2.6vw + 1.4rem, 4rem);
+  line-height: 1.08;
+}
+.back h2 span {
+  color: var(--accent);
+}
+.back .back__go {
+  width: 100%;
+  min-height: 5rem;
+  font-size: clamp(1.35rem, 0.6vw + 1.15rem, 1.7rem);
+  padding: 0.9rem 1.5rem;
+}
+
+/* nobody known yet: the same big shape as "welcome back". A big greeting, a big key for each way in with its picture inside it */
+.start {
+  display: grid;
+  gap: 1.4rem;
+}
+.start__hello {
+  font-size: clamp(2.4rem, 2.6vw + 1.4rem, 4rem);
+  font-weight: 800;
+  line-height: 1.08;
+}
+.start__hello span {
+  color: var(--accent);
+}
+.start__way {
+  display: grid;
+  gap: 0.9rem;
+}
+.start .start__go {
+  width: 100%;
+  min-height: 5rem;
+  font-size: clamp(1.35rem, 0.6vw + 1.15rem, 1.7rem);
+  padding: 0.9rem 1.5rem;
+  gap: 0.9rem;
+}
+.start__go .option__icon {
+  width: 2.6rem;
+  height: 2.6rem;
+  border: 0;
+}
+.start__go .option__icon svg {
+  width: 2rem;
+  height: 2rem;
+  stroke: currentColor;
+}
+.start__field {
+  max-width: none;
+}
+.start__field label {
+  font-size: clamp(1.25rem, 0.5vw + 1.05rem, 1.5rem);
+}
+.start__field input {
+  min-height: 4.5rem;
+  font-size: clamp(1.4rem, 0.6vw + 1.15rem, 1.75rem);
+  padding-inline: 1.25rem;
+}
+.start .options__or {
+  font-size: 1.3rem;
+}
+/* the voice key under Braillo: a big round microphone (filled to start; outlined and crossed out, with a pulse, while it is on) */
+.micbtn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: clamp(5rem, 6vw, 6.5rem);
+  aspect-ratio: 1;
+  padding: 0;
+  border-radius: 50%;
+  border: var(--bw) solid var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  cursor: pointer;
+  transition: transform 200ms ease;
+}
+.micbtn svg {
+  width: 55%;
+  height: 55%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.micbtn:hover {
+  transform: scale(1.06);
+}
+.micbtn.is-muted {
+  background: var(--paper);
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.micbtn.is-live::after {
+  content: '';
+  position: absolute;
+  inset: -0.5rem;
+  border-radius: 50%;
+  border: 3px solid var(--accent);
+  animation: ring-out 1.6s ease-out infinite;
+}
+/* a second round key beside it, the same size, outlined (e.g. "hear the steps again") */
+.roundkey {
+  display: grid;
+  place-items: center;
+  width: clamp(5rem, 6vw, 6.5rem);
+  aspect-ratio: 1;
+  padding: 0;
+  border-radius: 50%;
+  border: var(--bw) solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  transition: transform 200ms ease;
+}
+.roundkey svg {
+  width: 50%;
+  height: 50%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.roundkey:hover {
+  transform: scale(1.06);
+}
+/* under Braillo, centred under him: the round keys */
+:is(.signin, .home2, .connect2) .voicecard__foot {
+  justify-content: center;
+  gap: 1.25rem;
+  flex-wrap: nowrap;
+  width: max-content;
+  min-width: clamp(10rem, 22vw, 22rem); /* (at least as wide as Braillo, so one key sits right under him) */
+}
+
+.signin .voicecard .mascot {
+  width: clamp(10rem, 20vw, 20rem);
+}
+.options__or {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-weight: 800;
+  color: var(--ink-soft);
+}
+.options__or::before,
+.options__or::after {
+  content: '';
+  flex: 1;
+  height: 2px;
+  background: var(--ink-soft);
+}
+@media (min-width: 64rem) {
+  .page--split.signin {
+    align-items: center;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); /* Braillo and what he says take the room; signing in is the side */
+  }
+}
+/* the two steps of the way in sit in the middle of the window, not stuck to its top */
+.stage:has(> .page--split) {
+  justify-content: center;
+}
+.page--split {
+  align-items: center;
+}
+@media (max-width: 34rem) {
+  .option {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .option > :not(.option__icon) {
+    grid-column: 1;
+  }
+  .option__icon {
+    grid-row: auto;
+    width: 3rem;
+    height: 3rem;
+  }
+}
+
+/* ---- connect the phone: the code to scan, how to type it instead, and help only if needed (laid out in .connect2) ---- */
+.qr.qr--big img {
+  width: min(26rem, 78vw); /* the code is the main thing on this page */
+}
+.connect__manual {
+  font-size: 1.05rem;
+  color: var(--ink-soft);
+  max-width: 34rem;
+}
+.connect__manual .code {
+  font-size: 1.35em;
+  color: var(--ink);
+}
+.trouble summary {
+  cursor: pointer;
   font-weight: 700;
-  background: var(--card);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.25em;
+  min-height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+}
+.trouble p {
+  max-width: 34rem;
+  margin-top: 0.5rem;
+  color: var(--ink-soft);
+  text-align: left;
+}
+
+/* ---- Braillo, the tutor: its own colours in every theme (a character, not part of the page's palette). Its mouth opens on each word
+   while it speaks, a hand goes to its ear while it listens, it smiles and blinks while it waits. ---- */
+.mascot {
+  --m-skin: #ffd60a;
+  --m-line: #121212;
+  --m-blush: #ff8fa3;
+  --m-tongue: #ff6b81;
+  flex: none;
+  overflow: visible;
+}
+.mascot__skin {
+  fill: var(--m-skin);
+}
+.mascot__stroke {
+  stroke: var(--m-line);
+  stroke-width: 4.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.mascot__brows,
+.mascot__smile {
+  fill: none;
+}
+.mascot__limb {
+  fill: none;
+  stroke: var(--m-line);
+  stroke-width: 15;
+  stroke-linecap: round;
+}
+.mascot__limb--in {
+  stroke: var(--m-skin); /* a yellow arm with a dark outline: a thinner yellow line over the thick dark one */
+  stroke-width: 6.5;
+}
+.mascot__dark {
+  fill: var(--m-line);
+}
+.mascot__sparkle {
+  fill: #fff;
+}
+.mascot__shine {
+  fill: #fff;
+  opacity: 0.45;
+}
+.mascot__blush {
+  fill: var(--m-blush);
+  opacity: 0.7;
+}
+.mascot__tongue {
+  fill: var(--m-tongue);
+}
+.mascot__flat {
+  fill: none;
+  stroke: var(--m-line);
+  stroke-width: 3.5;
+}
+.mascot__glow {
+  fill: var(--m-skin);
+  opacity: 0.3;
+  animation: mascot-glow 2.6s ease-in-out infinite;
+}
+.mascot__shadow {
+  fill: var(--ink);
+  opacity: 0.18;
+}
+.mascot__heard path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+.mascot__eyes,
+.mascot__mouth,
+.mascot__brows,
+.mascot__glow {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.mascot__eyes {
+  animation: mascot-blink 5s ease-in-out infinite;
+}
+/* what shows in each state */
+.mascot__mouth,
+.mascot__arm--up,
+.mascot__heard {
+  display: none;
+}
+.mascot[data-state='speaking'] .mascot__smile {
+  display: none;
+}
+.mascot[data-state='speaking'] .mascot__mouth {
+  display: inline;
+  animation: mascot-talk 320ms ease-out; /* once per word: the mouth is redrawn as each new word starts */
+}
+.mascot[data-state='speaking'] .mascot__whole {
+  animation: mascot-bob 1.4s ease-in-out infinite;
+}
+.mascot[data-state='listening'] .mascot__arm--down {
+  display: none;
+}
+.mascot[data-state='listening'] .mascot__arm--up {
+  display: inline;
+}
+.mascot[data-state='listening'] .mascot__heard {
+  display: inline;
+  animation: mascot-hear 1.3s ease-in-out infinite;
+}
+.mascot[data-state='listening'] .mascot__brows {
+  transform: translateY(-5px);
+}
+.mascot[data-state='listening'] .mascot__eyes {
+  transform: translateX(5px); /* looking towards the sound */
+  animation: none;
+}
+.mascot[data-state='off'] {
+  opacity: 0.85;
+}
+@keyframes mascot-talk {
+  0% {
+    transform: scaleY(0.3);
+  }
+  45% {
+    transform: scaleY(1.1);
+  }
+  100% {
+    transform: scaleY(0.55);
+  }
+}
+@keyframes mascot-blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.1);
+  }
+}
+@keyframes mascot-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+@keyframes mascot-glow {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.25;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 0.45;
+  }
+}
+@keyframes mascot-hear {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* ---- the braille wordmark ---- */
 .wordmark {
   display: grid;
   gap: 0.6rem;
-  margin: 0.5rem 0 0;
+  margin: 0;
 }
 .wordmark svg {
   width: 100%;
-  max-width: 22rem;
+  max-width: 20rem;
   height: auto;
   display: block;
 }
 .wordmark figcaption {
   color: var(--ink-soft);
-  font-size: 1rem;
+  font-size: 1.1rem;
 }
 .cell-dot--on {
   fill: var(--ink);
@@ -641,6 +1434,10 @@ code {
   stroke: var(--ink);
   stroke-width: 2.5;
 }
+.braillecell {
+  flex: none;
+  display: block;
+}
 
 /* ---- connect the phone ---- */
 .steps {
@@ -649,39 +1446,46 @@ code {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 1rem;
+  gap: 0.75rem;
+  max-width: 44rem;
 }
 .steps li {
   counter-increment: step;
   display: grid;
-  grid-template-columns: 3rem 1fr;
+  grid-template-columns: 2.75rem 1fr;
   gap: 1rem;
-  align-items: start;
+  align-items: center;
 }
 .steps li::before {
   content: counter(step);
   display: grid;
   place-items: center;
-  width: 3rem;
-  height: 3rem;
-  border: var(--bw) solid var(--ink);
+  width: 2.75rem;
+  height: 2.75rem;
   border-radius: 50%;
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: 1.35rem;
-  background: var(--card);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 800;
+  font-size: 1.4rem;
+}
+.scan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.5rem 2.25rem;
+}
+.scan > p {
+  flex: 1 1 18rem;
 }
 .qr {
-  justify-self: center;
-  padding: 0.7rem;
+  padding: 0.75rem;
   background: #fff;
   border: var(--bw) solid var(--ink);
-  border-radius: 18px;
-  box-shadow: 6px 6px 0 var(--ink);
+  border-radius: calc(var(--radius) + 4px);
 }
 .qr img {
   display: block;
-  width: min(12rem, 60vw);
+  width: min(14rem, 60vw);
   height: auto;
   image-rendering: pixelated;
 }
@@ -695,352 +1499,504 @@ code {
   width: fit-content;
   max-width: 100%;
   border: var(--bw) solid var(--ink);
-  border-radius: 18px;
+  border-radius: calc(var(--radius) + 4px);
   overflow: hidden;
   background: var(--camera);
-  box-shadow: 6px 6px 0 var(--ink);
 }
 .live img {
   display: block;
   max-width: 100%;
-  max-height: calc(100vh - 15rem);
+  max-height: calc(100vh - 20rem);
   min-height: 8rem;
   height: auto;
 }
 
-/* ---- the choice: three rows, each named by its own braille letter ---- */
-.choices {
+/* ---- your page: who you are, three big numbers, your alphabet, and the two keys ---- */
+.account {
   display: grid;
-  gap: 1.25rem;
-  list-style: none;
-  padding: 0;
-  margin: 0;
+  gap: clamp(1.75rem, 4vh, 2.75rem);
+  align-content: start;
 }
-.choice {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
+.account__head {
+  display: flex;
   align-items: center;
-  gap: 1.2rem;
-  width: 100%;
-  padding: 1rem 1.25rem;
-  text-align: left;
-  font: inherit;
-  color: var(--ink);
-  background: var(--card);
-  border: var(--bw) solid var(--ink);
-  border-radius: 22px;
-  box-shadow: 8px 8px 0 var(--ink);
-  cursor: pointer;
-  transition: transform 80ms ease, box-shadow 80ms ease, background-color 120ms ease;
+  gap: clamp(1rem, 2.5vw, 2rem);
 }
-.choice:hover:not(:disabled) {
-  background: var(--paper-sunk);
+.account__avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: clamp(5.5rem, 8vw, 7.5rem);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 800;
+  font-size: clamp(2.8rem, 4vw, 4rem);
 }
-.choice:active:not(:disabled) {
-  transform: translate(6px, 6px);
-  box-shadow: 2px 2px 0 var(--ink);
-}
-.choice:disabled {
-  cursor: not-allowed;
-  border-style: dashed;
-  box-shadow: none;
-  color: var(--ink-soft);
-}
-.choice__title {
-  display: block;
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: clamp(1.7rem, 2vw + 1rem, 2.2rem);
+.account__head h1 {
+  font-size: clamp(2.6rem, 3.5vw + 1.2rem, 4.5rem);
   line-height: 1.05;
-  margin-bottom: 0.3rem;
 }
-.choice__what {
-  display: block;
+.account__kind,
+.account__none {
+  font-size: clamp(1.3rem, 0.6vw + 1.1rem, 1.6rem);
   color: var(--ink-soft);
-  max-width: 44ch;
 }
-.choice__go {
-  font-size: 2rem;
-  font-weight: 700;
+.account__stats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1rem;
+}
+.account__stats li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 1.25rem;
+  row-gap: 0.2rem;
+  padding: 1.25rem 1.5rem;
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+.account__icon {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: clamp(4.5rem, 5.5vw, 5.75rem);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.account__icon svg {
+  width: 55%;
+  height: 55%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.account__value {
+  font-weight: 800;
+  font-size: clamp(3rem, 3vw + 1.5rem, 4.25rem);
   line-height: 1;
 }
-@media (min-width: 62rem) {
-  .choices {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    align-items: stretch;
-  }
-  .choices li {
-    display: flex;
-  }
-  .choice {
-    grid-template-columns: 1fr;
-    align-content: start;
-    justify-items: start;
-    gap: 0.9rem;
-    padding: 1.4rem;
-  }
-  .choice__go {
-    display: none;
-  }
+.account__value small {
+  font-size: 0.5em;
+  color: var(--ink-soft);
 }
-@media (max-width: 34rem) {
-  .choice {
-    grid-template-columns: auto 1fr;
-  }
-  .choice__go {
-    display: none;
-  }
+.account__label {
+  font-weight: 700;
+  font-size: clamp(1.2rem, 0.5vw + 1rem, 1.45rem);
+  color: var(--ink-soft);
 }
-.braillecell {
-  flex: none;
-  display: block;
-}
-
-/* ---- the activity screen ---- */
-.practice {
-  display: grid;
-  gap: 1rem clamp(1.25rem, 2.4vw, 2.25rem);
-  grid-template-columns: minmax(0, 1fr);
-}
-.practice__head {
-  display: grid;
-  gap: 0.35rem;
-}
-/* on a wide screen: the camera (and what was said) on the left, what to do and the buttons on the right; on a phone, what to do comes first */
-.practice__left,
-.practice__side {
+.account__alpha {
   display: grid;
   gap: 1rem;
-  align-content: start;
-  min-width: 0;
 }
-.practice__side {
-  order: -1;
+.account__alpha h2 {
+  font-size: clamp(1.8rem, 1.2vw + 1.3rem, 2.4rem);
+}
+.alpha {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr));
+  gap: 0.6rem;
+}
+.alpha li {
+  display: grid;
+  justify-items: center;
+  gap: 0.35rem;
+  padding: 0.6rem 0 0.7rem;
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+.alpha li[data-none='true'] {
+  border-style: dashed;
+  color: var(--ink-soft);
+}
+.alpha__letter {
+  font-weight: 800;
+  font-size: 2rem;
+  line-height: 1;
+}
+.alpha__pips {
+  display: flex;
+  gap: 4px;
+}
+.alpha__pips i {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+}
+.alpha__pips i[data-on='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.account__keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.account__keys .btn {
+  min-height: 4.5rem;
+  min-width: 12rem;
+  font-size: clamp(1.3rem, 0.6vw + 1.1rem, 1.6rem);
+}
+.account__keys .btn {
+  gap: 0.75rem;
+}
+.btn__icon {
+  width: 1.6em;
+  height: 1.6em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ---- connect the phone, laid out like home: Braillo on the left, the big code to scan on the right ---- */
+.connect2__side {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 1.25rem;
+  text-align: center;
+}
+.connect2__side .qr.qr--big img {
+  width: min(clamp(16rem, 30vw, 30rem), 78vw);
+}
+.connect2__side .live {
+  width: 100%;
+}
+.connect2__go {
+  min-height: 4.5rem;
+  min-width: 14rem;
+  font-size: clamp(1.3rem, 0.6vw + 1.1rem, 1.6rem);
+}
+
+/* ---- home: Braillo, big, at the bottom left asking what to do, and three big keys on the right: Learn, Read, Quiz ---- */
+.home2 {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2rem clamp(2rem, 5vw, 5rem);
+  align-content: center;
+}
+.home2__braillo {
+  align-self: center;
+}
+.home2__braillo .mascot {
+  width: clamp(10rem, 22vw, 22rem);
+  height: auto;
+}
+.home2__choices {
+  display: grid;
+  gap: clamp(1rem, 2.5vh, 1.5rem);
+  align-content: center;
+}
+.bigchoice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: clamp(1rem, 2vw, 1.75rem);
+  min-height: clamp(6.5rem, 17vh, 9.5rem);
+  padding: 1rem clamp(1.25rem, 2.5vw, 2rem);
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 200ms ease, background-color 200ms ease, color 200ms ease, border-color 200ms ease;
+}
+.bigchoice:first-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.bigchoice__art {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: clamp(4.5rem, 6vw, 6rem);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--paper);
+  border: var(--bw) solid currentColor;
+}
+.bigchoice__art svg {
+  width: 60%;
+  height: auto;
+}
+.bigchoice__title {
+  grid-row: 1 / span 2;
+  font-size: clamp(2.2rem, 2.6vw + 1rem, 3.6rem);
+  font-weight: 800;
+  line-height: 1;
+}
+.bigchoice__go {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  width: clamp(2.2rem, 3vw, 3rem);
+  height: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 200ms ease;
+}
+.bigchoice:has(.bigchoice__sub) .bigchoice__title {
+  grid-row: 1;
+  align-self: end;
+}
+.bigchoice__sub {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: start;
+  margin-top: 0.35rem;
+  font-size: clamp(1.15rem, 0.6vw + 0.95rem, 1.45rem);
+  font-weight: 700;
+}
+.bigchoice:hover:not(:disabled) {
+  transform: translateX(6px);
+}
+.bigchoice:hover:not(:disabled) .bigchoice__go {
+  transform: translateX(6px);
+}
+.bigchoice:not(:first-child):hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.bigchoice:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 @media (min-width: 64rem) {
-  .practice {
-    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-    align-items: start;
-  }
-  .practice__head {
-    grid-column: 1 / -1;
-  }
-  .practice__side {
-    order: 0;
-    grid-column: 2;
-    grid-row: 2;
-  }
-  .practice__left {
-    grid-column: 1;
-    grid-row: 2;
+  .home2 {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    align-items: center;
   }
 }
-.practice__camera {
+@media (prefers-reduced-motion: reduce) {
+  .bigchoice:hover:not(:disabled),
+  .bigchoice:hover:not(:disabled) .bigchoice__go {
+    transform: none;
+  }
+}
+
+/* ---- learn, read and quiz: laid out like home (.home2). Braillo and his round keys on the left; on the right the letter or word, big,
+   a dot per step, and the few things to do as big round pictures with a word under each ---- */
+.play__side {
   display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: clamp(1rem, 3vh, 1.75rem);
+  text-align: center;
+}
+.play__kicker {
+  font-weight: 800;
+  font-size: clamp(1.3rem, 0.8vw + 1rem, 1.75rem);
+  color: var(--ink-soft);
+}
+.play__big {
+  font-weight: 800;
+  font-size: clamp(5rem, 9vw, 9rem);
+  line-height: 1;
+}
+.play__big--words {
+  font-size: clamp(2.4rem, 3.5vw + 1rem, 4.5rem);
+  line-height: 1.1;
+}
+.play__score {
+  font-weight: 700;
+  font-size: clamp(1.2rem, 0.6vw + 1rem, 1.5rem);
+  color: var(--ink-soft);
+}
+.play__problem {
+  justify-self: stretch;
+  text-align: left;
+}
+.play__camera {
+  width: 100%;
+}
+@media (max-width: 40rem) {
+  /* a phone: the round keys a little smaller, so a row of them fits the screen */
+  .micbtn,
+  .roundkey,
+  .key__disc {
+    width: 4.5rem;
+  }
+  :is(.signin, .home2, .connect2) .voicecard__foot {
+    width: auto;
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .keys {
+    gap: 1rem;
+  }
+}
+.target {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(1.25rem, 3vw, 2.5rem);
+}
+.target__letter {
+  display: grid;
+  place-items: center;
+  width: clamp(8rem, 13vw, 12rem);
+  aspect-ratio: 1;
+  border-radius: var(--radius-lg);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 800;
+  font-size: clamp(5.5rem, 9vw, 8.5rem);
+  line-height: 1;
+  animation: pop 400ms ease both;
+}
+.target__dots svg {
+  width: auto;
+  height: clamp(8rem, 13vw, 12rem);
+}
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 0.6rem;
-  min-width: 0;
 }
-.practice__activity {
+.steps i {
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  border: 2.5px solid var(--ink-soft);
+}
+.steps i[data-on='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.steps i[data-now='true'] {
+  border-color: var(--ink);
+  transform: scale(1.25);
+}
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem clamp(1rem, 2.5vw, 2rem);
+}
+.key {
   display: grid;
-  gap: 0.8rem;
-  min-width: 0;
+  justify-items: center;
+  gap: 0.5rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
 }
-.practice__controls {
+.key__disc {
   display: grid;
-  gap: 0.6rem;
-  align-content: start;
+  place-items: center;
+  width: clamp(5rem, 6.5vw, 6.5rem);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: var(--bw) solid var(--ink);
+  background: var(--paper);
+  transition: transform 200ms ease, border-color 200ms ease;
 }
-.practice__controls .hint {
-  margin: 0;
+.key__disc svg {
+  width: 48%;
+  height: 48%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
-.status {
-  font-size: 1.1rem;
-  font-weight: 600;
-  max-width: 60ch;
+.key--main .key__disc {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.key__label {
+  font-weight: 800;
+  font-size: clamp(1.1rem, 0.5vw + 0.95rem, 1.35rem);
+}
+.key:hover .key__disc,
+.roundkey:hover {
+  transform: scale(1.06);
+}
+.key:not(.key--main):hover .key__disc {
+  border-color: var(--accent);
+}
+.roundkey[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
 }
 .badge {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.15rem 0.8rem;
+  padding: 0.2rem 0.9rem;
   border: 2px solid var(--ink);
   border-radius: 999px;
   font-weight: 700;
-  font-size: 1rem;
-  background: var(--card);
+  font-size: 1.05rem;
+  background: var(--paper);
   max-width: 100%;
 }
 .badge::before {
   content: '';
-  width: 0.6rem;
-  height: 0.6rem;
+  width: 0.65rem;
+  height: 0.65rem;
   border-radius: 50%;
   background: var(--ink);
 }
 .badge[data-ok='true']::before {
   background: var(--good);
-  box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--good);
-}
-.readout {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.1rem 1.5rem;
-  margin: 0;
-  font-size: 1rem;
-}
-.readout div {
-  display: flex;
-  gap: 0.4rem;
-}
-.readout dt {
-  font-weight: 700;
-}
-.readout dd {
-  margin: 0;
-  color: var(--ink-soft);
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--good);
 }
 .card {
   background: var(--card);
   border: var(--bw) solid var(--ink);
-  border-radius: 18px;
-  padding: 0.9rem 1.1rem;
+  border-radius: calc(var(--radius) + 4px);
+  padding: 1.2rem 1.4rem;
   display: grid;
-  gap: 0.6rem;
+  gap: 0.8rem;
   min-width: 0;
 }
 .card--shadow {
-  box-shadow: 6px 6px 0 var(--ink);
-}
-.card__top {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 0.5rem 1rem;
-  flex-wrap: wrap;
+  border-color: var(--accent);
+  border-width: calc(var(--bw) + 1px);
 }
 .label {
-  font-family: var(--body);
-  font-weight: 700;
-  font-size: 1rem;
-  letter-spacing: 0;
-  color: var(--ink-soft);
-}
-.ask {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  flex-wrap: wrap;
-}
-.bigletter {
-  display: grid;
-  place-items: center;
-  min-width: 6.5rem;
-  aspect-ratio: 1;
-  padding: 0 0.8rem;
-  border: var(--bw) solid var(--ink);
-  border-radius: 20px;
-  background: var(--paper);
-  color: var(--accent);
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: clamp(4.5rem, 7vw, 6rem);
-  line-height: 1;
-  box-shadow: 5px 5px 0 var(--ink);
-}
-.meter {
-  height: 1rem;
-  border: var(--bw) solid var(--ink);
-  border-radius: 999px;
-  background: var(--paper);
-  overflow: hidden;
-}
-.meter > div {
-  height: 100%;
-  background: var(--ink);
-  transition: width 300ms ease;
-}
-.mastery {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(2.6rem, 1fr));
-  gap: 0.35rem;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.mastery li {
-  display: grid;
-  justify-items: center;
-  gap: 0.2rem;
-  padding: 0.2rem 0 0.25rem;
-  border: 2px solid var(--ink);
-  border-radius: 8px;
-  font-size: 0.95rem;
-  line-height: 1.2;
-  background: var(--paper);
-  font-weight: 700;
-}
-.mastery li[data-none='true'] {
-  border-style: dashed;
-  color: var(--ink-soft);
-  font-weight: 400;
-}
-.mastery li[data-now='true'] {
-  background: var(--ink);
-  border-style: solid;
-  color: var(--paper);
-  font-weight: 700;
-}
-.pips {
-  display: flex;
-  gap: 3px;
-}
-.pips i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  border: 1.5px solid currentColor;
-}
-.pips i[data-on='true'] {
-  background: currentColor;
-}
-.stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
-}
-.stat {
-  text-align: center;
-  padding: 0.4rem 0.3rem;
-  border: var(--bw) solid var(--ink);
-  border-radius: 16px;
-  background: var(--card);
-}
-.stat b {
-  display: block;
-  font-family: var(--display);
-  font-size: 1.6rem;
-  line-height: 1.1;
-}
-.stat span {
-  font-size: 0.9rem;
+  font-weight: 800;
+  font-size: 1.1rem;
   color: var(--ink-soft);
 }
 .actions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(8.75rem, 1fr));
-  gap: 0.5rem 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.65rem 0.8rem;
 }
 .actions .btn {
-  min-height: 3.5rem;
-  font-size: 1.05rem;
-  padding: 0.4rem 0.8rem;
-}
-.bigword {
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: clamp(1.6rem, 2.4vw + 1rem, 2.3rem);
-  line-height: 1.15;
-  max-width: none;
+  min-height: 3.75rem;
+  font-size: 1.15rem;
+  padding: 0.45rem 0.9rem;
 }
 .note ul {
   margin: 0.4rem 0 0 1.2rem;
@@ -1052,19 +2008,1183 @@ code {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 0.4rem;
-  font-size: 1rem;
+  gap: 0.5rem;
+  font-size: 1.1rem;
 }
 .log li {
   padding-left: 1rem;
-  border-left: 4px solid var(--ink);
+  border-left: 5px solid var(--accent);
   max-width: 60ch;
 }
 .log li:first-child {
-  font-weight: 600;
+  font-weight: 700;
 }
 .log li:not(:first-child) {
   color: var(--ink-soft);
+  border-left-color: var(--ink-soft);
+}
+
+.pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.25rem;
+}
+
+/* ---- wide screens: a step fits on one screen. Two columns (what it is, and what to do).
+   Phones, and the two largest text sizes (see the end of this file), keep everything in one column. ---- */
+@media (min-width: 64rem) {
+  .page--split {
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    column-gap: clamp(2rem, 4vw, 4.5rem);
+    align-items: center;
+  }
+  .page--split > .note {
+    grid-column: 1 / -1;
+  }
+}
+.aside {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  min-width: 0;
+}
+
+
+/* ---- the landing page: the front door. A big two-line welcome, two ways forward, and a braille cell spelling the name, then how it
+   works and who it is for. The picture sits beside the words (never behind them), and keeps still on request. ---- */
+.landing {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: clip; /* (the picture's outer rings reach a little past its box) */
+}
+/* the header, every section and the footer run to the same two edges (the whole width, less the gutter), so the page reads as one piece */
+.landing {
+  --edge: var(--gutter);
+}
+.landing__head {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  padding: 0.85rem var(--edge);
+  background: color-mix(in srgb, var(--paper) 90%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+/* the public pages glide to a section ("How it works", "Back to top") instead of jumping; the sticky header keeps clear of where it
+   stops. (A device that asks for less motion still jumps: see prefers-reduced-motion at the end.) */
+html:has(.landing) {
+  scroll-behavior: smooth;
+}
+.landing :is(section[id], h2[id]) {
+  scroll-margin-top: 5.5rem;
+}
+/* your page (or sign in): a round key with your initial, or a person if nobody is signed in */
+.accountkey {
+  display: grid;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: var(--bw) solid var(--accent);
+  font-weight: 800;
+  font-size: 1.6rem;
+  text-decoration: none;
+  transition: transform 200ms ease;
+}
+.accountkey svg {
+  width: 55%;
+  height: 55%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.accountkey:hover {
+  transform: scale(1.06);
+}
+.landing__nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+}
+.landing main {
+  flex: 1;
+}
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2.5rem;
+  align-items: center;
+  padding: clamp(2rem, 6vh, 4.5rem) var(--edge) clamp(3rem, 9vh, 6.5rem);
+}
+.hero__copy {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr); /* (never wider than its column, whatever is inside) */
+  gap: 1.5rem;
+  animation: rise 650ms ease both;
+}
+.hero h1 {
+  font-size: clamp(3rem, 4.4vw + 1rem, 6.5rem);
+  line-height: 1.03;
+  letter-spacing: -0.02em;
+}
+.hero h1 > span {
+  color: var(--ink-soft);
+}
+.hero__text {
+  font-size: clamp(1.3rem, 0.7vw + 1.05rem, 1.65rem);
+  line-height: 1.5;
+  color: var(--ink-soft);
+  max-width: 40ch;
+}
+.hero__actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); /* side by side when they fit, one under the other when not */
+  gap: 1rem;
+  margin-top: 0.5rem;
+  max-width: 44rem;
+}
+.cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  min-height: 5.25rem;
+  padding: 1rem 1.75rem;
+  border: var(--bw) solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 800;
+  font-size: clamp(1.45rem, 0.6vw + 1.15rem, 1.75rem);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.cta:hover {
+  background: color-mix(in srgb, var(--accent) 86%, var(--ink));
+}
+.cta--outline {
+  background: transparent;
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.cta--outline:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+.arrow {
+  width: 1.9rem;
+  height: 1.9rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 150ms ease;
+}
+.cta:hover .arrow {
+  transform: translateX(4px);
+}
+
+/* the picture beside the welcome: a strip of braille being read, a fingertip sliding from cell to cell */
+.world {
+  display: grid;
+  justify-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  animation: rise 1s 120ms ease both;
+}
+.reader {
+  width: 100%;
+  max-width: 52rem;
+  height: auto;
+  overflow: visible;
+}
+.reader__sheet {
+  fill: var(--card);
+  stroke: var(--ink);
+  stroke-width: 4;
+}
+.reader__pad {
+  fill: transparent;
+  transition: fill 350ms ease;
+}
+.reader__cell.is-now .reader__pad {
+  fill: var(--paper);
+  stroke: var(--accent);
+  stroke-width: 4;
+}
+.reader__dot {
+  fill: var(--ink-soft);
+  transition: fill 350ms ease, r 350ms ease;
+}
+.reader__dot.is-on {
+  fill: none;
+  stroke: var(--ink-soft);
+  stroke-width: 3.5;
+}
+.reader__cell.is-read .reader__dot.is-on {
+  fill: var(--ink-soft);
+}
+.reader__cell.is-now .reader__dot.is-on {
+  fill: var(--accent);
+  stroke: var(--accent);
+  r: 14;
+}
+.reader__print {
+  font-size: 34px;
+  font-weight: 800;
+  fill: var(--ink);
+  opacity: 0;
+  transition: opacity 350ms ease;
+}
+.reader__cell:is(.is-read, .is-now) .reader__print {
+  opacity: 1;
+}
+.reader__cell.is-now .reader__print {
+  fill: var(--accent);
+}
+.reader__follow {
+  transition: transform 700ms cubic-bezier(0.5, 0, 0.2, 1);
+}
+.reader__bubble rect,
+.reader__bubble path {
+  fill: var(--accent);
+}
+.reader__bubble text {
+  font-size: 66px;
+  font-weight: 800;
+  fill: var(--on-accent);
+}
+.reader__bubble {
+  animation: pop 450ms 250ms ease both;
+}
+.reader__voice path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 5;
+  stroke-linecap: round;
+  animation: wave-fade 1.1s ease-in-out infinite;
+}
+.reader__voice path:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.reader__finger path {
+  fill: #f2c9a0; /* a fingertip, the same in every theme, like Braillo's own colours */
+  stroke: #1a1a1a;
+  stroke-width: 4;
+  stroke-linejoin: round;
+}
+.reader__finger path.reader__nail {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.reader__finger {
+  animation: tap 1.7s ease-in-out infinite;
+}
+.world__caption {
+  font-size: clamp(1.2rem, 1vw + 0.7rem, 1.6rem);
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.world__caption b {
+  color: var(--ink);
+  font-size: 1.4em;
+  margin-right: 0.35rem;
+}
+.world.is-still :is(.reader__finger, .reader__voice path, .reader__bubble) {
+  animation: none;
+}
+.world.is-still .reader__follow {
+  transition: none;
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.85);
+  }
+}
+@keyframes tap {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(8px);
+  }
+}
+@keyframes wave-fade {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.landing__section {
+  padding: clamp(4rem, 11vh, 7.5rem) var(--edge);
+  display: grid;
+  gap: clamp(2.5rem, 6vh, 4rem);
+}
+/* every section starts the same way: a big heading and one short line */
+.sect-head {
+  display: grid;
+  gap: 0.6rem;
+}
+.sect-head h2 {
+  font-size: clamp(2.4rem, 2.6vw + 1.4rem, 3.9rem);
+  line-height: 1.05;
+}
+.sect-head p {
+  max-width: 60ch;
+  font-size: clamp(1.25rem, 0.6vw + 1.05rem, 1.55rem);
+  color: var(--ink-soft);
+}
+/* the sections take turns: the page's own colour, then one soft tint of it, and the page closes on the accent */
+#how,
+#sheets {
+  background: var(--tint);
+}
+
+/* the practice sheets, laid out like "Meet Braillo": what to do and the one key on one side, the three pages fanned out on the other */
+.sheets {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(2.5rem, 5vw, 5rem);
+}
+.sheets__copy {
+  display: grid;
+  gap: 1.25rem;
+  justify-items: start;
+}
+.sheets__copy h2 {
+  font-size: clamp(2.4rem, 2.6vw + 1.4rem, 3.9rem);
+  line-height: 1.05;
+}
+.sheets__copy p {
+  font-size: clamp(1.3rem, 0.7vw + 1.05rem, 1.65rem);
+  line-height: 1.5;
+  color: var(--ink-soft);
+  max-width: 34ch;
+}
+.sheets__get {
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+.sheets__fan {
+  position: relative;
+  justify-self: center;
+  width: min(100%, 34rem);
+  aspect-ratio: 1.35;
+}
+.sheets__page {
+  position: absolute;
+  top: 6%;
+  left: 50%;
+  width: 44%;
+  height: auto;
+  border-radius: 6px;
+  background: #ffffff; /* (paper is white: the dots are drawn dark on it) */
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.28);
+  transform-origin: 50% 100%;
+  transition: transform 300ms ease;
+}
+.sheets__page--alphabet {
+  transform: translateX(-50%) rotate(-12deg) translateX(-38%);
+}
+.sheets__page--words {
+  z-index: 1;
+  transform: translateX(-50%);
+}
+.sheets__page--lookalikes {
+  transform: translateX(-50%) rotate(12deg) translateX(38%);
+}
+.sheets__fan:hover .sheets__page--alphabet {
+  transform: translateX(-50%) rotate(-16deg) translateX(-48%);
+}
+.sheets__fan:hover .sheets__page--lookalikes {
+  transform: translateX(-50%) rotate(16deg) translateX(48%);
+}
+@media (min-width: 64rem) {
+  .sheets {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  }
+}
+:is(html[data-size='3'], html[data-size='4']) .sheets {
+  grid-template-columns: minmax(0, 1fr);
+}
+:root:is([data-theme='contrast'], [data-theme='contrast-light']) :is(.landing__section, .landing__end) {
+  border-top: var(--bw) solid var(--ink); /* (the strongest themes keep a line instead: their bands are all one colour) */
+}
+
+/* ---- how it works, in pictures: three scenes, each with a big number and a few words, arrows between them ---- */
+.how {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+.how__step {
+  display: grid;
+  justify-items: center;
+  gap: 1rem;
+}
+.how figure {
+  position: relative;
+  margin: 0;
+  display: grid;
+  justify-items: center;
+  gap: 1rem;
+  width: 100%;
+}
+.how__n {
+  display: grid;
+  place-items: center;
+  width: 3.75rem;
+  height: 3.75rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 800;
+  font-size: 1.9rem;
+}
+.how__scene {
+  width: 100%;
+  max-width: 34rem;
+  height: auto;
+  overflow: visible;
+}
+.how figcaption {
+  font-weight: 800;
+  font-size: clamp(1.5rem, 1vw + 1.1rem, 2rem);
+  text-align: center;
+}
+.how__next {
+  width: 3rem;
+  height: 1.5rem;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform: rotate(90deg); /* one under another: the arrow points down */
+}
+@media (min-width: 64rem) {
+  .how {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+  }
+  .how__step {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+  .how__next {
+    transform: none;
+  }
+}
+:is(html[data-size='3'], html[data-size='4']) .how,
+:is(html[data-size='3'], html[data-size='4']) .how__step {
+  grid-template-columns: minmax(0, 1fr);
+}
+:is(html[data-size='3'], html[data-size='4']) .how__next {
+  transform: rotate(90deg);
+}
+
+/* the drawing: strokes in ink, surfaces in the page's own colours, the important parts (raised dots, the pen, the voice) in the accent */
+.how__line {
+  stroke: var(--ink);
+  stroke-width: 3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.how__fill {
+  fill: var(--paper-sunk);
+}
+.how__soft,
+.how__paper,
+.how__skin {
+  fill: var(--card);
+}
+.how__soft-fill {
+  fill: var(--ink-soft);
+  opacity: 0.35;
+}
+.how__nail {
+  fill: none;
+}
+.how__dot {
+  fill: none;
+  stroke: var(--ink-soft);
+  stroke-width: 2;
+}
+.how__dot.is-on {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+.how__accent-fill {
+  fill: var(--accent);
+}
+.how__ink-fill {
+  fill: var(--ink);
+}
+.how__arrow {
+  fill: none;
+  stroke: var(--accent);
+}
+.how__link {
+  fill: none;
+  stroke: var(--accent);
+  stroke-dasharray: 8 8;
+  animation: how-link 1.2s linear infinite;
+}
+.how__screen {
+  fill: var(--paper);
+}
+.how__check {
+  fill: none;
+  stroke: var(--good);
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.how__beam {
+  fill: var(--accent);
+  opacity: 0.22;
+  animation: how-beam 2.4s ease-in-out infinite;
+}
+.how__wave {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 5;
+  animation: how-wave 1.8s ease-in-out infinite;
+}
+.how__wave--2 {
+  animation-delay: 0.25s;
+}
+.how__wave--3 {
+  animation-delay: 0.5s;
+}
+.how__letter {
+  font-family: var(--body);
+  font-weight: 800;
+  font-size: 66px;
+  fill: var(--accent);
+}
+.how__feed {
+  animation: how-feed 3.2s ease-in-out infinite;
+}
+.how__pen {
+  animation: how-press 1.6s ease-in-out infinite;
+}
+.how__pressed {
+  animation: how-pop 1.6s ease-in-out infinite;
+}
+.how__phone {
+  animation: how-hover 3s ease-in-out infinite;
+}
+.how__finger {
+  animation: how-tap 2.4s ease-in-out infinite;
+}
+.landing.is-still .how * {
+  animation-play-state: paused;
+}
+@keyframes how-feed {
+  0% {
+    transform: translateY(-34px);
+    opacity: 0;
+  }
+  30%,
+  85% {
+    transform: none;
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    opacity: 0;
+  }
+}
+@keyframes how-press {
+  0%,
+  100% {
+    transform: translateY(-14px);
+  }
+  45%,
+  60% {
+    transform: none;
+  }
+}
+@keyframes how-pop {
+  0%,
+  40% {
+    fill: none;
+    stroke: var(--ink-soft);
+  }
+  55%,
+  100% {
+    fill: var(--accent);
+    stroke: var(--accent);
+  }
+}
+@keyframes how-link {
+  to {
+    stroke-dashoffset: -32;
+  }
+}
+@keyframes how-beam {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  50% {
+    opacity: 0.32;
+  }
+}
+@keyframes how-hover {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+@keyframes how-tap {
+  0%,
+  100% {
+    transform: translateY(-8px);
+  }
+  40%,
+  70% {
+    transform: none;
+  }
+}
+@keyframes how-wave {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---- introducing Braillo: the tutor, big, acting out talking, listening and helping, with what is said in a bubble ---- */
+.meet {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 2rem clamp(2rem, 5vw, 5rem);
+}
+.meet__stage {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 1.5rem;
+}
+.meet__stage .mascot {
+  width: clamp(12rem, 24vw, 26rem);
+  height: auto;
+}
+.meet__bubble {
+  position: relative;
+  justify-self: start;
+  max-width: 20ch;
+  padding: 1.3rem 1.7rem;
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  border: var(--bw) solid var(--ink);
+  font-weight: 800;
+  font-size: clamp(1.6rem, 1.5vw + 1.1rem, 2.8rem);
+  line-height: 1.2;
+  animation: rise 400ms ease both;
+}
+.meet__bubble::before {
+  content: '';
+  position: absolute;
+  left: -0.85rem;
+  top: 50%;
+  width: 1.5rem;
+  height: 1.5rem;
+  background: var(--card);
+  border-left: var(--bw) solid var(--ink);
+  border-bottom: var(--bw) solid var(--ink);
+  transform: translateY(-50%) rotate(45deg);
+}
+.meet__bubble--you {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.meet__bubble--you::before {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.meet__copy {
+  display: grid;
+  gap: 0.4rem;
+}
+.meet__kicker {
+  font-weight: 800;
+  font-size: clamp(1.4rem, 0.8vw + 1.1rem, 1.8rem);
+  color: var(--accent);
+}
+.meet__copy h2 {
+  font-size: clamp(3.5rem, 7vw + 1rem, 9rem);
+  line-height: 0.95;
+}
+.meet__sub {
+  font-size: clamp(1.5rem, 1.2vw + 1.1rem, 2.2rem);
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.meet__traits {
+  list-style: none;
+  margin: 1.25rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.meet__traits li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 1.1rem 0.55rem 0.8rem;
+  border-radius: 999px;
+  border: var(--bw) solid var(--ink-soft);
+  font-weight: 800;
+  font-size: 1.3rem;
+  transition: background-color 250ms ease, color 250ms ease, border-color 250ms ease;
+}
+.meet__traits svg {
+  width: 1.7rem;
+  height: 1.7rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.meet__traits li[data-on='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+@media (min-width: 64rem) {
+  .meet {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  }
+}
+:is(html[data-size='3'], html[data-size='4']) .meet,
+:is(html[data-size='3'], html[data-size='4']) .meet__stage {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (max-width: 40rem) {
+  .meet__stage {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+  }
+  .meet__bubble {
+    justify-self: center;
+  }
+  .meet__bubble::before {
+    left: 50%;
+    top: -0.85rem;
+    transform: translateX(-50%) rotate(135deg);
+  }
+}
+.landing.is-still .meet__bubble {
+  animation: none;
+}
+
+/* ---- made for blind and low-vision learners: four pictures, a title and a few words each ---- */
+.madefor {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: clamp(3rem, 6vh, 4.5rem) clamp(1.5rem, 3vw, 3rem);
+}
+.madefor li {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 0.9rem;
+  text-align: center;
+}
+.madefor__icon {
+  display: grid;
+  place-items: center;
+  width: clamp(6rem, 8vw, 9rem);
+  height: clamp(6rem, 8vw, 9rem);
+  border-radius: 50%;
+  background: var(--accent);
+  margin-bottom: 0.8rem;
+}
+.madefor__icon svg {
+  width: 60%;
+  height: 60%;
+  fill: none;
+  stroke: var(--on-accent);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* pointing at one plays its picture; everything keeps still when the device asks for less motion */
+.madefor__item {
+  transition: transform 250ms ease;
+}
+.madefor__icon {
+  position: relative;
+  transition: transform 300ms cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+.madefor__icon::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid var(--accent);
+  opacity: 0;
+}
+.madefor__icon svg,
+.madefor__icon svg * {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.madefor h3 {
+  transition: color 250ms ease;
+}
+@media (hover: hover) {
+  .madefor__item:hover {
+    transform: translateY(-6px);
+  }
+  .madefor__item:hover .madefor__icon {
+    transform: scale(1.1);
+  }
+  .madefor__item:hover h3 {
+    color: var(--accent);
+  }
+  .madefor__item:hover .madefor__icon::after {
+    animation: ring-out 1.2s ease-out infinite;
+  }
+  .madefor__item--talk:hover svg {
+    animation: bob 0.6s ease-in-out infinite alternate;
+  }
+  .madefor__item--reader:hover .madefor__wave {
+    animation: beam 1s ease-in-out infinite;
+  }
+  .madefor__item--reader:hover .madefor__wave:nth-of-type(3) {
+    animation-delay: 0.2s;
+  }
+  .madefor__item--see:hover svg {
+    animation: blink 2.4s ease-in-out infinite;
+  }
+  .madefor__item--see:hover .madefor__pupil {
+    animation: look 2.4s ease-in-out infinite;
+  }
+  .madefor__item--patient:hover svg {
+    animation: beat 1s ease-in-out infinite;
+  }
+}
+.landing.is-still .madefor *,
+.landing.is-still .madefor *::after {
+  animation: none !important;
+  transition: none !important;
+}
+@keyframes ring-out {
+  from {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.45);
+  }
+}
+@keyframes bob {
+  from {
+    transform: translateY(2px);
+  }
+  to {
+    transform: translateY(-4px);
+  }
+}
+@keyframes beam {
+  0%,
+  100% {
+    opacity: 0.2;
+    transform: translateX(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(2px);
+  }
+}
+@keyframes blink {
+  0%,
+  42%,
+  50%,
+  100% {
+    transform: scaleY(1);
+  }
+  46% {
+    transform: scaleY(0.1);
+  }
+}
+@keyframes look {
+  0%,
+  15%,
+  100% {
+    transform: translateX(0);
+  }
+  25%,
+  35% {
+    transform: translateX(-3px);
+  }
+  60%,
+  75% {
+    transform: translateX(3px);
+  }
+}
+@keyframes beat {
+  0%,
+  40%,
+  100% {
+    transform: scale(1);
+  }
+  15% {
+    transform: scale(1.2);
+  }
+  28% {
+    transform: scale(1.05);
+  }
+  34% {
+    transform: scale(1.15);
+  }
+}
+.madefor h3 {
+  font-size: clamp(1.6rem, 1vw + 1.15rem, 2.3rem);
+}
+.madefor p {
+  max-width: 24ch;
+  font-size: clamp(1.25rem, 0.5vw + 1rem, 1.5rem);
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.landing__end {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 1.4rem;
+  padding: clamp(4rem, 12vh, 8rem) var(--edge);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.landing__end h2 {
+  font-size: clamp(2.5rem, 4vw + 1rem, 5rem);
+}
+.landing__end p {
+  font-size: clamp(1.35rem, 0.8vw + 1rem, 1.8rem);
+}
+.landing__end .cta {
+  background: var(--on-accent);
+  border-color: var(--on-accent);
+  color: var(--accent);
+}
+.landing__end :focus-visible {
+  outline-color: var(--on-accent); /* (the usual ring is the accent: it would vanish on this section) */
+}
+.landing__end .cta:hover {
+  background: color-mix(in srgb, var(--on-accent) 85%, var(--accent));
+}
+/* the foot of the public pages: Braillie and its line, three short columns of links, then the copyright and "back to top" */
+.sitefoot {
+  background: var(--card);
+  padding: clamp(2.5rem, 6vh, 4rem) var(--edge, var(--gutter)) 1.5rem;
+}
+.sitefoot__top {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)); /* (a phone: the link groups two to a row, under Braillie's name) */
+  gap: 2rem 1.5rem;
+}
+.sitefoot__brand {
+  grid-column: 1 / -1;
+}
+.sitefoot__name {
+  font-size: clamp(1.8rem, 1.5vw + 1.2rem, 2.4rem);
+  font-weight: 800;
+}
+.sitefoot__brand p:not(.sitefoot__name) {
+  margin-top: 0.4rem;
+  font-size: 1.2rem;
+  color: var(--ink-soft);
+  max-width: 28ch;
+}
+.sitefoot__col h2 {
+  font-size: clamp(1.35rem, 0.5vw + 1.15rem, 1.6rem);
+  margin-bottom: 0.5rem;
+}
+.sitefoot__col ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+.sitefoot a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem; /* (a big enough target to tap) */
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: var(--ink);
+  text-decoration: none; /* (lists of links under their own headings: plain to see as links without the line) */
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.25em;
+}
+.sitefoot a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.sitefoot__bottom {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 2px solid var(--ink-soft);
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+@media (min-width: 48rem) {
+  .sitefoot__top {
+    grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, 1fr));
+  }
+  .sitefoot__brand {
+    grid-column: auto;
+  }
+}
+:is(html[data-size='3'], html[data-size='4']) .sitefoot__top {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ---- the legal and accessibility pages: the whole width. On a wide screen each section's heading sits on the left and its text on the
+   right, so the lines stay a comfortable length to read ---- */
+.legal {
+  flex: 1;
+  width: 100%;
+  padding: clamp(1.5rem, 5vh, 3.5rem) var(--edge) clamp(3rem, 8vh, 5rem);
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+.legal__kicker {
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.legal h1 {
+  font-size: clamp(2.6rem, 3vw + 1.5rem, 4rem);
+  line-height: 1.05;
+}
+.legal__intro {
+  font-size: clamp(1.3rem, 0.6vw + 1.1rem, 1.6rem);
+  color: var(--ink-soft);
+}
+.legal__intro {
+  max-width: 60ch;
+}
+.legal section {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 3px solid var(--card);
+}
+@media (min-width: 64rem) {
+  .legal section {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2.4fr);
+    column-gap: clamp(2rem, 5vw, 5rem);
+    row-gap: 0; /* (the heading spans the rows beside the text: gaps between empty rows would leave a hole under each section) */
+    align-items: start;
+  }
+  .legal section > * {
+    grid-column: 2;
+  }
+  .legal section > :not(h2) + :not(h2) {
+    margin-top: 0.75rem;
+  }
+  .legal section > h2 {
+    grid-column: 1;
+    grid-row: 1 / span 20;
+  }
+}
+:is(html[data-size='3'], html[data-size='4']) .legal section {
+  grid-template-columns: minmax(0, 1fr);
+}
+:is(html[data-size='3'], html[data-size='4']) .legal section > * {
+  grid-column: 1;
+  grid-row: auto;
+}
+.legal h2 {
+  font-size: clamp(1.7rem, 1vw + 1.2rem, 2.2rem);
+  scroll-margin-top: 1rem;
+}
+.legal h3 {
+  font-size: 1.35rem;
+  margin-top: 0.5rem;
+}
+.legal p,
+.legal li {
+  font-size: 1.2rem;
+  line-height: 1.6;
+  max-width: 75ch;
+}
+.legal ul {
+  margin: 0;
+  padding-left: 1.4rem;
+  display: grid;
+  gap: 0.4rem;
+}
+.legal a {
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.2em;
+}
+@media (min-width: 64rem) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    min-height: calc(100vh - 5rem);
+  }
+}
+:is(html[data-size='3'], html[data-size='4']) .hero {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (forced-colors: active) {
+  .world {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1077,19 +3197,14 @@ code {
   }
 }
 @media print {
-  .masthead__tools,
-  .skip {
+  .topbar__tools,
+  .skip,
+  .progress {
     display: none;
   }
 }
 
-.pair {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-  gap: 0.5rem 0.9rem;
-}
-
-/* The strongest themes: heavier text, links that are obviously links, no decoration behind the words. */
+/* The strongest themes: heavier text, and every secondary line in full ink. */
 :root[data-theme='contrast'] body,
 :root[data-theme='contrast-light'] body {
   font-weight: 500;
@@ -1102,35 +3217,26 @@ code {
 }
 :root[data-theme='contrast'] .btn:disabled,
 :root[data-theme='contrast-light'] .btn:disabled {
-  background: var(--paper);
   color: var(--ink);
   opacity: 0.75;
 }
 
-/* Large text: one column, and nothing decorative behind the words. (Media queries count in the browser's own text size, not in this page's,
-   so the two-column layouts have to be switched off here.) */
-:is(html[data-size='3'], html[data-size='4']) .stage {
-  background-image: none;
-}
+/* Large text: one column, and nothing decorative beside the words. (Media queries count in the browser's own text size, not in this
+   page's, so the two-column layouts have to be switched off here.) */
 :is(html[data-size='3'], html[data-size='4']) .page--split,
-:is(html[data-size='3'], html[data-size='4']) .choices,
-:is(html[data-size='3'], html[data-size='4']) .practice {
+:is(html[data-size='3'], html[data-size='4']) .home2 {
   grid-template-columns: minmax(0, 1fr);
 }
-:is(html[data-size='3'], html[data-size='4']) .practice__side,
-:is(html[data-size='3'], html[data-size='4']) .practice__left {
-  grid-column: auto;
-  grid-row: auto;
+:is(html[data-size='3'], html[data-size='4']) .sidebar {
+  position: static;
+  height: auto;
 }
-:is(html[data-size='3'], html[data-size='4']) .practice__side {
-  order: -1;
+:is(html[data-size='3'], html[data-size='4']) .app--nav,
+:is(html[data-size='3'], html[data-size='4']) .voicebar {
+  grid-template-columns: minmax(0, 1fr);
 }
-:is(html[data-size='3'], html[data-size='4']) .choice {
-  grid-template-columns: minmax(0, 1fr); /* the picture above the words, so the words get the whole width */
-  justify-items: start;
-}
-:is(html[data-size='3'], html[data-size='4']) .choice__go {
-  display: none;
+:is(html[data-size='3'], html[data-size='4']) .voicebar {
+  position: static; /* with very large text it would cover too much of the page */
 }
 :is(html[data-size='3'], html[data-size='4']) .actions {
   grid-template-columns: minmax(0, 1fr);
@@ -1143,11 +3249,6 @@ code {
 @media (forced-colors: active) {
   :where(a, button, input, summary, select, textarea, [tabindex]):focus-visible {
     outline-color: Highlight;
-  }
-  .btn,
-  .choice,
-  .sheet,
-  .card {
     box-shadow: none;
   }
   .cell-dot--on,
@@ -1159,10 +3260,10 @@ code {
     stroke: CanvasText;
   }
   .wave i,
-  .pips i[data-on='true'],
-  .meter > div,
+  .steps i[data-on='true'],
+  .progress > span,
   .badge::before,
-  .eyebrow::before {
+  .steps li::before {
     background: CanvasText;
     forced-color-adjust: none;
   }

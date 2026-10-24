@@ -176,7 +176,7 @@ class OptionTests(unittest.TestCase):
             with mock.patch.object(tutor.LLMClient, "from_env", return_value=None):
                 a, _ = self.parse("--mode", "learn")
                 self.assertIsNone(tutor.make_coach(a))
-            self.assertIn("OPENAI_API_KEY", out.getvalue())
+            self.assertIn("ANTHROPIC_API_KEY", out.getvalue())
             with mock.patch.object(tutor.LLMClient, "from_env", return_value=Client()):
                 a, _ = self.parse("--mode", "learn")
                 self.assertIsNotNone(tutor.make_coach(a))

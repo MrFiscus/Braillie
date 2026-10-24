@@ -81,8 +81,11 @@ class UserTests(unittest.TestCase):
         self.assertEqual(tutor.clean_name("<b>Bob</b>"), "bBobb", "markup characters are dropped")
         self.assertEqual((tutor.clean_name(""), tutor.clean_name(None), tutor.clean_name("!!!")), ("friend",) * 3)
         self.assertEqual(len(tutor.clean_name("x" * 200)), 40)
-        self.assertEqual(tutor.greeting("Ana"),
-                         "What do you want to do today, Ana? " + tutor.MENU_LINE)
+        hello = tutor.greeting("Ana")
+        self.assertTrue(hello.endswith(" " + tutor.MENU_LINE) and "Ana" in hello, hello)
+        self.assertIn(hello[: -len(tutor.MENU_LINE) - 1], [g.format(name="Ana") for g in tutor.GREETINGS])
+        self.assertNotEqual(tutor.greeting("Ana"), hello, "never the same opening twice running")
+        self.assertEqual(len(tutor.GREETINGS), 10)
         self.assertIn("Choose an option", tutor.MENU_LINE)
         self.assertIn("Learn teaches", tutor.MENU_LINE)
         self.assertIn("Read says a word", tutor.MENU_LINE)
@@ -138,7 +141,7 @@ class UserTests(unittest.TestCase):
 @unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")
 class GreetingTests(unittest.TestCase):
     def said(self, voice):
-        return [t for t in voice.said if "What do you want to do today" in t]
+        return [t for t in voice.said if tutor.MENU_LINE in t]  # (the opening question comes in a few ways; the choices are always the same)
 
     def test_nothing_is_said_until_we_know_who_it_is(self):
         s, voice, *_ = hub()
@@ -151,7 +154,8 @@ class GreetingTests(unittest.TestCase):
         s, voice, *_ = hub()
         s.set_user("Ana", "guest")
         self.assertTrue(wait_for(lambda: self.said(voice)))
-        self.assertEqual(self.said(voice), [tutor.greeting("Ana")])
+        self.assertEqual(len(self.said(voice)), 1)
+        self.assertIn("Ana", self.said(voice)[0])
         self.assertEqual(s.state, "menu")
 
     def test_with_a_phone_it_waits_for_the_phone_to_be_linked_and_says_it_once(self):
@@ -268,6 +272,7 @@ class ModeTests(unittest.TestCase):
         n = len(voice.said)
         time.sleep(0.6)
         self.assertEqual(len(voice.said), n, "resting on the same wrong cell is not counted again")
+        self.assertEqual(s.progress.confusions.get(f"{wrong}>{target}"), 1, "the mix-up is kept for the lessons to teach again")
         s.set_mode("menu")
 
     def test_a_finished_quiz_goes_back_to_the_menu(self):
@@ -283,6 +288,7 @@ class ModeTests(unittest.TestCase):
             if s.hub_mode == "menu":
                 break
         self.assertTrue(wait_for(lambda: s.hub_mode == "menu", 6))
+        self.assertGreaterEqual(len(s.progress.practised()), 1, "the quiz's answers count towards the letters the lessons know")
         text = " ".join(voice.said)
         self.assertIn("Choose an option", text)
         self.assertIn("Say learn, read, or quiz", text)
@@ -463,7 +469,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["hub"]["user"], {"name": "Gina b", "kind": "guest", "saves": False})
         code, _, body = http(self.base + "/api/session", {"kind": "google", "name": "Ana", "profile": "user-1"})
         self.assertEqual(body["hub"]["user"], {"name": "Ana", "kind": "google", "saves": True})
-        self.assertTrue(wait_for(lambda: any("What do you want to do today, Ana" in x["text"] for x in http(self.base + "/api/state")[2]["said"])))
+        self.assertTrue(wait_for(lambda: any("Ana" in x["text"] and tutor.MENU_LINE in x["text"] for x in http(self.base + "/api/state")[2]["said"])))
 
     def test_the_mode_endpoint_switches_and_returns(self):
         self.assertEqual(http(self.base + "/api/mode", {"mode": "dance"})[0], 400)
@@ -475,11 +481,24 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(http(self.base + "/api/mode", {"mode": "menu"})[0], 202)
         self.assertTrue(wait_for(lambda: http(self.base + "/api/state")[2]["hub"]["mode"] == "menu"))
 
+    def test_the_lines_heard_at_every_start_come_in_a_few_versions_and_never_twice_running(self):
+        for name in ("welcome", "welcome_back", "ask_name", "go_guest", "go_guest_anon", "connect_phone"):
+            self.assertEqual(len(tutor.PROMPTS[name]), 10, name)
+            said = [tutor.next_prompt(name) for _ in range(12)]
+            self.assertTrue(all(a != b for a, b in zip(said, said[1:])), f"{name} repeated itself")
+            self.assertGreater(len(set(said)), 1)
+        self.assertEqual(tutor.next_prompt("retry_back"), tutor.PROMPTS["retry_back"])  # a one-line reply stays one line
+        planned = tutor.planned_prompt("welcome")
+        self.assertIn(planned, tutor.common_lines())  # only the version said next is prepared ahead...
+        self.assertEqual(sum(1 for v in tutor.PROMPTS["welcome"] if v in tutor.common_lines()), 1)  # ...not all of them
+        self.assertEqual(tutor.next_prompt("welcome"), planned)  # and it is the one said
+
     def test_the_prompt_endpoint_speaks_only_what_it_is_allowed_to(self):
         self.assertEqual(http(self.base + "/api/prompt", {"name": "sing me a song"})[0], 400)
         self.assertEqual(http(self.base + "/api/prompt", {})[0], 400)
         self.assertEqual(http(self.base + "/api/prompt", {"name": "welcome"})[0], 202)
-        self.assertTrue(wait_for(lambda: any("Welcome to Braillie. On this page you can sign in" in x["text"] for x in http(self.base + "/api/state")[2]["said"])))
+        welcomes = tutor.PROMPTS["welcome"]
+        self.assertTrue(wait_for(lambda: any(x["text"] in welcomes for x in http(self.base + "/api/state")[2]["said"])))
 
     def test_a_prompt_can_carry_a_cleaned_name_and_nothing_else(self):
         n = len(http(self.base + "/api/state")[2]["said"])
@@ -499,7 +518,31 @@ class ServerTests(unittest.TestCase):
             commands[name]()
         self.assertEqual(s.hub_mode, "menu")  # a name that sounds like a command must not start a lesson before anyone has signed in
         self.assertEqual(http(self.base + "/api/dialogue", {"open": False})[2], {"open": False})
-        self.assertTrue(s._listening_state())
+        self.assertFalse(s._listening_state())  # back at the menu, which never says "I did not catch that" to the room
+        s.hub_mode, s.state = "read", "reading"
+        try:
+            self.assertTrue(s._listening_state())  # ...but once an activity runs, closing the conversation gives listening back
+        finally:
+            s.hub_mode, s.state = "menu", "menu"
+
+    def test_the_mute_key_turns_the_microphone_off_and_back_on(self):
+        s = self.session
+        self.assertEqual(http(self.base + "/api/mic", {"on": "no"})[0], 400)
+        self.assertEqual(http(self.base + "/api/mic", {"on": False})[2], {"on": False})
+        try:
+            state = http(self.base + "/api/state")[2]
+            self.assertTrue(state["muted"])
+            self.assertIsNone(state["heard"])  # the pages show the microphone as off
+            commands = getattr(s.voice, "voice", s.voice).commands
+            s.set_mode("menu")
+            commands["quiz"]()
+            self.assertEqual(s.hub_mode, "menu")  # muted: a word heard does nothing
+            s.hub_mode, s.state = "read", "reading"
+            self.assertFalse(s._listening_state())  # and there is no "I did not catch that"
+        finally:
+            s.hub_mode, s.state = "menu", "menu"
+            self.assertEqual(http(self.base + "/api/mic", {"on": True})[2], {"on": True})
+        self.assertFalse(http(self.base + "/api/state")[2]["muted"])
 
     def test_who_is_here_ends_the_sign_in_conversation_and_it_expires_by_itself(self):
         s = self.session

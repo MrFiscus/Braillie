@@ -244,6 +244,17 @@ class ServerTests(unittest.TestCase):
         self.assertIsNone(headers.get("Access-Control-Allow-Origin"), "no cross-origin access: the page is same-origin")
         self.link._bad = 0
 
+    def test_the_phone_is_told_the_laptop_pages_colours(self):
+        self.link.theme = "contrast"
+        try:
+            self.assertEqual(request(self.base + "/phone/check?t=123456")[2]["theme"], "contrast")
+            self.assertNotIn("theme", request(self.base + "/phone/check?t=654321")[2] or {})  # nothing for a wrong code
+            body = request(self.base + "/phone/frame?t=123456", jpeg(), headers={"Content-Type": "image/jpeg"})[2]
+            self.assertEqual(body["theme"], "contrast")
+        finally:
+            self.link.theme = None
+            self.link._bad = 0
+
     def test_bad_uploads_are_rejected_and_not_stored(self):
         before = self.link.frames
         url = self.base + "/phone/frame?t=123456"
@@ -452,6 +463,20 @@ class SoundTests(unittest.TestCase):
             self.assertTrue(link.play_audio(wav_bytes(0.1), "audio/mpeg"))
             self.assertEqual([g[0] for g in phone.got], [1, 2])  # in order
             self.assertEqual(phone.got[1][1], "audio/mpeg")
+        finally:
+            phone.stop = True
+
+    def test_a_clip_the_learner_cut_off_stops_on_the_phone_and_is_not_replayed(self):
+        link = self.ready_link()
+        phone = FakePhone(link, delay=5.0)  # a long line, still playing
+        cut = threading.Event()
+        threading.Timer(0.3, cut.set).start()
+        try:
+            start = time.time()
+            self.assertTrue(link.play_audio(wav_bytes(0.2), cancelled=cut.is_set), "counts as played: the laptop must not say it")
+            self.assertLess(time.time() - start, 2.0, "returns as soon as it is cut off")
+            self.assertEqual(link.hush_clip, 1, "the phone is told to stop that clip")
+            self.assertIsNone(link.next_clip())
         finally:
             phone.stop = True
 

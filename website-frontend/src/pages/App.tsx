@@ -8,20 +8,27 @@ import SignIn from './SignIn.tsx'
 import Modes from './Modes.tsx'
 import ConnectPhone from './ConnectPhone.tsx'
 import Practice from './Practice.tsx'
+import Landing from './Landing.tsx'
+import Account from './Account.tsx'
+import { Accessibility, Privacy, Terms } from './Legal.tsx'
 
-// The one way through the app: sign in -> link the phone -> choose Learn, Read or Quiz -> do it. (The earlier start page and Get to Know
-// pages are no longer part of it; their files are still in this folder.)
+// The way through the app: the landing page (what Braillie is) -> sign in -> link the phone -> home: Learn, Read or Quiz -> do it.
+// (The earlier start page and Get to Know pages are no longer part of it; their files are still in this folder.)
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<Shell />}>
-        <Route index element={<Navigate to="/login" replace />} />
+      <Route index element={<Landing />} />
+      <Route path="privacy" element={<Privacy />} />
+      <Route path="terms" element={<Terms />} />
+      <Route path="accessibility" element={<Accessibility />} />
+      <Route element={<Shell />}>
 
         <Route path="connect-phone" element={<ConnectPhone />} />
         <Route path="practice" element={<Practice />} />
         <Route path="login" element={<SignIn />} />
         <Route path="modes" element={<Modes />} />
-        <Route path="*" element={<Navigate to="/login" replace />} /> {/* any old or unknown address starts again at the sign-in page */}
+        <Route path="account" element={<Account />} />
+        <Route path="*" element={<Navigate to="/" replace />} /> {/* any old or unknown address starts again at the front door */}
         
         {/*gaslight gatekeep girlboss */}
         {/* here purely for reference, from another project I did

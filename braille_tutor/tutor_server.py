@@ -40,7 +40,7 @@ COMMANDS = {"start quiz": "on_start", "repeat": "on_repeat", "hint": "on_hint", 
             "next": "on_next", "next page": "on_next_page", "explore": "on_explore", "practice": "on_practice",
             "learn": "on_mode_learn", "read": "on_mode_read", "quiz": "on_mode_quiz", "menu": "on_mode_menu",
             "help": "on_help", "slower": "on_slower", "faster": "on_faster", "relaxed": "on_relaxed", "normal": "on_normal",
-            "stop": "on_stop", "braillo": "on_braillo"}
+            "stop": "on_stop", "hush": "on_hush", "braillo": "on_braillo"}
 LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
 FPS, STREAM_WIDTH = 15, 960
 
@@ -148,14 +148,22 @@ class TutorRuntime:
                 "settings": session.settings.to_dict(),
                 "hub": session.hub_status(),
                 "learning": session.learning_status(),
-                "progress": session.progress.summary() if session.journey is not None else None,
+                # (on the menu too, once someone is here: the home screen shows how they are getting on)
+                "progress": session.progress.summary() if session.journey is not None or (session.hub and session.user) else None,
                 "camera": {"ok": self.camera_ok, "frames": feed.frames}, "phone": self.phone_info(),
                 "page": {"ok": feed.page_ok, "message": feed.message},
                 "tutor": session.status(),
                 "finger": {"page_mm": None if pos is None else [round(pos[0], 1), round(pos[1], 1)], "cell": cell,
                            "source": feed.finger_source()},
-                "speaking": session.is_speaking(), "heard": session._voice_heard(),
+                "speaking": session.is_speaking(), "heard": session._voice_heard(), "muted": session.muted,
+                "speech": self.now_playing(),  # the line being spoken, with its timing: pages show it sentence by sentence
                 "said": list(self.voice.said)[-15:], "debrief": session.last_debrief or self.voice.debrief}
+
+    def now_playing(self) -> Optional[dict]:
+        """{"text", "started", "seconds"} for the line being spoken (see voice_io.now_playing), or None."""
+        module = getattr(self.voice, "voice", self.voice)
+        playing = getattr(module, "now_playing", None)
+        return playing() if callable(playing) else None
 
     def hub_request(self, path: str, body: dict) -> tuple:
         """/api/session, /api/mode, /api/prompt and /api/dialogue: returns (status, json). Speech and mode changes run in a thread so the answer is quick."""
@@ -184,6 +192,8 @@ class TutorRuntime:
         name = str(body.get("name", ""))
         if name not in tutor.PROMPTS:
             raise ValueError(f'"name" must be one of: {", ".join(tutor.PROMPTS)}')
+        if body.get("cut") is True:  # this line replaces whatever is still being said (cut first, so it is not dropped as stale)
+            session.cut_speech()
         threading.Thread(target=session.speak_prompt, args=(name, body.get("who")), daemon=True).start()
         return 202, {"accepted": name}
 
@@ -333,14 +343,22 @@ def make_handler(rt: TutorRuntime):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt", "/api/dialogue", "/api/settings"):
+            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt", "/api/dialogue", "/api/settings",
+                            "/api/mic"):
                 return self._json(404, {"error": "not found"})
             body = self._read_json()
             if body is None:
                 return
+            if path == "/api/mic":  # the mute key: {"on": false} turns the microphone off, {"on": true} back on
+                if not isinstance(body.get("on"), bool):
+                    return self._json(400, {"error": '"on" must be true or false'})
+                return self._json(200, {"on": not rt.session.set_muted(not body["on"])})
             if path == "/api/settings":  # speech speed, pace, sounds, "I didn't catch that": send only what should change
                 try:
-                    return self._json(200, rt.session.apply_settings(body))
+                    settings = rt.session.apply_settings(body)
+                    if rt.phone is not None:  # the phone's page takes the laptop page's colours
+                        rt.phone.theme = settings.get("theme")
+                    return self._json(200, settings)
                 except (ValueError, TypeError) as e:
                     return self._json(400, {"error": str(e)})
             if path in ("/api/session", "/api/mode", "/api/prompt", "/api/dialogue"):
@@ -456,6 +474,7 @@ def main() -> None:
     link = phone[0] if phone else None
     if link is not None and session.hub:
         session.phone_ready_fn = lambda: link.connected  # the greeting waits until the phone is linked
+        session.phone_code_fn = lambda: link.code  # (read out on the connect page, for anyone who cannot scan the code)
     rt = TutorRuntime(phone[1] if phone else open_camera(a.camera), feed, session, rv,
                       loop_file=not phone and bool(a.camera) and Path(a.camera).is_file(), phone=link)
     rt.start()
@@ -468,6 +487,9 @@ def main() -> None:
     threading.Thread(target=opening, daemon=True).start()
     if not a.no_mic:
         voice.start_listening()
+    prefetch = getattr(voice, "prefetch_speech", None)
+    if callable(prefetch):  # the lines said again and again start at once instead of after a pause
+        prefetch(tutor.common_lines())
     server = serve(rt, a.host, a.port)
     print(f"Braillie tutor server: http://{a.host}:{server.server_address[1]}   (Ctrl+C to stop)", flush=True)
     try:

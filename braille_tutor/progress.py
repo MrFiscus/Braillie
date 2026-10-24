@@ -137,6 +137,22 @@ class Progress:
         s = self.letters.get(letter)
         return 30.0 if s is None or not s.last_seen else max(0.0, (self.clock() - s.last_seen) / 86400)
 
+    def needs_reteaching(self, pool: Iterable, n: int = 3) -> list:
+        """Up to `n` letters from `pool` (letters met before) that went wrong and should be taught again: practised but still in the
+        first box (missed, or never yet found without help), or mixed up with another letter at least twice and not yet known well.
+        The most troublesome first. (A letter found cleanly has moved up a box: it is not taught again, only practised.)"""
+        def trouble(l: str) -> tuple:
+            mixed = sum(c for k, c in self.confusions.items() if l in k.split(">"))
+            return (self.box(l), -mixed, l)
+        weak = []
+        for l in dict.fromkeys(pool):
+            s = self.letters.get(l)
+            mixed = sum(c for k, c in self.confusions.items() if l in k.split(">"))
+            shaky = s is not None and s.attempts > 0 and s.box == 0
+            if shaky or (mixed >= 2 and not self.is_learned(l)):
+                weak.append(l)
+        return sorted(weak, key=trouble)[:n]
+
     def pick_practice(self, pool: Iterable, n: int, rng: Optional[random.Random] = None) -> list:
         """`n` distinct letters from `pool` to practise: mostly the shaky and the recently confused, with a few solid ones to keep them
         solid. Weighted sampling, so it is varied, not a fixed order."""

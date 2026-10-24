@@ -15,7 +15,7 @@ export interface PhoneInfo {
   mic?: boolean
 }
 
-export type LearningPhase = 'idle' | 'await_sheet' | 'teach' | 'practice' | 'review' | 'recap' | 'explore' | 'done'
+export type LearningPhase = 'idle' | 'await_sheet' | 'warmup' | 'teach' | 'practice' | 'review' | 'recap' | 'explore' | 'done' // warmup: letters that went wrong before, taught again
 
 /** Where the learner is in the guided lessons (only when the tutor runs with --mode learn). */
 export interface LearningStatus {
@@ -51,6 +51,7 @@ export interface HubInfo {
   modes: Record<string, { title: string; sheet: string }>
   user: { name: string; kind: 'google' | 'guest'; saves: boolean } | null
   greeted: boolean
+  next_lesson?: { id: string; title: string; index: number; of: number; letters: string[] } | null // what "Continue" starts; null when all are done
 }
 
 export interface TutorState {
@@ -75,7 +76,10 @@ export interface TutorState {
   learning?: LearningStatus | null // null unless the learn activity is running
   progress?: ProgressSummary | null
   speaking?: boolean // the tutor is talking right now
+  settings?: { speech_speed: number; pace: string; tones: boolean; hearing_feedback: boolean; theme?: string | null }
+  speech?: { text: string; started: number; seconds: number } | null // the line being spoken: when it started and how long it lasts
   heard?: { n: number; text: string; matched: boolean; reason: string | null } | null // the last thing the microphone made out (n counts up); null if it is not listening
+  muted?: boolean // the learner turned the microphone off with the mute key
 }
 
 const post = (path: string, body: unknown) =>
@@ -124,8 +128,19 @@ export const setSession = async (who: { kind: 'google' | 'guest'; name: string; 
 /** Choose what to do: learn, read, quiz, or menu to go back to the choice. */
 export const setMode = async (mode: HubMode) => ok(await post('/api/mode', { mode }), 'mode')
 
-/** Ask the tutor to say one of its prepared lines (only those it knows, see PROMPTS in tutor.py), with a first name where the line has one. */
-export const sayPrompt = async (name: string, who?: string) => ok(await post('/api/prompt', who === undefined ? { name } : { name, who }), 'prompt')
+/** Ask the tutor to say one of its prepared lines (only those it knows, see PROMPTS in tutor.py), with a first name where the line has one.
+ * `cut`: stop whatever it is still saying first (the person answered over it). */
+export const sayPrompt = async (name: string, who?: string, cut = false) =>
+  ok(await post('/api/prompt', { name, ...(who === undefined ? {} : { who }), ...(cut ? { cut: true } : {}) }), 'prompt')
+
+/** Tell the tutor which colours this page shows ("light", "dark", "contrast-light", "contrast"): the phone's page takes the same ones.
+ * Nothing happens if the tutor is not running (the page on its own does not need it). */
+export const shareTheme = (theme: string | undefined) => {
+  if (theme) void post('/api/settings', { theme }).catch(() => {})
+}
+
+/** The mute key: turn the tutor's microphone off (nothing is sent or acted on) or back on. */
+export const setMic = async (on: boolean) => ok(await post('/api/mic', { on }), 'mic')
 
 /** The sign-in page is (open) or is no longer talking with the user: while it is, the tutor does not act on voice commands or say "I did not catch that". */
 export const setDialogue = async (open: boolean) => ok(await post('/api/dialogue', { open }), 'dialogue')

@@ -20,6 +20,8 @@ const themes = {
   contrast: { ...block(':root'), ...block(":root[data-theme='contrast']") },
 }
 const STRONG = new Set(['contrast', 'contrast-light']) // the two themes made for low vision
+// a colour may be another one by name (var(--paper)): look it up
+for (const t of Object.values(themes)) for (const [k, v] of Object.entries(t)) if (/^var\(--[\w-]+\)$/.test(v)) t[k] = t[v.slice(6, -1)]
 
 const rgb = (hex) => {
   assert.match(hex, /^#([0-9a-f]{3}|[0-9a-f]{6})$/i, `not a plain hex colour: ${hex}`)
@@ -53,6 +55,10 @@ const TEXT = [
   ['good', 'paper', 'a good state'],
   ['warn', 'paper-sunk', 'the emphasis in a problem note'],
   ['warn', 'paper', 'a problem'],
+  ['ink', 'tint', 'text on the tinted sections of the landing page'],
+  ['ink-soft', 'tint', 'secondary text on a tinted section'],
+  ['accent', 'tint', 'labels, step numbers and accents on a tinted section'],
+  ['accent', 'on-accent', 'the key on the accent-coloured closing section'],
 ]
 
 for (const [theme, t] of Object.entries(themes)) {

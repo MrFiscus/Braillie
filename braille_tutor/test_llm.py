@@ -74,33 +74,86 @@ def wait_until(fn, seconds=3.0):
     return False
 
 
+def fake_messages_api(reply_text="  hello  ", stop_reason="end_turn", status=200):
+    """A local stand-in for Claude's Messages API: (server, what it saw). Answers every request with one text block."""
+    seen = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen["path"], seen["key"], seen["beta"] = self.path, self.headers["Authorization"], self.headers["anthropic-beta"]
+            seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            reply = {"id": "msg_1", "type": "message", "role": "assistant", "model": seen["body"]["model"],
+                     "content": [{"type": "text", "text": reply_text}], "stop_reason": stop_reason, "stop_sequence": None,
+                     "usage": {"input_tokens": 1, "output_tokens": 1}}
+            if status != 200:
+                reply = {"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}
+            out = json.dumps(reply).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, seen
+
+
 class ClientTests(unittest.TestCase):
+    def client(self, srv):
+        return llm.LLMClient("sk-ant-test", "some-model", f"http://127.0.0.1:{srv.server_address[1]}")
+
     def test_request_shape_and_reply(self):
-        seen = {}
-
-        class H(http.server.BaseHTTPRequestHandler):
-            def do_POST(self):
-                seen["path"], seen["auth"] = self.path, self.headers["Authorization"]
-                seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                out = json.dumps({"choices": [{"message": {"content": "  hello  "}}]}).encode()
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(out)))
-                self.end_headers()
-                self.wfile.write(out)
-
-            def log_message(self, *a):
-                pass
-
-        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        srv, seen = fake_messages_api()
         try:
-            client = llm.LLMClient("sk-test", "some-model", f"http://127.0.0.1:{srv.server_address[1]}/v1")
+            self.assertEqual(self.client(srv).chat("be brief", "hi"), "hello")
+        finally:
+            srv.shutdown()
+        self.assertEqual((seen["path"], seen["key"]), ("/v1/messages?beta=true", "Bearer sk-ant-test"))
+        self.assertIn(llm.FALLBACK_BETA, seen["beta"])
+        body = seen["body"]
+        self.assertEqual(set(body), {"model", "max_tokens", "system", "messages", "output_config", "fallbacks"})  # nothing else is sent
+        self.assertEqual((body["system"], body["messages"]), ("be brief", [{"role": "user", "content": "hi"}]))
+        self.assertEqual((body["output_config"], body["fallbacks"]), ({"effort": llm.REPLY_EFFORT}, "default"))
+
+    def test_haiku_is_asked_without_a_fallback_model(self):
+        srv, seen = fake_messages_api()
+        try:
+            client = llm.LLMClient("sk-ant-test", "claude-haiku-5-5", f"http://127.0.0.1:{srv.server_address[1]}")
             self.assertEqual(client.chat("be brief", "hi"), "hello")
         finally:
             srv.shutdown()
-        self.assertEqual((seen["path"], seen["auth"]), ("/v1/chat/completions", "Bearer sk-test"))
-        self.assertEqual(set(seen["body"]), {"model", "messages"})  # nothing else is sent
-        self.assertEqual([m["role"] for m in seen["body"]["messages"]], ["system", "user"])
+        self.assertEqual(seen["path"], "/v1/messages")
+        self.assertNotIn("fallbacks", seen["body"])
+
+    def test_json_reply_follows_the_schema(self):
+        srv, seen = fake_messages_api('{"action": "hint"}')
+        try:
+            self.assertEqual(self.client(srv).chat_json("s", "u", llm.TALK_SCHEMA), {"action": "hint"})
+        finally:
+            srv.shutdown()
+        self.assertEqual(seen["body"]["output_config"]["format"], {"type": "json_schema", "schema": llm.TALK_SCHEMA["schema"]})
+
+    def test_a_declined_or_cut_off_reply_is_an_error(self):
+        for stop in ("refusal", "max_tokens"):
+            srv, _ = fake_messages_api("half a sent", stop_reason=stop)
+            try:
+                with self.assertRaises(llm.LLMError):
+                    self.client(srv).chat("s", "u")
+            finally:
+                srv.shutdown()
+
+    def test_a_refused_key_switches_braillo_off_at_once(self):
+        srv, _ = fake_messages_api(status=401)
+        try:
+            ask = llm.AskTutor(self.client(srv))
+            self.assertIsNone(ask.answer("hello there"))
+        finally:
+            srv.shutdown()
+        self.assertFalse(ask.enabled)
 
     def test_only_https_or_localhost(self):
         with self.assertRaises(ValueError):
@@ -109,10 +162,10 @@ class ClientTests(unittest.TestCase):
         llm.LLMClient("k", "m", "http://localhost:9999/v1")
 
     def test_from_env(self):
-        old = {k: os.environ.pop(k, None) for k in ("OPENAI_API_KEY", "BRAILLIE_LLM_MODEL", "BRAILLIE_LLM_BASE_URL")}
+        old = {k: os.environ.pop(k, None) for k in ("ANTHROPIC_API_KEY", "BRAILLIE_LLM_MODEL", "BRAILLIE_LLM_BASE_URL")}
         try:
             self.assertIsNone(llm.LLMClient.from_env())
-            os.environ["OPENAI_API_KEY"] = "sk-x"
+            os.environ["ANTHROPIC_API_KEY"] = "sk-x"
             c = llm.LLMClient.from_env()
             self.assertEqual((c.model, c.base_url), (llm.DEFAULT_MODEL, llm.DEFAULT_BASE_URL))
             os.environ["BRAILLIE_LLM_MODEL"] = "other"
@@ -125,20 +178,20 @@ class ClientTests(unittest.TestCase):
                     os.environ[k] = v
 
     def test_make_coach(self):
-        os.environ.pop("OPENAI_API_KEY", None)
+        os.environ.pop("ANTHROPIC_API_KEY", None)
         out = io.StringIO()
         with redirect_stdout(out):
             self.assertIsNone(tutor.make_coach(argparse.Namespace(llm=False, llm_model=None)))
             self.assertIsNone(tutor.make_coach(argparse.Namespace(llm=True, llm_model=None)))  # no key: stays off
-        self.assertIn("OPENAI_API_KEY is not set", out.getvalue())
-        os.environ["OPENAI_API_KEY"] = "sk-x"
+        self.assertIn("ANTHROPIC_API_KEY is not set", out.getvalue())
+        os.environ["ANTHROPIC_API_KEY"] = "sk-x"
         try:
             with redirect_stdout(out):
                 coach = tutor.make_coach(argparse.Namespace(llm=True, llm_model="m1"))
             self.assertTrue(coach.enabled)
             self.assertIn("never camera images", out.getvalue())
         finally:
-            del os.environ["OPENAI_API_KEY"]
+            del os.environ["ANTHROPIC_API_KEY"]
 
 
 class GuardTests(unittest.TestCase):
@@ -327,14 +380,57 @@ class AskTutorTests(unittest.TestCase):
         client = Scripted("Dot one is top left on the cell.")
         ask = llm.AskTutor(client)
         self.assertEqual(ask.answer("what is dot one"), "Dot one is top left on the cell.")
-        self.assertEqual(client.calls[0][2], 160)
+        self.assertIsNone(client.calls[0][2], "no tight token cap: the model's thinking counts toward it")
         self.assertIn("Braillo", client.calls[0][0])
 
-    def test_failure_turns_ask_off(self):
-        ask = llm.AskTutor(Scripted(error=RuntimeError("down")))
+    def test_repeated_failures_turn_ask_off(self):
+        client = Scripted(error=RuntimeError("down"))
+        ask = llm.AskTutor(client)
         self.assertIsNone(ask.answer("hello there"))
+        self.assertTrue(ask.enabled)  # one dropped request is not the end of Braillo
+        ask.answer("hello again")
+        ask.answer("and again")
         self.assertFalse(ask.enabled)
-        self.assertIsNone(ask.answer("hello again"))  # stays off; no more calls
+        self.assertIsNone(ask.answer("one more"))  # stays off; no more calls
+        self.assertEqual(len(client.calls), 3)
+
+    def test_answer_carries_the_moment_and_the_last_exchanges(self):
+        client = Scripted("D is dots one, four and five.")
+        ask = llm.AskTutor(client)
+        ask.answer("what is d", context={"target_letter": "d", "target_dots": [1, 4, 5]})
+        ask.answer("and the one after it", context={"target_letter": "d"})
+        sent = json.loads(client.calls[1][1])
+        self.assertEqual(sent["learner_said"], "and the one after it")
+        self.assertEqual(sent["app_now"], {"target_letter": "d"})
+        self.assertEqual(sent["earlier"], [{"learner": "what is d", "you": "D is dots one, four and five."}])
+
+
+class JsonScripted(Scripted):
+    """A fake client for respond(): chat_json returns `reply` (a dict) or raises."""
+
+    def chat_json(self, system, user, schema):
+        self.calls.append((system, user, schema, None))
+        if self.error:
+            raise self.error
+        return self.reply(system, user) if callable(self.reply) else self.reply
+
+
+class RespondTests(unittest.TestCase):
+    def test_free_speech_becomes_a_command(self):
+        ask = llm.AskTutor(JsonScripted({"addressed": True, "action": "repeat", "say": ""}))
+        self.assertEqual(ask.respond("what was that letter again", {"state": "learning"}), {"action": "repeat", "say": ""})
+
+    def test_speech_not_meant_for_the_tutor_is_ignored(self):
+        ask = llm.AskTutor(JsonScripted({"addressed": False, "action": "hint", "say": "Here is a hint."}))
+        self.assertEqual(ask.respond("did you feed the cat"), {"action": "none", "say": ""})
+
+    def test_an_unknown_action_is_none_and_the_reply_is_spoken_plainly(self):
+        ask = llm.AskTutor(JsonScripted({"addressed": True, "action": "dance", "say": "**Dot one** is top left."}))
+        self.assertEqual(ask.respond("which dot is one"), {"action": "none", "say": "Dot one is top left."})
+
+    def test_failure_gives_none_so_the_tutor_falls_back(self):
+        ask = llm.AskTutor(JsonScripted(error=RuntimeError("down")))
+        self.assertIsNone(ask.respond("what now"))
 
 
 @unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")
@@ -368,24 +464,24 @@ class BrailloSessionTests(unittest.TestCase):
         s.ask = None
         s.heard_fn = lambda: {"n": 1, "text": "braillo what is braille", "matched": True}
         s.on_braillo()
-        self.assertIn("OpenAI API key", voice.said[-1])
+        self.assertIn("Anthropic API key", voice.said[-1])
 
     def test_make_ask_tutor(self):
-        old = os.environ.pop("OPENAI_API_KEY", None)
+        old = os.environ.pop("ANTHROPIC_API_KEY", None)
         out = io.StringIO()
         try:
             with redirect_stdout(out):
                 self.assertIsNone(tutor.make_ask_tutor(argparse.Namespace(no_llm=False, llm_model=None)))
             self.assertIn("Braillo Q&A off", out.getvalue())
-            os.environ["OPENAI_API_KEY"] = "sk-x"
+            os.environ["ANTHROPIC_API_KEY"] = "sk-x"
             with redirect_stdout(out):
                 ask = tutor.make_ask_tutor(argparse.Namespace(no_llm=False, llm_model="m1"))
             self.assertTrue(ask.enabled)
             self.assertIsNone(tutor.make_ask_tutor(argparse.Namespace(no_llm=True, llm_model=None)))
         finally:
-            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
             if old is not None:
-                os.environ["OPENAI_API_KEY"] = old
+                os.environ["ANTHROPIC_API_KEY"] = old
 
 
 if __name__ == "__main__":

@@ -5,49 +5,131 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Braillie phone camera</title>
 <style>
-  :root { color-scheme: light dark; --bg: #fff; --fg: #111; --accent: #0b5cff; --ok: #0a7d32; --bad: #b3261e; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #000; --fg: #fff; --accent: #6ea2ff; --ok: #5ad17a; --bad: #ff8a80; } }
-  html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
-  main { max-width: 36rem; margin: 0 auto; padding: 1.25rem 16px 2rem; display: flex; flex-direction: column; gap: 1.25rem; }
-  h1 { font-size: 1.6rem; margin: 0; }
-  #status { font-size: 1.5rem; line-height: 1.35; font-weight: 600; min-height: 4.5rem; }
+  /* The same look as the Braillie website: Braillo, big type, one bright accent, round keys. The colours are the laptop page's own
+     (the tutor sends its theme with every reply, and sets data-theme below); until then, the phone's own light or dark. */
+  :root { color-scheme: dark; --bg: #0a0a0b; --card: #18191b; --fg: #fff; --soft: #d9d9db; --accent: #ffd60a; --on-accent: #000;
+          --ok: #7cf2a8; --bad: #ff8a80; --bw: 3px; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme]) { color-scheme: light; --bg: #fff; --card: #f4f4f5; --fg: #0a0a0b;
+                                                 --soft: #2e2f31; --accent: #0b3ab0; --on-accent: #fff; --ok: #0b5323; --bad: #b3261e; } }
+  :root[data-theme="light"] { color-scheme: light; --bg: #fff; --card: #f4f4f5; --fg: #0a0a0b; --soft: #2e2f31; --accent: #0b3ab0;
+                              --on-accent: #fff; --ok: #0b5323; --bad: #b3261e; }
+  :root[data-theme="contrast-light"] { color-scheme: light; --bg: #fff; --card: #fff; --fg: #000; --soft: #000; --accent: #0822a8;
+                                       --on-accent: #fff; --ok: #00461a; --bad: #8c0000; --bw: 4px; }
+  :root[data-theme="contrast"] { color-scheme: dark; --bg: #000; --card: #000; --fg: #fff; --soft: #fff; --accent: #ffe14d;
+                                 --on-accent: #000; --ok: #7cffb2; --bad: #ff9e9e; --bw: 4px; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font-family: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", system-ui, -apple-system, sans-serif; }
+  main { max-width: 34rem; min-height: 100svh; margin: 0 auto; padding: 1rem 16px 2rem; box-sizing: border-box;
+         display: flex; flex-direction: column; align-items: center; gap: 1.25rem; text-align: center; }
+  .brand { align-self: flex-start; margin: 0; font-size: 1.35rem; font-weight: 800; }
+  .brand span { color: var(--accent); }
+  .braillo { width: min(11rem, 42vw); height: auto; overflow: visible; margin-top: 0.5rem; }
+  #status { margin: 0; font-size: 1.65rem; line-height: 1.3; font-weight: 700; min-height: 4.4rem; max-width: 26ch; }
   #status.ok { color: var(--ok); } #status.bad { color: var(--bad); }
-  button { font: inherit; font-size: 1.5rem; font-weight: 700; padding: 1.4rem 1rem; border-radius: 1rem; border: 3px solid var(--accent);
-           background: var(--accent); color: var(--bg); min-height: 5rem; width: 100%; }
-  button.secondary { background: transparent; color: var(--accent); }
-  label { font-size: 1.3rem; font-weight: 600; }
-  input { font: inherit; font-size: 2rem; letter-spacing: .3em; padding: .8rem; width: 100%; box-sizing: border-box; border-radius: .75rem;
-          border: 3px solid var(--fg); background: var(--bg); color: var(--fg); }
-  video { width: 100%; max-height: 40vh; object-fit: contain; border-radius: .75rem; background: #000; }
+  button { font: inherit; cursor: pointer; }
+  /* the one thing to press: a big round key with its word under it */
+  .key { display: grid; justify-items: center; gap: 0.6rem; padding: 0; border: 0; background: none; color: var(--fg);
+         font-size: 1.4rem; font-weight: 800; }
+  .key__disc { display: grid; place-items: center; width: 8.5rem; aspect-ratio: 1; border-radius: 50%; background: var(--accent);
+               color: var(--on-accent); border: var(--bw) solid var(--accent); }
+  .key--small .key__disc { width: 5rem; background: var(--bg); color: var(--fg); border-color: var(--fg); }
+  .key svg { width: 46%; height: 46%; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .key:active .key__disc { transform: scale(0.96); }
+  #go .key__disc { box-shadow: 0 0 0 0 var(--accent); animation: ring 1.8s ease-out infinite; }
+  form { width: 100%; display: grid; gap: 0.9rem; }
+  label { font-size: 1.35rem; font-weight: 700; }
+  input { font: inherit; font-size: 2.4rem; font-weight: 800; letter-spacing: .35em; text-align: center; padding: .7rem; width: 100%;
+          box-sizing: border-box; border-radius: 1rem; border: var(--bw) solid var(--fg); background: var(--card); color: var(--fg); }
+  .wide { font-size: 1.5rem; font-weight: 800; min-height: 4.75rem; border-radius: 1rem; border: var(--bw) solid var(--accent);
+          background: var(--accent); color: var(--on-accent); }
+  video { width: 100%; max-height: 38vh; object-fit: cover; border-radius: 1.25rem; background: #000; border: var(--bw) solid var(--accent); }
+  #help { font-size: 1.15rem; line-height: 1.45; margin: 0; color: var(--soft); max-width: 30ch; }
   [hidden] { display: none !important; }
-  p { font-size: 1.15rem; line-height: 1.45; margin: 0; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  :focus-visible { outline: 4px solid var(--accent); outline-offset: 4px; border-radius: 1rem; }
+  .key:focus-visible { outline: none; }
+  .key:focus-visible .key__disc { outline: 4px solid var(--fg); outline-offset: 5px; }
+  .b-heard { stroke: var(--accent); }
+  /* Braillo: his mouth moves while the tutor's voice plays here, a hand goes to his ear while the microphone is on */
+  .b-mouth, .b-arm-up, .b-heard { display: none; }
+  .braillo[data-state="speaking"] .b-smile { display: none; }
+  .braillo[data-state="speaking"] .b-mouth { display: inline; animation: talk 300ms ease-in-out infinite alternate; }
+  .braillo[data-state="listening"] .b-arm-down { display: none; }
+  .braillo[data-state="listening"] .b-arm-up, .braillo[data-state="listening"] .b-heard { display: inline; }
+  .braillo[data-state="listening"] .b-heard { animation: hear 1.3s ease-in-out infinite; }
+  .b-mouth, .b-eyes { transform-box: fill-box; transform-origin: center; }
+  .b-eyes { animation: blink 5s ease-in-out infinite; }
+  @keyframes talk { from { transform: scaleY(0.35); } to { transform: scaleY(1.05); } }
+  @keyframes hear { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+  @keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.1); } }
+  @keyframes ring { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent); } 100% { box-shadow: 0 0 0 1.4rem transparent; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
 </style>
 </head>
 <body>
 <main>
-  <h1>Braillie phone camera</h1>
-  <div id="status" role="status" aria-live="assertive">Getting ready.</div>
+  <p class="brand">Braillie<span>.</span></p>
+
+  <!-- Braillo, the tutor (a picture: the status line under him says everything in words) -->
+  <svg id="braillo" class="braillo" data-state="idle" viewBox="0 0 220 260" aria-hidden="true" focusable="false">
+    <ellipse cx="110" cy="246" rx="58" ry="8" fill="currentColor" opacity="0.18"/>
+    <circle cx="110" cy="20" r="17" fill="#ffd60a" opacity="0.3"/>
+    <path d="M110 44V30" stroke="#121212" stroke-width="4.5" stroke-linecap="round"/>
+    <circle cx="110" cy="20" r="10" fill="#ffd60a" stroke="#121212" stroke-width="4.5"/>
+    <g class="b-heard" fill="none" stroke="#ffd60a" stroke-width="6" stroke-linecap="round"><path d="M204 88c5 6 5 16 0 22"/><path d="M214 80c9 11 9 27 0 38"/></g>
+    <g fill="none" stroke-linecap="round">
+      <path d="M52 128c-16 8-24 24-22 40" stroke="#121212" stroke-width="15"/><path d="M52 128c-16 8-24 24-22 40" stroke="#ffd60a" stroke-width="6.5"/>
+      <g class="b-arm-down"><path d="M168 128c16 8 24 24 22 40" stroke="#121212" stroke-width="15"/><path d="M168 128c16 8 24 24 22 40" stroke="#ffd60a" stroke-width="6.5"/></g>
+      <g class="b-arm-up"><path d="M168 128c12-4 18-14 18-26" stroke="#121212" stroke-width="15"/><path d="M168 128c12-4 18-14 18-26" stroke="#ffd60a" stroke-width="6.5"/></g>
+    </g>
+    <circle cx="31" cy="171" r="11" fill="#ffd60a" stroke="#121212" stroke-width="4.5"/>
+    <circle class="b-arm-down" cx="189" cy="171" r="11" fill="#ffd60a" stroke="#121212" stroke-width="4.5"/>
+    <circle class="b-arm-up" cx="187" cy="99" r="10" fill="#ffd60a" stroke="#121212" stroke-width="4.5"/>
+    <rect x="72" y="214" width="30" height="20" rx="10" fill="#ffd60a" stroke="#121212" stroke-width="4.5"/>
+    <rect x="118" y="214" width="30" height="20" rx="10" fill="#ffd60a" stroke="#121212" stroke-width="4.5"/>
+    <rect x="44" y="40" width="132" height="184" rx="62" fill="#ffd60a" stroke="#121212" stroke-width="4.5"/>
+    <ellipse cx="78" cy="78" rx="18" ry="10" transform="rotate(-30 78 78)" fill="#fff" opacity="0.45"/>
+    <path d="M72 84c6-5 14-5 20 0M128 84c6-5 14-5 20 0" fill="none" stroke="#121212" stroke-width="4.5" stroke-linecap="round"/>
+    <g class="b-eyes"><circle cx="84" cy="106" r="12" fill="#121212"/><circle cx="136" cy="106" r="12" fill="#121212"/>
+      <circle cx="88" cy="101" r="4" fill="#fff"/><circle cx="140" cy="101" r="4" fill="#fff"/></g>
+    <ellipse cx="68" cy="128" rx="10" ry="6" fill="#ff8fa3" opacity="0.7"/><ellipse cx="152" cy="128" rx="10" ry="6" fill="#ff8fa3" opacity="0.7"/>
+    <path class="b-smile" d="M96 128c8 10 20 10 28 0" fill="none" stroke="#121212" stroke-width="4.5" stroke-linecap="round"/>
+    <g class="b-mouth"><path d="M94 126h32c0 14-7 22-16 22s-16-8-16-22z" fill="#121212"/><ellipse cx="110" cy="142" rx="8" ry="4.5" fill="#ff6b81"/></g>
+    <circle cx="88" cy="168" r="8" fill="#121212"/><circle cx="132" cy="168" r="7" fill="none" stroke="#121212" stroke-width="3.5"/>
+    <circle cx="88" cy="196" r="7" fill="none" stroke="#121212" stroke-width="3.5"/><circle cx="132" cy="196" r="8" fill="#121212"/>
+  </svg>
+
+  <h1 class="sr-only">Braillie phone camera</h1>
+  <p id="status" role="status" aria-live="assertive">Getting ready.</p>
 
   <form id="codeform" hidden>
-    <label for="code">Enter the 6 digit code from the laptop</label>
+    <label for="code">The code on the laptop</label>
     <input id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" aria-describedby="status">
-    <button type="submit" style="margin-top:1rem">Connect</button>
+    <button type="submit" class="wide">Connect</button>
   </form>
 
-  <button id="go" hidden aria-label="Start the camera and the sound">Tap to start the camera and sound</button>
+  <button id="go" class="key" hidden aria-label="Start the camera and the sound">
+    <span class="key__disc"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg></span>
+    <span id="go-label">Start</span>
+  </button>
   <audio id="voice" playsinline hidden></audio>
   <video id="preview" playsinline muted autoplay hidden aria-hidden="true"></video>
-  <p id="help" hidden>Hold the phone upright, flat above the page, about 30 centimetres up, with the whole sheet in view. Keep this screen open.</p>
-  <button id="stop" class="secondary" hidden>Stop</button>
+  <p id="help" hidden>Hold the phone flat above the page, about 30 cm up, with the whole sheet in view. Keep this screen open.</p>
+  <button id="stop" class="key key--small" hidden aria-label="Stop the camera">
+    <span class="key__disc"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg></span>
+    <span>Stop</span>
+  </button>
 </main>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const statusEl = $("status"), video = $("preview");
+const statusEl = $("status"), video = $("preview"), braillo = $("braillo");
 let code = new URLSearchParams(location.search).get("t") || "";
 let stream = null, running = false, wake = null;
 let lastSpoken = "", lastSpokenAt = 0, pageOk = null, pageBadSince = 0, lastNag = 0;
 let soundOn = false, clipPlaying = false;
+let playingClip = 0, hushedClip = 0, stopClip = null;   // the clip playing now, the last one the learner cut off, and how to stop it
+let nagGap = 12000;                                    // "cannot see the page" comes round less and less often while nothing changes
 let micCtx = null, micStream = null, micOn = false;   // the phone's microphone, sent to the laptop for the spoken commands
 const MIC_RATE = 16000;                               // what the laptop's speech recognition expects: 16 kHz, mono, 16-bit
 const micPending = [];
@@ -64,6 +146,23 @@ function report(event, detail) {
     fetch("/phone/log?t=" + encodeURIComponent(code), { method: "POST", headers: { "Content-Type": "application/json" },
                                                        body: JSON.stringify({ event, detail: String(detail || "").slice(0, 200) }) }).catch(() => {});
   } catch (e) { /* nothing more to do */ }
+}
+
+// Braillo shows what the voice is doing: talking while a clip plays here, a hand to his ear while the microphone is on.
+function showBraillo() {
+  braillo.dataset.state = clipPlaying ? "speaking" : micOn ? "listening" : "idle";
+}
+
+// The laptop page's colours, so both screens look the same ("light", "dark", "contrast-light" or "contrast").
+const THEMES = ["light", "dark", "contrast-light", "contrast"];
+function setTheme(theme) {
+  if (THEMES.includes(theme) && document.documentElement.dataset.theme !== theme) document.documentElement.dataset.theme = theme;
+}
+
+// The big key's word (and what a screen reader calls it).
+function setGo(text) {
+  $("go-label").textContent = text;
+  $("go").setAttribute("aria-label", text);
 }
 
 function say(text, tone) {
@@ -104,15 +203,26 @@ async function playClip(clip) {
   if (handledClips.has(clip.id)) return;
   handledClips.add(clip.id);
   clipPlaying = true;
+  showBraillo();
   try { speechSynthesis.cancel(); } catch (e) { /* none */ }
+  let done = false;
   const finish = (error) => {
+    if (done) return;
+    done = true;
     clipPlaying = false;
+    showBraillo();
+    if (stopClip === stop) stopClip = null;
     fetch(clipUrl("/phone/audio-done", clip.id, error ? "&error=" + encodeURIComponent(error) : ""), { method: "POST" }).catch(() => {});
   };
+  let url = "";
+  const stop = () => { try { voice.pause(); } catch (e) { /* none */ } if (url) URL.revokeObjectURL(url); finish(""); };
+  stopClip = stop;
+  playingClip = clip.id;
   try {
     const res = await fetch(clipUrl("/phone/audio", clip.id), { cache: "no-store" });
     if (!res.ok) throw new Error("fetch " + res.status);
-    const url = URL.createObjectURL(await res.blob());
+    if (hushedClip >= clip.id) return finish("");   // cut off while it was on its way
+    url = URL.createObjectURL(await res.blob());
     voice.onended = () => { URL.revokeObjectURL(url); finish(""); };
     voice.onerror = () => { URL.revokeObjectURL(url); finish("decode"); };
     voice.src = url;
@@ -120,6 +230,13 @@ async function playClip(clip) {
   } catch (e) {
     finish(`${e && e.name}: ${e && e.message}`.slice(0, 60));
   }
+}
+
+// The learner talked over the tutor: the laptop says which clip to stop.
+function hush(id) {
+  if (!id || id <= hushedClip) return;
+  hushedClip = id;
+  if (playingClip === id && stopClip) stopClip();
 }
 
 // Called straight from the tap, with unlockAudio(): phones only let a page start audio inside a tap.
@@ -172,6 +289,7 @@ async function startMic(audioTracks) {
     source.connect(node); node.connect(silent);
   }
   micOn = true;
+  showBraillo();
   report("mic-started", `${micCtx.sampleRate} Hz via ${how}`);
   micSendLoop();
 }
@@ -191,6 +309,7 @@ async function micSendLoop() {
 async function verify() {
   try {
     const res = await fetch("/phone/check?t=" + encodeURIComponent(code), { cache: "no-store" });
+    if (res.ok) setTheme((await res.json().catch(() => ({}))).theme);
     return res.ok;
   } catch (e) {
     say("I cannot reach the laptop. Check that the phone and the laptop are on the same Wi-Fi.", "bad");
@@ -202,7 +321,7 @@ async function begin(unlocked) {
   if (!code) { $("codeform").hidden = false; $("go").hidden = true; say("Enter the 6 digit code shown on the laptop."); $("code").focus(); return; }
   $("codeform").hidden = true;
   const ok = await verify();
-  if (ok === null) { $("go").hidden = false; $("go").textContent = "Try again"; return; }
+  if (ok === null) { $("go").hidden = false; setGo("Try again"); return; }
   if (!ok) { code = ""; $("codeform").hidden = false; say("That code is not right. Enter the 6 digit code shown on the laptop.", "bad"); $("code").focus(); return; }
   if (unlocked) await unlocked;   // (already started inside the tap; here only to know how it went)
   report("page-loaded", `secure=${window.isSecureContext} cameraApi=${!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)} ${navigator.userAgent}`);
@@ -230,7 +349,7 @@ async function start() {
   if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
     report("camera-error", `no camera API here (secure context: ${window.isSecureContext})`);
     say("This browser will not let the page use the camera. On an iPhone use Safari; on Android use Chrome. If you were shown a privacy warning, choose Advanced, then continue.", "bad");
-    $("go").hidden = false; $("go").textContent = "Try again";
+    $("go").hidden = false; setGo("Try again");
     return;
   }
   try {
@@ -246,7 +365,7 @@ async function start() {
     const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
     say(denied ? "The camera is blocked. Allow the camera for this page in your browser settings, then reload the page."
                : "I could not start the camera. Close other apps that use it and try again.", "bad");
-    $("go").hidden = false; $("go").textContent = "Try again";
+    $("go").hidden = false; setGo("Try again");
     return;
   }
   video.srcObject = stream;
@@ -271,11 +390,12 @@ function announce(info) {
   const now = Date.now();
   if (info.page_ok) {
     if (pageOk !== true) say("Page found. You are ready.", "ok");
-    pageOk = true; pageBadSince = 0;
+    pageOk = true; pageBadSince = 0; nagGap = 12000;
   } else {
     if (pageOk !== false) { pageOk = false; pageBadSince = now; lastNag = now; }
-    if (now - pageBadSince > 4000 && now - lastNag > 12000) {   // nag gently, not constantly
+    if (now - pageBadSince > 4000 && now - lastNag > nagGap) {   // nag gently: 12 s, then 24, 48, ... up to every 2 minutes
       lastNag = now;
+      nagGap = Math.min(nagGap * 2, 120000);
       say("I cannot see the page yet. Hold the phone higher and keep the whole sheet in view.", "bad");
     }
   }
@@ -345,7 +465,9 @@ async function loop() {
         if (res.status === 403) { halt(); say("The laptop did not accept this phone. Reload the page and scan the code again.", "bad"); return; }
         if (!res.ok) throw new Error("bad reply " + res.status);
         const info = await res.json();
+        setTheme(info.theme);
         announce(info);
+        hush(info.hush);
         if (info.say && soundOn) playClip(info.say);   // (not awaited: the camera keeps streaming while it talks)
         if (failures >= 5) say("Connected again.", "ok");
         failures = 0;
@@ -363,6 +485,7 @@ async function loop() {
 function halt() {
   running = false;
   micOn = false;
+  showBraillo();
   if (micStream) micStream.getTracks().forEach((t) => t.stop());
   micStream = null;
   if (stream) stream.getTracks().forEach((t) => t.stop());
@@ -371,7 +494,7 @@ function halt() {
 }
 
 $("stop").addEventListener("click", () => { halt(); try { voice.pause(); } catch (e) { /* none */ } video.hidden = true; $("stop").hidden = true; $("help").hidden = true;
-                                              $("go").hidden = false; $("go").textContent = "Start camera"; say("Camera stopped."); });
+                                              $("go").hidden = false; setGo("Start again"); say("Camera stopped."); });
 $("go").addEventListener("click", () => { const unlocked = unlockAudio(); begin(unlocked); });
 $("codeform").addEventListener("submit", (e) => { e.preventDefault(); code = $("code").value.trim(); const unlocked = unlockAudio(); begin(unlocked); });
 document.addEventListener("visibilitychange", async () => {   // a phone that was locked or switched away needs the screen lock again
@@ -383,7 +506,7 @@ window.addEventListener("pagehide", halt);
 
 if (code) {   // sound can only be unlocked by a tap, so wait for one (one big button; the camera starts with it)
   $("go").hidden = false;
-  say("Tap the big button to start the camera and the sound.");
+  say("Tap Start to turn on the camera and the sound.");
   $("go").focus();
 } else { $("codeform").hidden = false; say("Enter the 6 digit code shown on the laptop."); $("code").focus(); }
 </script>

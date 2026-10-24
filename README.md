@@ -14,7 +14,7 @@ see the screen: sign in, connect a phone as the camera, and everything from then
 - **Three ways to practice.** **Learn** teaches the alphabet a few letters at a time; **Read** speaks a word aloud when you rest a finger on it; **Quiz** tests you on letters that look alike.
 - **Talks and listens.** Deepgram gives it a voice and lets you drive the whole thing hands-off — "hint", "repeat", "next", "stop" — and it speaks up if the sheet goes out of view or it didn't catch what you said.
 - **Adapts to you.** Spaced-repetition tracks which letters you find hard and which ones you keep mixing up, and practice leans toward those.
-- **Ask it anything.** Say "Braillo" followed by a question — "Braillo, why is D different from B?" — for a spoken answer from an AI coach (needs an OpenAI key; the rest of the app works without one).
+- **Ask it anything.** Say "Braillo" followed by a question — "Braillo, why is D different from B?" — for a spoken answer from an AI coach (needs an Anthropic API key for Claude; the rest of the app works without one).
 - **A phone is the camera.** Scan a QR code and your phone becomes Braillie's eyes, speaker and microphone — no dedicated hardware.
 - **Built for blind and low-vision users.** Voice-driven sign-in, screen-reader-friendly markup, WCAG AAA colour contrast, and light / dark / high-contrast themes with adjustable text size.
 - **Remembers your progress.** Google sign-in keeps it across sessions; guests are never saved, on this computer or anywhere else.

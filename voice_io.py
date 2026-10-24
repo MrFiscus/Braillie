@@ -27,9 +27,15 @@ Listening
 Speaking
 --------
     speak(text: str, mode: str = "normal") -> None
-        Synthesise and play text.  Blocks until playback finishes, then
-        automatically calls resume_listening() so the mic is always live
-        after an utterance.
+        Synthesise and play text.  Blocks until playback finishes (or is cut
+        off).  The mic stays live while it plays, so the learner can interrupt:
+        any command (or "quiet", "wait", "stop") stops the line, and what the
+        mic hears of the line itself is ignored.  VOICE_IO_BARGE_IN=0 mutes the
+        mic while speaking instead.
+
+    interrupt() -> bool
+        Cut off the line being spoken.  interrupt_count() tells callers whether
+        a cut happened since they queued a line, so they can drop stale lines.
 
         mode values
         -----------
@@ -54,8 +60,16 @@ ENVIRONMENT VARIABLES
     VOICE_IO_MOCK=1     — Offline/mock mode: prints instead of hitting APIs.
                           Useful for dev/CI without spending credits.
     VOICE_IO_DEBUG=1    — Print every raw Deepgram transcript + match result.
-    COMMAND_CONFIDENCE_THRESHOLD — Float 0–1, default 0.72.  Lower = more
-                          sensitive; raise if you get false fires in noisy rooms.
+    COMMAND_CONFIDENCE_THRESHOLD — Float 0–1, default 0.72, applied to the
+                          command's own words.  Lower = more sensitive; raise
+                          if you get false fires in noisy rooms.
+    VOICE_IO_NOISE_GATE_DB=6 — How far (dB) speech must stand out above the
+                          room's background to count.  Raise it in a loud room
+                          where other voices get through; lower it if the
+                          learner speaks softly and is missed.
+    VOICE_IO_CONDITION=0  — Send the microphone as it is (no hum filter, no
+                          gain for a quiet microphone).
+    VOICE_IO_BARGE_IN=0   — Mute the microphone while the app speaks.
 
 QUICK START
 -----------
@@ -73,6 +87,8 @@ QUICK START
 
 from __future__ import annotations
 
+import collections
+import difflib
 import io
 import json
 import logging
@@ -86,6 +102,11 @@ from pathlib import Path
 from typing import Callable
 
 from dotenv import load_dotenv
+
+try:  # only for listening in noise (levels and the microphone clean-up); without it those are simply skipped
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None
 
 # ---------------------------------------------------------------------------
 # Optional heavy deps — imported lazily so import errors surface with a clear
@@ -145,6 +166,49 @@ MIC_DEVICE_INDEX: int | None = int(_mic_index_env) if _mic_index_env else None
 SAMPLE_RATE: int = 16_000
 CHANNELS: int = 1
 CHUNK_MS: int = 100  # milliseconds of audio per microphone read
+
+# Barge-in: the microphone stays live while the app speaks, so the learner can cut it off ("quiet", "wait",
+# "stop", or any command). What the microphone hears of the app's own voice is recognised and dropped (see
+# _is_echo). VOICE_IO_BARGE_IN=0 goes back to muting the microphone for every line, as before.
+BARGE_IN: bool = os.getenv("VOICE_IO_BARGE_IN", "1").strip() not in ("0", "false", "no")
+ECHO_TAIL_SECONDS = 1.5  # after a line ends, the room (and Deepgram) may still be giving back its last words
+TALK_OVER_WORDS = 3  # this many of the learner's own words (not the app's) while it talks: they are talking to it, so it stops
+OVER_SPEECH = "heard over speech"  # the reason given for a short answer heard while the app talked (see _classify_transcript)
+TALK_OVER_CONFIDENCE = 0.55  # a command said over the app's voice comes back less sure than one said in quiet: it is allowed less
+
+# A spoken sentence often reaches us in pieces (a short pause ends a piece). Commands are acted on at the end of
+# their piece, so they stay quick; anything else waits for the whole utterance (Deepgram's UtteranceEnd, after
+# UTTERANCE_END_MS of no words), so a question with a pause in it is not cut in two.
+UTTERANCE_END_MS: int = 1000
+UTTERANCE_HOLD_SECONDS = 2.5  # ...and is let go after this long even if UtteranceEnd never arrives
+QUICK_ANSWER_WORDS = 3  # an utterance this short is taken as soon as the speaker pauses (an answer, not the start of a question)
+
+# Listening in a noisy room.
+#  * Speech is only taken as meant for the app if it stands out from the room: at least NOISE_GATE_DB above the background
+#    (the quiet between words), and not FAR_VOICE_DB quieter than the learner usually speaks (learned from the commands they
+#    give). Talk across the room and the TV are quieter at the microphone than someone sitting at it.
+#  * A command's confidence is that of its own words, so a clearly spoken "hint" is not sunk by murmur around it.
+#  * A short utterance that sounds nearly like a command ("hent", "nex") is still taken for it (FUZZY_RATIO).
+#  * With set_defer_long_utterances(True) (the app can work out free speech itself), a single command word in the middle of a
+#    long sentence ("I need to stop by the shop") is not run: the sentence is passed on as heard, for the app to judge.
+#  * The laptop microphone's signal is cleaned before it is sent: low hum and rumble filtered out, and a quiet microphone
+#    gently turned up. (The phone's browser does its own noise suppression.)
+NOISE_GATE_DB: float = float(os.getenv("VOICE_IO_NOISE_GATE_DB", "6"))
+FAR_VOICE_DB: float = 15.0
+LONG_UTTERANCE_WORDS = 6
+FUZZY_RATIO = 0.8
+CONDITION_AUDIO: bool = os.getenv("VOICE_IO_CONDITION", "1").strip() not in ("0", "false", "no")
+HIGHPASS_HZ = 100.0
+AGC_TARGET_DBFS = -26.0  # speech is turned up toward this level...
+AGC_MAX_GAIN_DB = 12.0  # ...by at most this much (never down: a loud microphone is left as it is)
+
+# Echo cancellation: what the laptop's speakers play (the app's voice and sounds) is taken back out of what its microphone hears,
+# before Deepgram gets it, so the learner can be heard while the app is talking. Without it the app's own voice, loud and close,
+# drowns the learner's and Deepgram writes down only the app. Uses WebRTC's audio processing (the `livekit` package; with it
+# missing, the plain clean-up above is used instead), which also removes steady background noise. VOICE_IO_AEC=0 turns it off.
+AEC: bool = os.getenv("VOICE_IO_AEC", "1").strip() not in ("0", "false", "no")
+AEC_DELAY_MS = 60  # a first guess at how long the speakers take to reach the microphone; the canceller works out the rest
+LEAK_SHARE = 0.8  # with the canceller on: a transcript this much made of the line's own words is the line leaking through
 
 # ---------------------------------------------------------------------------
 # Known commands
@@ -232,6 +296,18 @@ _COMMAND_MAP: dict[str, str] = {
     "i'm done": "stop",
     "im done": "stop",        # apostrophe-free variant
     "done": "stop",
+    # --- stop talking (cuts off the line being spoken; nothing else changes) ---
+    "quiet": "hush",
+    "be quiet": "hush",
+    "hush": "hush",
+    "shh": "hush",
+    "shush": "hush",
+    "stop talking": "hush",
+    "wait": "hush",
+    "hold on": "hush",
+    "hang on": "hush",
+    "pause": "hush",
+    "enough": "hush",
     # --- quiz ------------------------------------------------------------
     "start quiz": "start quiz",
     "begin quiz": "start quiz",
@@ -262,6 +338,7 @@ _COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 _callbacks: dict[str, list[Callable[[], None]]] = {}
 _listening_active: bool = False
 _mic_paused: bool = False
+_user_muted: bool = False  # the learner turned the microphone off (a mute key): nothing is sent until they turn it on again
 _listener_thread: threading.Thread | None = None
 _stop_event: threading.Event = threading.Event()
 
@@ -272,6 +349,215 @@ _stop_event: threading.Event = threading.Event()
 # native OpenStream, below anything a Python try/except can catch.
 _lifecycle_lock = threading.RLock()
 
+# What the app is saying right now ("" when quiet), and the last line with the time its echo may still be heard.
+_speaking_text: str = ""
+_echo_text: str = ""
+_echo_left: collections.Counter = collections.Counter()  # the line's words not yet heard coming back (see _without_echo)
+_echo_until: float = 0.0
+_interrupted = threading.Event()  # set by interrupt(): the line being played stops at its next chunk
+_interrupts: int = 0  # how many lines have been cut off (callers drop lines they queued before a cut)
+_speaker_thread = threading.local()  # .speaking is true only in the thread that is inside speak()
+
+# The utterance being heard, in pieces: [(text, words)], and when the last piece arrived. A word is
+# (text, confidence, start, end), with start/end in seconds of audio sent (Deepgram's clock); None where unknown.
+Word = tuple
+_pieces: list[tuple[str, list[Word]]] = []
+_pieces_at: float = 0.0
+_pieces_lock = threading.Lock()
+_defer_long = False  # see set_defer_long_utterances()
+
+
+def set_defer_long_utterances(on: bool) -> None:
+    """The app can work out what free speech means (an AI helper): then a lone command word inside a long sentence is not run,
+    and the sentence is reported as heard instead, for the app to judge ("I need to stop by the shop" is not "stop")."""
+    global _defer_long
+    _defer_long = bool(on)
+
+
+class _RoomLevel:
+    """How loud the microphone is, moment by moment, on Deepgram's clock (seconds of audio sent): the background level of the
+    room (the quiet between words), and how loudly the learner speaks, so speech at the microphone can be told from the room."""
+
+    def __init__(self, keep_seconds: float = 60.0) -> None:
+        self.keep, self._lock = keep_seconds, threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        """A new connection: Deepgram's clock starts again at zero. (The learner's voice level is kept.)"""
+        with self._lock:
+            self.t = 0.0
+            self.marks: collections.deque = collections.deque()
+            if not hasattr(self, "voice"):
+                self.voice: collections.deque = collections.deque(maxlen=8)
+
+    def add(self, pcm: bytes, rate: int = SAMPLE_RATE) -> None:
+        """One chunk of what is being sent to Deepgram (16-bit mono)."""
+        n = len(pcm) // 2
+        if n == 0:
+            return
+        db = _dbfs(pcm) if np is not None else None
+        with self._lock:
+            if db is not None:
+                self.marks.append((self.t, db))
+                while self.marks and self.marks[0][0] < self.t - self.keep:
+                    self.marks.popleft()
+            self.t += n / rate
+
+    def floor(self) -> float | None:
+        """The room's background level (dBFS): the quieter moments of the last minute. None until there are 3 seconds to go on."""
+        with self._lock:
+            dbs = [d for _, d in self.marks]
+        return float(np.percentile(dbs, 20)) if np is not None and len(dbs) >= 30 else None
+
+    def level(self, start: float, end: float) -> float | None:
+        """How loud the stretch [start, end] was (its louder moments, where the words are)."""
+        with self._lock:
+            dbs = [d for t, d in self.marks if start - 0.1 <= t <= end + 0.1]
+        return float(np.percentile(dbs, 90)) if np is not None and dbs else None
+
+    def check(self, start: float | None, end: float | None) -> str | None:
+        """A reason to ignore speech in [start, end] as not meant for the app, or None if it stands out like the learner's."""
+        if start is None or end is None:
+            return None
+        lvl, floor = self.level(start, end), self.floor()
+        if lvl is None or floor is None:
+            return None
+        if lvl - floor < NOISE_GATE_DB:
+            return "too quiet against the room"
+        with self._lock:
+            voice = list(self.voice)
+        if len(voice) >= 3 and lvl < float(np.median(voice)) - FAR_VOICE_DB:
+            return "much quieter than the learner's voice"
+        return None
+
+    def note_voice(self, start: float | None, end: float | None) -> None:
+        """The learner just gave a command over [start, end]: remember how loud they speak."""
+        if start is None or end is None:
+            return
+        lvl = self.level(start, end)
+        if lvl is not None:
+            with self._lock:
+                self.voice.append(lvl)
+
+
+def _dbfs(pcm: bytes) -> float:
+    x = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16).astype(np.float32)
+    return float(20 * np.log10(np.sqrt(np.mean(x * x)) / 32768.0 + 1e-9)) if x.size else -180.0
+
+
+class _MicCleaner:
+    """Clean the microphone signal before it is sent: a high-pass filter takes out hum, fans and traffic rumble (below
+    HIGHPASS_HZ, where there is no speech worth having), and a slow, capped gain turns a quiet microphone up toward
+    AGC_TARGET_DBFS. It never turns anything down, and it follows speech, not the room: only moments well above the background
+    move it."""
+
+    def __init__(self, rate: int = SAMPLE_RATE) -> None:
+        # a second-order Butterworth high-pass (the "Audio EQ Cookbook" biquad, Q = 1/sqrt 2)
+        w0 = 2 * np.pi * HIGHPASS_HZ / rate
+        alpha = np.sin(w0) / np.sqrt(2)
+        a0 = 1 + alpha
+        self.b = ((1 + np.cos(w0)) / 2 / a0, -(1 + np.cos(w0)) / a0, (1 + np.cos(w0)) / 2 / a0)
+        self.a = (-2 * np.cos(w0) / a0, (1 - alpha) / a0)
+        self.state = [0.0, 0.0, 0.0, 0.0]  # x[n-1], x[n-2], y[n-1], y[n-2], carried from chunk to chunk
+        self.speech_db: float | None = None
+        self.gain_db = 0.0
+
+    def highpass(self, pcm: bytes) -> bytes:
+        x = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16).astype(np.float64).tolist()
+        (b0, b1, b2), (a1, a2) = self.b, self.a
+        x1, x2, y1, y2 = self.state
+        y = []
+        for v in x:
+            out = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            x2, x1, y2, y1 = x1, v, y1, out
+            y.append(out)
+        self.state = [x1, x2, y1, y2]
+        return np.clip(np.round(np.array(y)), -32768, 32767).astype(np.int16).tobytes()
+
+    def gain(self, pcm: bytes, floor_db: float | None) -> bytes:
+        db = _dbfs(pcm)
+        if floor_db is not None and db > floor_db + NOISE_GATE_DB:  # this is speech: follow its level
+            self.speech_db = db if self.speech_db is None else 0.9 * self.speech_db + 0.1 * db
+        if self.speech_db is not None:
+            want = min(max(AGC_TARGET_DBFS - self.speech_db, 0.0), AGC_MAX_GAIN_DB)
+            self.gain_db += 0.2 * (want - self.gain_db)  # slowly: no pumping
+        if self.gain_db < 0.1:
+            return pcm
+        x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) * (10 ** (self.gain_db / 20))
+        return np.clip(x, -32768, 32767).astype(np.int16).tobytes()
+
+
+class _EchoCanceller:
+    """WebRTC's echo canceller, noise suppressor and hum filter, fed in 10 ms frames: `played()` with what goes to the speakers (from
+    the playback thread), `process()` with what the microphone heard (from the listening thread), which returns it with the app's
+    own voice taken out. Both run in real time, so the frames line up closely; the canceller finds the remaining delay itself."""
+
+    FRAME = SAMPLE_RATE // 100  # samples in 10 ms
+
+    def __init__(self) -> None:
+        from livekit import rtc  # type: ignore[import-untyped]
+
+        self.rtc = rtc
+        self.apm = rtc.AudioProcessingModule(echo_cancellation=True, noise_suppression=True, high_pass_filter=True)
+        self.apm.set_stream_delay_ms(AEC_DELAY_MS)
+        self.far: collections.deque = collections.deque(maxlen=300)  # 10 ms frames being played, oldest first (3 s at most)
+        self._far_rest = b""
+        self._near_rest = b""
+        self._lock = threading.Lock()
+
+    def played(self, pcm: bytes, rate: int, channels: int, width: int) -> None:
+        """Some audio just went to the speakers (any rate or channel count, 16-bit)."""
+        if width != 2 or not pcm:
+            return
+        x = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16).astype(np.float32)
+        if channels > 1:
+            x = x[: len(x) // channels * channels].reshape(-1, channels).mean(axis=1)
+        if rate != SAMPLE_RATE and x.size:
+            n = int(round(x.size * SAMPLE_RATE / rate))
+            x = np.interp(np.linspace(0, x.size - 1, n), np.arange(x.size), x)
+        step = self.FRAME * 2
+        with self._lock:
+            data = self._far_rest + np.clip(x, -32768, 32767).astype(np.int16).tobytes()
+            whole = len(data) - len(data) % step
+            for i in range(0, whole, step):
+                self.far.append(data[i:i + step])
+            self._far_rest = data[whole:]
+
+    def process(self, pcm: bytes) -> bytes:
+        """What the microphone heard (16 kHz mono 16-bit), with the app's own sound and steady noise taken out."""
+        step = self.FRAME * 2
+        data = self._near_rest + pcm
+        whole = len(data) - len(data) % step
+        out = bytearray()
+        for i in range(0, whole, step):
+            with self._lock:
+                far = self.far.popleft() if self.far else bytes(step)  # (nothing playing: silence)
+            self.apm.process_reverse_stream(self.rtc.AudioFrame(far, SAMPLE_RATE, 1, self.FRAME))
+            frame = self.rtc.AudioFrame(data[i:i + step], SAMPLE_RATE, 1, self.FRAME)
+            self.apm.process_stream(frame)
+            out += bytes(frame.data)
+        self._near_rest = data[whole:]
+        return bytes(out)
+
+
+def _make_canceller() -> "_EchoCanceller | None":
+    if not AEC or np is None:
+        return None
+    try:
+        return _EchoCanceller()
+    except Exception as exc:  # the package is missing or cannot load here: the plain clean-up is used
+        log.warning("Echo cancellation is not available (%s); the app's own voice may drown the learner's while it talks.", exc)
+        return None
+
+
+_room = _RoomLevel()
+_canceller: "_EchoCanceller | None" = None  # set while listening (see _deepgram_listener_loop)
+
+
+def _span(words: list[Word] | None) -> tuple[float | None, float | None]:
+    timed = [w for w in words or () if w[2] is not None and w[3] is not None]
+    return (timed[0][2], timed[-1][3]) if timed else (None, None)
+
 
 def _normalize_transcript(transcript: str) -> str:
     """Normalize user speech without altering words inside the transcript."""
@@ -279,45 +565,225 @@ def _normalize_transcript(transcript: str) -> str:
     return normalized.rstrip(".,!?;:")
 
 
-def _match_command(normalized_transcript: str) -> str | None:
-    """Return the canonical command for the longest whole-phrase match.
+def _match_phrase(normalized_transcript: str) -> tuple[str, str] | None:
+    """(command, the phrase that matched) for the longest whole-phrase match, or None.
 
     The braillo wake word always wins when present, so "braillo how do I learn"
     asks the AI tutor instead of switching into Learn mode.
     """
     for phrase, pattern in _COMMAND_PATTERNS:
         if _COMMAND_MAP[phrase] == "braillo" and pattern.search(normalized_transcript):
-            return "braillo"
+            return "braillo", phrase
     for phrase, pattern in _COMMAND_PATTERNS:
         if pattern.search(normalized_transcript):
-            return _COMMAND_MAP[phrase]
+            return _COMMAND_MAP[phrase], phrase
     return None
+
+
+def _match_command(normalized_transcript: str) -> str | None:
+    """Return the canonical command for the longest whole-phrase match."""
+    found = _match_phrase(normalized_transcript)
+    return found[0] if found else None
+
+
+_FUZZY_PHRASES = tuple(p for p in _COMMAND_MAP if len(p.replace(" ", "")) >= 4)
+
+
+def _consonants(text: str) -> str:
+    """The shape of a word with its vowels blurred: speech recognition in noise mostly gets the vowel wrong ("hent", "repeet")."""
+    return re.sub(r"[aeiouy]+", "*", text)
+
+
+def _fuzzy_phrase(normalized: str) -> tuple[str, str] | None:
+    """A short utterance (at most 3 words) that sounds nearly like a command: (command, phrase). Either the same consonants
+    with other vowels ("hent" is hint, "repeet" is repeat; "shop" is not stop), or nearly the same letters ("nex")."""
+    heard = " ".join(_words(normalized))
+    if not heard or len(heard.split()) > 3:
+        return None
+    for phrase in _FUZZY_PHRASES:
+        if _consonants(heard) == _consonants(phrase):
+            return _COMMAND_MAP[phrase], phrase
+    best = max(_FUZZY_PHRASES, key=lambda p: difflib.SequenceMatcher(None, heard, p).ratio())
+    return (_COMMAND_MAP[best], best) if difflib.SequenceMatcher(None, heard, best).ratio() >= FUZZY_RATIO else None
+
+
+def _phrase_confidence(phrase: str, words: list[Word] | None, fallback: float) -> float:
+    """The confidence of the words that make up `phrase` (so murmur around a clear command does not sink it)."""
+    want = phrase.split()
+    heard = [(_words(w[0] or "") or [""])[0] for w in words or ()]
+    for i in range(len(heard) - len(want) + 1):
+        if heard[i:i + len(want)] == want:
+            confs = [w[1] for w in words[i:i + len(want)]]
+            return sum(confs) / len(confs)
+    return fallback
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+", text.casefold())
+
+
+def _without_echo(normalized: str, now: float | None = None, consume: bool = False) -> str:
+    """What is left of a transcript once the words of the line the app is saying (or just said) are taken out.
+
+    While the app talks the microphone hears both voices, and the transcript mixes them ("the letter d dots one
+    wait what"): only the learner's own words are left ("what" ... "wait"). Each word of the line is taken out only
+    as many times as the line says it, counting what has already come back (`consume`, for final transcripts): so
+    when the line says "say guest" and the learner also says "guest", one "guest" is the app's and the other is
+    theirs. (If the learner says it before the app has, theirs is taken for the app's at first, and the app's own,
+    arriving later, is then left over: it still comes out as heard, just a moment late.)"""
+    now = time.monotonic() if now is None else now
+    line = _speaking_text or (_echo_text if now < _echo_until else "")
+    if not line:
+        return normalized
+    left = _echo_left if consume else collections.Counter(_echo_left)
+    own = []
+    for w in _words(normalized):
+        if left[w] > 0:
+            left[w] -= 1  # the app's own word, coming back: each word of the line is only taken out as often as the line says it
+        else:
+            own.append(w)
+    return " ".join(own)
+
+
+def _learner_words(normalized: str, now: float | None = None, consume: bool = False) -> str:
+    """The learner's part of what was heard while the app talks (or just did).
+
+    With the echo canceller running, the app's voice is already taken out of the sound: only a transcript that is plainly the
+    app's own line leaking through (three words or more, nearly all of them the line's) is dropped, and nothing is picked out of
+    what the learner says, whose words may well be the line's own ("continue as a guest"). Without it, the app's words are taken
+    out of the mixed transcript one by one (see _without_echo)."""
+    if _canceller is None:
+        return _without_echo(normalized, now, consume)
+    now = time.monotonic() if now is None else now
+    line = _speaking_text or (_echo_text if now < _echo_until else "")
+    heard = _words(normalized)
+    if line and len(heard) >= 3:
+        said = set(_words(line))
+        if sum(w in said for w in heard) / len(heard) >= LEAK_SHARE:
+            return ""
+    return normalized
+
+
+def _is_echo(normalized: str, now: float | None = None) -> bool:
+    """Is this only what the app itself is saying (or just said), picked up by the microphone?"""
+    return bool(_words(normalized)) and not _learner_words(normalized, now)
+
+
+def _app_talking(now: float | None = None) -> bool:
+    """The app is speaking, or has only just stopped (what is heard may still be partly its own voice)."""
+    now = time.monotonic() if now is None else now
+    return bool(_speaking_text) or now < _echo_until
+
+
+def is_speaking() -> bool:
+    """Is a line being played right now?"""
+    return bool(_speaking_text)
+
+
+_playing: dict | None = None  # the line now playing: {"text", "started" (wall clock, s), "seconds" (its audio, at normal speed)}
+
+
+def _mark_playing(text: str, wav: bytes) -> None:
+    """The audio for `text` is about to play: note when, and how long it lasts, so a display can follow along as it is spoken."""
+    global _playing
+    seconds = 0.0
+    try:
+        with wave.open(io.BytesIO(_fix_wav_header(wav))) as wf:
+            seconds = wf.getnframes() / float(wf.getframerate() or 1)
+    except (wave.Error, EOFError):
+        pass
+    _playing = {"text": text, "started": time.time(), "seconds": round(seconds, 3)}
+
+
+def now_playing() -> dict | None:
+    """The line being spoken right now, with when it started (time.time()) and its length in seconds at normal speed (a display
+    divides by the speech speed setting), or None when quiet. Lets a page show each sentence, word by word, as it is said."""
+    return dict(_playing) if _playing and _speaking_text == _playing["text"] else None
+
+
+def interrupt() -> bool:
+    """Cut off the line being spoken (barge-in). Returns True if something was playing."""
+    global _interrupts
+    if not _speaking_text:
+        return False
+    _interrupts += 1
+    _interrupted.set()
+    return True
+
+
+def interrupt_count() -> int:
+    """How many lines have been cut off so far: a caller that queued a line before the latest cut can drop it."""
+    return _interrupts
+
+
+def playback_interrupted() -> bool:
+    """For the audio players: should the clip playing in THIS thread stop now? (Earcons and other sounds played
+    from other threads are never cut.)"""
+    return getattr(_speaker_thread, "speaking", False) and _interrupted.is_set()
 
 
 def _classify_transcript(
     transcript: str,
     confidence: float,
     is_final: bool,
+    words: list[Word] | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Normalize and decide whether one STT event is eligible to dispatch.
 
     Returns ``(normalized_transcript, command, ignored_reason)``. Exactly one
-    command can be returned for an event.
+    command can be returned for an event. `confidence` is the whole utterance's;
+    with `words` the command is judged on its own words, and the utterance on how
+    loud it was against the room.
     """
     normalized = _normalize_transcript(transcript)
     if not is_final:
         return normalized, None, "interim transcript"
-    if _mic_paused:
+    if _mic_paused or _user_muted:
         return normalized, None, "microphone is paused"
     if not normalized:
         return normalized, None, "empty transcript"
-    if confidence < COMMAND_CONFIDENCE_THRESHOLD:
-        return normalized, None, "confidence below threshold"
+    mixed = _app_talking()
+    if mixed:  # keep only the learner's own words: the rest is the app's voice coming back
+        normalized = _learner_words(normalized, consume=True)
+        if not normalized:
+            return normalized, None, "echo of the app's own voice"
+    far = _room.check(*_span(words))
+    if far:
+        return normalized, None, far
 
-    command = _match_command(normalized)
-    if command is None:
+    found = _match_phrase(normalized) or _fuzzy_phrase(normalized)
+    if found is not None:
+        command, phrase = found
+        many = len(normalized.split()) > LONG_UTTERANCE_WORDS
+        if _defer_long and many and " " not in phrase and command not in ("braillo", "hush"):
+            found = None  # a lone command word inside a long sentence: let the app judge the sentence
+        elif _phrase_confidence(phrase, words, confidence) < (TALK_OVER_CONFIDENCE if mixed else COMMAND_CONFIDENCE_THRESHOLD):
+            return normalized, None, "confidence below threshold"
+    if found is None:
+        if mixed and len(normalized.split()) < TALK_OVER_WORDS:
+            # a word or two over the app's voice: an answer ("guest", "yes") or the app itself misheard. Kept, marked as such:
+            # the app acts on it if it makes sense there, and lets it go quietly if not. It does not stop the app talking.
+            return normalized, None, OVER_SPEECH
+        if confidence < COMMAND_CONFIDENCE_THRESHOLD and not mixed:  # (the app's voice lowers the whole transcript's score)
+            return normalized, None, "confidence below threshold"
         return normalized, None, "no command phrase matched"
+    if command == "stop" and _speaking_text and normalized.strip(" ,.!") in ("stop", "stop stop", "okay stop", "ok stop"):
+        command = "hush"  # "stop" while it is talking means stop talking, not end the lesson
     return normalized, command, None
+
+
+def _barge_in(transcript: str, confidence: float, words: list[Word] | None = None) -> None:
+    """An interim (still being spoken) transcript while the app talks: if it is a command, cut the line off now,
+    without waiting for the end of the utterance. The command itself is run when the final transcript arrives."""
+    if not _speaking_text or _mic_paused or _user_muted:
+        return
+    own = _learner_words(_normalize_transcript(transcript))
+    if not own or _room.check(*_span(words)):
+        return
+    found = _match_phrase(own)
+    command = found is not None and _phrase_confidence(found[1], words, confidence) >= TALK_OVER_CONFIDENCE
+    if (command or len(own.split()) >= TALK_OVER_WORDS) and interrupt():
+        log.info("Barge-in: %r cut the app off.", own)
 
 
 def _debug_transcript_event(
@@ -327,39 +793,111 @@ def _debug_transcript_event(
     normalized: str,
     command: str | None,
     ignored_reason: str | None,
+    words: list[Word] | None = None,
 ) -> None:
     """Emit safe, opt-in diagnostics for a single Deepgram transcript event."""
-    if not DEBUG_MODE:
+    if not DEBUG_MODE or (not is_final and not normalized):  # (an empty partial result is just silence)
         return
     status = "final" if is_final else "interim"
     outcome = f"matched_command={command!r}" if command else "matched_command=None"
     reason = "" if ignored_reason is None else f" ignored_reason={ignored_reason!r}"
+    start, end = _span(words)
+    level, floor = (_room.level(start, end) if start is not None else None), _room.floor()
+    loud = f" level={level:.0f}dB room={floor:.0f}dB" if level is not None and floor is not None else ""
     print(
         "[VOICE_IO DEBUG]"
         f" transcript={transcript!r}"
         f" confidence={confidence:.3f}"
         f" status={status}"
         f" normalized={normalized!r}"
-        f" {outcome}{reason}",
+        f" {outcome}{reason}{loud}",
         flush=True,
     )
 
 
-def _process_transcript_event(transcript: str, confidence: float, is_final: bool) -> str | None:
+def _process_transcript_event(transcript: str, confidence: float, is_final: bool,
+                              words: list[Word] | None = None) -> str | None:
     """Classify one transcript event and dispatch at most one command."""
     normalized, command, ignored_reason = _classify_transcript(
-        transcript, confidence, is_final
+        transcript, confidence, is_final, words
     )
     _debug_transcript_event(
-        transcript, confidence, is_final, normalized, command, ignored_reason
+        transcript, confidence, is_final, normalized, command, ignored_reason, words
     )
-    if is_final and normalized and ignored_reason in (None, "no command phrase matched", "confidence below threshold"):
+    if not is_final:
+        _barge_in(transcript, confidence, words)
+        return None
+    if normalized and ignored_reason in (None, "no command phrase matched", "confidence below threshold", OVER_SPEECH):
         _status["heard"] = {"n": _status["heard"]["n"] + 1, "text": normalized, "matched": command is not None, "reason": ignored_reason}
+        if command is None and ignored_reason != OVER_SPEECH:
+            interrupt()  # the learner is talking to it: it stops to listen (a no-op if it is quiet)
     if command is not None:
         log.info("Command recognised: %r (conf=%.2f)", command, confidence)
         _status["last_transcript"] = normalized
+        _room.note_voice(*_span(words))
+        interrupt()  # a command while it talks: stop talking first (a no-op if it is quiet)
         _fire_command(command)
     return command
+
+
+def _as_words(words: list) -> list[Word]:
+    """Words as (text, confidence, start, end); a bare confidence (older callers) becomes ("", c, None, None)."""
+    return [w if isinstance(w, tuple) else ("", float(w), None, None) for w in words]
+
+
+def _take_utterance() -> tuple[str, float, list[Word]] | None:
+    """Join the pieces heard so far into one utterance (text, mean word confidence, words) and start a new one."""
+    global _pieces
+    with _pieces_lock:
+        pieces, _pieces = _pieces, []
+    if not pieces:
+        return None
+    words = [w for _, ws in pieces for w in ws]
+    confs = [w[1] for w in words]
+    return " ".join(t for t, _ in pieces), (sum(confs) / len(confs) if confs else 1.0), words
+
+
+def _flush_utterance() -> str | None:
+    utterance = _take_utterance()
+    if not utterance:
+        return None
+    text, confidence, words = utterance
+    return _process_transcript_event(text, confidence, True, words)
+
+
+def _final_piece(transcript: str, words: list, speech_final: bool) -> str | None:
+    """One finalised piece of what is being said (`words`: (text, confidence, start, end) each, or bare confidences). At the
+    end of a piece (speech_final) a command is acted on at once; anything else (a question, a sentence) waits for the rest of
+    the utterance (see UTTERANCE_END_MS)."""
+    global _pieces_at
+    if transcript.strip():
+        with _pieces_lock:
+            _pieces.append((transcript, _as_words(words)))
+            _pieces_at = time.monotonic()
+    if not speech_final:
+        return None
+    with _pieces_lock:
+        text = " ".join(t for t, _ in _pieces)
+    normalized = _normalize_transcript(text)
+    found = _match_phrase(normalized) or _fuzzy_phrase(normalized)
+    if found is not None and found[0] != "braillo":  # (a question may follow the wake word: hear it out)
+        return _flush_utterance()
+    if found is None and 0 < len(normalized.split()) <= QUICK_ANSWER_WORDS:
+        return _flush_utterance()  # a short answer ("guest", "yes", a name) is complete: no need to wait for more
+    return None
+
+
+def _utterance_end() -> str | None:
+    """Deepgram heard no more words for UTTERANCE_END_MS: the utterance is complete."""
+    return _flush_utterance()
+
+
+def _flush_stale_utterance(now: float | None = None) -> str | None:
+    """Let a held utterance go if no UtteranceEnd arrived for it (called from the microphone loop)."""
+    now = time.monotonic() if now is None else now
+    with _pieces_lock:
+        stale = bool(_pieces) and now - _pieces_at >= UTTERANCE_HOLD_SECONDS
+    return _flush_utterance() if stale else None
 
 
 # ---------------------------------------------------------------------------
@@ -399,8 +937,10 @@ def get_mode() -> str:
 
 
 def listener_status() -> dict:
-    """Snapshot of listener state; safe to call from any thread."""
-    return dict(_status)
+    """Snapshot of listener state; safe to call from any thread. room_db: the room's background level at the microphone
+    (dBFS, None until known)."""
+    floor = _room.floor()
+    return {**_status, "room_db": None if floor is None else round(floor, 1), "muted": _user_muted}
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +1098,18 @@ def resume_listening() -> None:
     log.debug("Microphone resumed.")
 
 
+def set_muted(muted: bool) -> None:
+    """The learner's own mute key: while muted nothing they say is sent to Deepgram or acted on. Separate from
+    pause_listening()/resume_listening(), which the app uses around its own sounds and would otherwise undo it."""
+    global _user_muted
+    _user_muted = bool(muted)
+    log.info("Microphone %s by the learner.", "muted" if _user_muted else "turned back on")
+
+
+def is_muted() -> bool:
+    return _user_muted
+
+
 # ---------------------------------------------------------------------------
 # Public API — speaking
 # ---------------------------------------------------------------------------
@@ -566,8 +1118,9 @@ def resume_listening() -> None:
 def speak(text: str, mode: str = "normal") -> None:
     """Synthesise *text* and play it via Deepgram TTS.
 
-    Automatically pauses the microphone before speaking and resumes it
-    after, so the system never transcribes its own narration.
+    The microphone stays live (barge-in, see BARGE_IN): the learner can cut the
+    line off, and what the microphone hears of the line itself is dropped. With
+    BARGE_IN off the microphone is paused while speaking and resumed after.
 
     Args:
         text: The text to speak.
@@ -575,7 +1128,14 @@ def speak(text: str, mode: str = "normal") -> None:
               route through Deepgram TTS.  ElevenLabs code is retained in
               _elevenlabs_speak() but is not called from this path.
     """
-    pause_listening()
+    global _speaking_text, _echo_text, _echo_until
+    if not BARGE_IN:
+        pause_listening()
+    _interrupted.clear()
+    _speaking_text = _echo_text = text
+    _echo_left.clear()
+    _echo_left.update(_words(text))
+    _speaker_thread.speaking = True
     try:
         if MOCK_MODE:
             _mock_speak(text, mode)
@@ -584,7 +1144,11 @@ def speak(text: str, mode: str = "normal") -> None:
     except Exception:
         log.exception("speak() failed for mode=%r; text=%r", mode, text)
     finally:
-        resume_listening()
+        _speaker_thread.speaking = False
+        _echo_until = time.monotonic() + ECHO_TAIL_SECONDS
+        _speaking_text = ""
+        if not BARGE_IN:
+            resume_listening()
 
 
 def speak_debrief(accuracy: float, missed_cells: list[str]) -> None:
@@ -789,6 +1353,7 @@ def _open_input_stream(pa, device_index: int | None, chunk_frames: int):
 
 def _deepgram_listener_loop() -> None:
     """Background thread: streams mic audio to Deepgram and dispatches commands."""
+    global _canceller
     try:
         import pyaudio  # type: ignore[import-untyped]
     except ModuleNotFoundError:
@@ -836,19 +1401,23 @@ def _deepgram_listener_loop() -> None:
                 encoding="linear16",
                 sample_rate=SAMPLE_RATE,
                 channels=CHANNELS,
-                endpointing=300,             # 300 ms silence → finalise utterance
+                endpointing=300,             # 300 ms silence → finalise a piece
                                              # (was 500; shorter = faster command response
                                              #  without cutting off "start quiz" mid-phrase)
+                utterance_end_ms=UTTERANCE_END_MS,  # ...and this long with no words ends the
+                                             # utterance, so a question with a pause is heard whole
                 vad_events=True,
                 smart_format=True,           # handles capitalisation + punctuation;
                                              # our \b regex handles trailing periods fine
-                interim_results=False,       # only final transcripts; interim results are
-                                             # a common source of inaccurate word picks
+                interim_results="true",      # needed for UtteranceEnd, and lets a command cut the
+                                             # app off mid-line; commands still run on final text only
                 keyterm=[                    # boost command vocabulary in the acoustic model
                     "repeat", "hint", "next", "stop", "finish", "done",
                     "found it", "got it",
                     "start quiz", "begin quiz",
                     "braillo", "learn", "read", "quiz", "menu",
+                    "quiet", "wait", "help", "skip", "slower", "faster",
+                    "practice", "explore", "next page",
                 ],
             ) as socket:
                 reader_done = threading.Event()
@@ -858,22 +1427,27 @@ def _deepgram_listener_loop() -> None:
                     connection_open.set()
 
                 def _on_message(msg: object) -> None:
-                    """Process only transcript result events from the socket."""
+                    """Transcript results build up an utterance; UtteranceEnd completes it."""
                     if not isinstance(msg, ListenV1Results):
-                        if DEBUG_MODE:
+                        if getattr(msg, "type", None) == "UtteranceEnd":
+                            try:
+                                _utterance_end()
+                            except Exception:
+                                log.exception("Error processing utterance end.")
+                        elif DEBUG_MODE:
                             print(f"[DG:other] type={type(msg).__name__}", flush=True)
                         return
                     try:
                         alt = msg.channel.alternatives[0]
                         transcript: str = alt.transcript
-                        words = alt.words or []
-                        avg_conf = (
-                            sum(w.confidence for w in words) / len(words)
-                            if words else 1.0
-                        )
-                        _process_transcript_event(
-                            transcript, avg_conf, bool(msg.is_final)
-                        )
+                        words = [(getattr(w, "word", ""), w.confidence, getattr(w, "start", None), getattr(w, "end", None))
+                                 for w in (alt.words or [])]
+                        if not msg.is_final:
+                            avg_conf = sum(w[1] for w in words) / len(words) if words else 1.0
+                            _process_transcript_event(transcript, avg_conf, False, words)
+                            return
+                        # (a result without speech_final, as from older servers, is a whole utterance)
+                        _final_piece(transcript, words, getattr(msg, "speech_final", True) is not False)
                     except Exception:
                         log.exception("Error processing transcript.")
 
@@ -958,6 +1532,9 @@ def _deepgram_listener_loop() -> None:
                 # socket.  Deepgram closes connections after ~10 s of
                 # silence; a full debrief runs 15-18 s.
                 _last_keepalive = time.monotonic()
+                _room.reset()  # Deepgram's clock (word times) starts again with this connection
+                _canceller = _canceller or _make_canceller()  # (kept across reconnections: it has learnt the room)
+                cleaner = _MicCleaner() if CONDITION_AUDIO and np is not None else None
                 while not _stop_event.is_set() and not reader_done.is_set():
                     try:
                         data = audio_stream.read(chunk_frames, exception_on_overflow=False)
@@ -965,7 +1542,9 @@ def _deepgram_listener_loop() -> None:
                         log.warning("Microphone read error: %s", exc)
                         break
 
-                    if _mic_paused:
+                    _flush_stale_utterance()
+
+                    if _mic_paused or _user_muted:  # (no audio goes to Deepgram: it only keeps the connection open)
                         if time.monotonic() - _last_keepalive >= 3.0:
                             try:
                                 socket.send_keep_alive()
@@ -976,6 +1555,15 @@ def _deepgram_listener_loop() -> None:
                             time.sleep(0.05)
                         continue
 
+                    if _canceller is not None:
+                        data = _canceller.process(data)  # the app's own voice out, before anything else looks at it
+                    if cleaner is not None:
+                        if _canceller is None:
+                            data = cleaner.highpass(data)  # (the canceller has its own hum filter)
+                        _room.add(data)  # (measured before the gain, so near and far voices keep their difference)
+                        data = cleaner.gain(data, _room.floor())
+                    else:
+                        _room.add(data)
                     socket.send_media(data)
 
                 # --- graceful close --------------------------------------
@@ -1079,28 +1667,69 @@ def _deepgram_speak(text: str) -> None:
         return
 
     try:
-        client = DeepgramClient(api_key=DEEPGRAM_API_KEY)
-        # Join the stream while the SDK's response is still open, then pad: the phone speaker
-        # intercepts _play_audio_stream, so any silence written only inside pyaudio never reaches
-        # the phone (that is why 'cat' was still heard as 'ca' after the laptop-side waits).
-        #
-        # timeout_in_seconds: without a bound, a hung network call here hangs forever -- and say()
-        # (voice_io callers) is routinely called while a caller holds its own session lock (see
-        # tutor.py's TutorSession.lock), so one stuck TTS request can freeze every voice command and
-        # button that needs that same lock, not just narration. 12s is generous for even a long
-        # debrief sentence under a normal connection, but still a hard ceiling instead of none.
-        raw = b"".join(
-            client.speak.v1.audio.generate(
-                text=_for_tts(text),
-                model=DEEPGRAM_TTS_MODEL,
-                encoding="linear16",  # request PCM; default is MP3 which wave.open() rejects
-                container="wav",
-                request_options={"timeout_in_seconds": 12},
-            )
-        )
+        raw = _synthesise(text, DeepgramClient)
+        if playback_interrupted():  # cut off while it was still being synthesised: nothing to play
+            return
+        _mark_playing(text, raw)
         _play_audio_stream([_pad_wav_silence(raw)])
     except Exception as exc:
         log.error("Deepgram TTS failed: %s", exc)
+
+
+# Lines the app says again and again (the welcome, the menu, "Sorry, I did not catch that") are synthesised once and kept, so they
+# start at once instead of waiting about a second for Deepgram each time. prefetch_speech() makes them ahead of time.
+_SPEECH_CACHE: "collections.OrderedDict[str, bytes]" = collections.OrderedDict()
+SPEECH_CACHE_LINES = 64
+_speech_cache_lock = threading.Lock()
+
+
+def _synthesise(text: str, client_class=None) -> bytes:
+    """The WAV for `text`, from the cache or from Deepgram (and then kept)."""
+    with _speech_cache_lock:
+        if text in _SPEECH_CACHE:
+            _SPEECH_CACHE.move_to_end(text)
+            return _SPEECH_CACHE[text]
+    if client_class is None:
+        from deepgram import DeepgramClient as client_class  # type: ignore[import-untyped]
+    client = client_class(api_key=DEEPGRAM_API_KEY)
+    # Join the stream while the SDK's response is still open, then pad: the phone speaker
+    # intercepts _play_audio_stream, so any silence written only inside pyaudio never reaches
+    # the phone (that is why 'cat' was still heard as 'ca' after the laptop-side waits).
+    #
+    # timeout_in_seconds: without a bound, a hung network call here hangs forever -- and say()
+    # (voice_io callers) is routinely called while a caller holds its own session lock (see
+    # tutor.py's TutorSession.lock), so one stuck TTS request can freeze every voice command and
+    # button that needs that same lock, not just narration. 12s is generous for even a long
+    # debrief sentence under a normal connection, but still a hard ceiling instead of none.
+    raw = b"".join(
+        client.speak.v1.audio.generate(
+            text=_for_tts(text),
+            model=DEEPGRAM_TTS_MODEL,
+            encoding="linear16",  # request PCM; default is MP3 which wave.open() rejects
+            container="wav",
+            request_options={"timeout_in_seconds": 12},
+        )
+    )
+    with _speech_cache_lock:
+        _SPEECH_CACHE[text] = raw
+        while len(_SPEECH_CACHE) > SPEECH_CACHE_LINES:
+            _SPEECH_CACHE.popitem(last=False)
+    return raw
+
+
+def prefetch_speech(lines: list[str]) -> None:
+    """Synthesise these lines in the background (the ones not kept already), so that saying them later starts at once."""
+    if MOCK_MODE or not DEEPGRAM_API_KEY:
+        return
+
+    def run() -> None:
+        for line in lines:
+            try:
+                _synthesise(line)
+            except Exception as exc:  # it will simply be made when it is said
+                log.info("prefetching speech failed (%s); it will be made when needed", exc)
+                return
+    threading.Thread(target=run, daemon=True, name="speech-prefetch").start()
 
 
 # ---------------------------------------------------------------------------
@@ -1182,11 +1811,13 @@ def _play_audio_stream(chunks) -> None:
                 nframes, rate = wf.getnframes(), float(wf.getframerate() or 1)
                 started = time.monotonic()
                 chunk = wf.readframes(1024)
-                while chunk:
+                while chunk and not playback_interrupted():
                     stream.write(chunk)
+                    if _canceller is not None:  # what the speakers play is what to take back out of the microphone
+                        _canceller.played(chunk, wf.getframerate(), wf.getnchannels(), wf.getsampwidth())
                     chunk = wf.readframes(1024)
                 remaining = (nframes / rate) - (time.monotonic() - started)
-                if remaining > 0:
+                if remaining > 0 and not playback_interrupted():
                     time.sleep(min(remaining, 8.0))  # never block the tutor on a lying WAV header
             finally:
                 stream.stop_stream()

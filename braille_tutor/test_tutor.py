@@ -44,7 +44,7 @@ class FakeVoice:
 
 
 class PlanningClient:
-    """Deterministic stand-in for OpenAI's structured target-plan reply."""
+    """Deterministic stand-in for Claude's structured target-plan reply."""
 
     model = "fake-adaptive-model"
 
@@ -207,7 +207,7 @@ class AdaptiveQuizTests(unittest.TestCase):
         s.on_start()
         self.assertEqual(s.miss_history[missed]["misses"], 1)
         self.assertEqual(s.items, [missed])
-        self.assertEqual(s.last_selection["source"], "openai")
+        self.assertEqual(s.last_selection["source"], "claude")
         self.assertEqual(client.calls[-1]["miss_history"][missed]["misses"], 1)
         s.on_stop()
         self.assertTrue(s.finished.is_set())
@@ -225,11 +225,11 @@ class AdaptiveQuizTests(unittest.TestCase):
 
         s.on_start()
         self.assertEqual(s.items, ["cap", "dog"])
-        self.assertEqual(s.last_selection["source"], "openai")
+        self.assertEqual(s.last_selection["source"], "claude")
         self.assertEqual(s.miss_history["cap"]["misses"], 1)
         self.assertEqual(s.miss_history["dog"]["misses"], 1)
 
-    def test_failed_openai_plan_uses_the_existing_fallback(self):
+    def test_failed_claude_plan_uses_the_existing_fallback(self):
         planner = tutor.AdaptiveTargetPlanner(PlanningClient(error=ConnectionError("bad API key")))
         s, _ = session(questions=1, adaptive_planner=planner)
         s.miss_history = {"a": {"misses": 3, "last_missed_quiz": 1}}

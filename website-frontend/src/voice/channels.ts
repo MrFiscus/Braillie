@@ -4,7 +4,7 @@
 //   browserChannel: the browser's own speech and speech recognition, for when the tutor is not running. Chrome, Edge and Safari have them;
 //                   the browser asks for the microphone once, and a person has to press a button first (browsers do not speak unprompted).
 import { fetchState, sayPrompt, type TutorState } from '../tutor/tutorApi.ts'
-import { PROMPT_TEXT, type Channel, type PromptName } from './loginDialogue.ts'
+import { PROMPT_TEXT, nextVersion, type Channel, type PromptName } from './loginDialogue.ts'
 
 const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms))
 
@@ -12,43 +12,51 @@ const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms))
 export const tutorCanTalk = (state: TutorState | null): boolean => !!state?.hub && state.heard != null && state.config.voice?.ok !== false
 
 const POLL_MS = 200
-const AFTER_SPEECH_MS = 400 // its microphone opens again a moment after it stops talking
-const ECHO_GRACE_MS = 300 // whatever it hears in the first moments after that is its own voice fading, not an answer (an answer takes longer to finish)
 const LISTEN_MS = 12000
 
+// The tutor's microphone stays open while it talks (it filters out its own voice), so an answer can come at any moment: while the
+// question is still being asked (that also cuts the question short), or after. Answers are counted from the moment a line starts.
 export function tutorChannel(): Channel {
+  let since: number | null = null // what the microphone had heard when the last line started; anything after is an answer
+  let overSpeech = false // the last answer was a word or two caught while the tutor was still talking
+  const heardNow = async () => (await fetchState().catch(() => null))?.heard?.n ?? 0
+
   return {
     async say(prompt, who) {
-      await sayPrompt(prompt, who)
+      since = await heardNow()
+      await sayPrompt(prompt, who, true) // a new line replaces anything still being said (they answered over it)
       const began = Date.now()
       let started = false
       for (;;) {
-        let speaking = false
+        let state
         try {
-          speaking = !!(await fetchState()).speaking
+          state = await fetchState()
         } catch {
           break // cannot ask: do not hold the conversation up
         }
-        if (speaking) started = true
+        if ((state.heard?.n ?? 0) > since) break // they answered over it: go and hear the answer
+        if (state.speaking) started = true
         else if (started || Date.now() - began > 2500) break // finished; or it never started talking (say nothing more about it)
         await sleep(POLL_MS)
       }
-      await sleep(AFTER_SPEECH_MS)
     },
 
     async listen(signal) {
-      const graceEnds = Date.now() + ECHO_GRACE_MS
       const ends = Date.now() + LISTEN_MS
-      let seen = (await fetchState().catch(() => null))?.heard?.n ?? 0
+      const seen = since ?? (await heardNow())
+      since = null
       while (!signal.aborted && Date.now() < ends) {
-        await sleep(POLL_MS)
         const heard = (await fetchState().catch(() => null))?.heard
-        if (!heard || heard.n <= seen) continue
-        if (Date.now() < graceEnds) seen = heard.n // its own voice fading out: not an answer
-        else return heard.text
+        if (heard && heard.n > seen && heard.text) {
+          overSpeech = heard.reason === 'heard over speech'
+          return heard.text
+        }
+        await sleep(POLL_MS)
       }
       return null
     },
+
+    heardOverSpeech: () => overSpeech,
   }
 }
 
@@ -80,7 +88,8 @@ export class VoiceBlocked extends Error {}
 export function browserChannel(): Channel {
   return {
     async say(prompt: PromptName, who) {
-      const text = (PROMPT_TEXT[prompt] as (w: string) => string)(who ?? '')
+      const text = PROMPT_TEXT[prompt](who ?? '')
+      nextVersion(prompt) // (next time this line is said, it comes in other words)
       window.speechSynthesis.cancel()
       // sentence by sentence: some browsers cut off one long utterance
       for (const sentence of text.match(/[^.?!]+[.?!]?/g) ?? [text]) {

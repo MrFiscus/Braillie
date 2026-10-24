@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import BigButton from '../components/BigButton.tsx'
-import BrailleWord from '../components/BrailleWord.tsx'
+import Lyrics from '../components/Lyrics.tsx'
+import MicButton from '../components/MicButton.tsx'
+import { useSpeechPosition } from '../voice/useSpeechPosition.ts'
+import Mascot, { type MascotState } from '../components/Mascot.tsx'
 import { signInWithGoogle } from '../components/GoogleLogin.tsx'
 import { googleSignInAvailable } from '../auth/config.ts'
 import { useUser } from '../auth/useUser.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useLoginVoice } from '../voice/useLoginVoice.ts'
 
-const SAYING = { speaking: 'Braillie is speaking', listening: 'Listening', idle: 'Voice is off' } as const
+const SAYING = { speaking: 'Braillo is speaking', listening: 'Listening', idle: 'Voice is off' } as const
 
 /**
  * The first page. Made to be used without seeing it: real headings and labels in a sensible order, one thing to do per section, big targets,
@@ -18,7 +21,7 @@ const SAYING = { speaking: 'Braillie is speaking', listening: 'Listening', idle:
 const SignIn = () => {
   const navigate = useNavigate()
   const { user, loading, continueAsGuest, signOut } = useUser()
-  const { state, reach } = useTutorState(1500)
+  const { state, reach } = useTutorState(500) // (often enough to show each spoken sentence as it starts)
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const heading = useRef<HTMLHeadingElement>(null)
@@ -70,74 +73,87 @@ const SignIn = () => {
     wasKnown.current = known
   }, [known])
   const talkingAbout = voice.status.phase === 'idle' ? SAYING.idle : SAYING[voice.status.phase]
+  const saying = voice.running && voice.status.phase === 'speaking' ? voice.status.saying : undefined
+  // Braillo, the mascot, shows what the voice is doing: talking (its mouth moves with each word), listening (a hand to its ear), or waiting
+  const speaking = voice.running && voice.status.phase === 'speaking'
+  const spoken = useSpeechPosition(speaking ? state?.speech : null, state?.settings?.speech_speed)
+  const braillo: MascotState = speaking ? 'speaking' : voice.running && voice.status.phase === 'listening' ? 'listening' : 'idle'
 
   return (
-    <div className="page page--split">
+    <div className="page page--split signin">
       <div className="intro">
-        <p className="eyebrow">Learn braille by touch</p>
-        <h1 ref={heading} tabIndex={-1}>
+        {/* (no visible title: Braillo and what he says are the welcome; the heading is there for screen readers and the tab title) */}
+        <h1 ref={heading} tabIndex={-1} className="sr-only">
           Welcome to Braillie
         </h1>
-        <p className="lede" id="intro">
-          {known
-            ? 'Good to see you again. Carry on, or switch to someone else.'
-            : 'Braillie teaches you braille with a voice that guides you and a sheet of raised dots under your fingers. Choose how you would like to begin.'}
-        </p>
-        <section className="voice-block" aria-labelledby="voice-h">
-          <h2 id="voice-h" className="sr-only">Talk to Braillie</h2>
-          {voice.kind === 'none' ? (
-            <p className="hint">
-              Speaking to Braillie needs the Braillie tutor running on this computer, or the Chrome, Edge or Safari browser. You can use the buttons below instead.
-            </p>
-          ) : (
-            <div className="voice">
-              <div className="voice__row">
-                <span className="wave" data-on={voice.status.phase} aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span className="voice__label" role={voice.running ? 'status' : undefined}>
-                  {voice.running ? talkingAbout : 'Voice is off'}
-                </span>
-                {voice.running ? (
-                  <BigButton variant="secondary" quiet onClick={voice.turnOff}>
-                    Turn voice off
-                  </BigButton>
+        <section className="voicecard" aria-labelledby="voice-h" data-on={voice.running ? voice.status.phase : 'off'}>
+          <h2 id="voice-h" className="sr-only">
+            Talk to Braillo
+          </h2>
+          <p className="sr-only" role={voice.running ? 'status' : undefined}>
+            {voice.kind === 'none' ? 'Voice is not available here' : voice.running ? talkingAbout : 'Voice is off'}
+          </p>
+          <div className="voicecard__stage">
+            <Mascot state={braillo} words={spoken.sentence * 1000 + spoken.said} />
+            <div className="voicecard__words">
+              <div className="voicecard__body">
+                {voice.kind === 'none' ? (
+                  <p className="hint">
+                    Speaking to Braillie needs the Braillie tutor running on this computer, or the Chrome, Edge or Safari browser. You can use the
+                    buttons instead.
+                  </p>
+                ) : voice.running && voice.status.phase === 'speaking' && state?.speech ? (
+                  <Lyrics speech={state.speech} speed={state.settings?.speech_speed} />
+                ) : voice.running && saying ? (
+                  <p className="voice__saying">
+                    <span className="caption__who">Braillo is saying:</span> {saying}
+                  </p>
+                ) : voice.running ? (
+                  <p className="voicecard__hint" aria-live="polite">
+                    {voice.status.hint ?? 'Listening.'}
+                  </p>
                 ) : (
-                  <BigButton variant={voice.kind === 'browser' ? 'primary' : 'secondary'} quiet onClick={voice.start}>
-                    {voice.kind === 'tutor' ? 'Talk to Braillie' : 'Use my voice'}
-                  </BigButton>
+                  <>
+                    <p className="voicecard__hint">
+                      {known ? (
+                        <>
+                          Say <b>“continue”</b> or <b>“switch”</b>
+                        </>
+                      ) : (
+                        <>
+                          Say <b>“Google”</b> or <b>“guest”</b>
+                        </>
+                      )}
+                    </p>
+                    {voice.kind === 'browser' && <p className="hint small">Allow the microphone when your browser asks.</p>}
+                  </>
                 )}
               </div>
-              {voice.running && (
-                <>
-                  <p className="hint" aria-live="polite">
-                    {voice.status.hint}
-                  </p>
-                  <p className="voice__heard" aria-live="polite">
-                    {voice.status.heard ? `I heard: “${voice.status.heard}”` : ''}
-                  </p>
-                </>
-              )}
-              {voice.kind === 'browser' && !voice.running && (
-                <p className="hint small">Your browser will ask to use the microphone. Choose Allow.</p>
-              )}
+
+              <p className="voice__heard" aria-live="polite">
+                {voice.running && voice.status.heard ? `I heard: “${voice.status.heard}”` : ''}
+              </p>
             </div>
-          )}
+          </div>
+
+          <div className="voicecard__foot">
+            {voice.kind !== 'none' && (
+              <MicButton
+                state={voice.running ? 'live' : 'off'}
+                label={voice.running ? 'Turn voice off' : voice.kind === 'tutor' ? 'Talk to Braillo' : 'Use my voice'}
+                onClick={voice.running ? voice.turnOff : voice.start}
+              />
+            )}
+          </div>
           {voice.note && (
             <p className="note note--error" role="alert">
               <b>Voice problem.</b> {voice.note}
             </p>
           )}
         </section>
-
-        <BrailleWord word="braillie" caption="Braillie, written in braille." />
       </div>
 
-      <div className="sheet">
+      <div className="options">
         {loading && !user && (
           <p className="hint" role="status">
             Checking who is here…
@@ -145,43 +161,72 @@ const SignIn = () => {
         )}
 
         {known && user && (
-          <section className="sheet__part" aria-labelledby="back-h">
-            <h2 id="back-h">Welcome back, {user.name}</h2>
-            <p id="back-d">{user.kind === 'google' ? 'Your progress is remembered.' : 'You are continuing without an account, so your progress is not saved.'}</p>
-            <BigButton aria-describedby="back-d" onClick={() => navigate('/connect-phone')}>
+          <section className="back" aria-labelledby="back-h">
+            {/* one choice to make, so it takes the room: a big greeting and two big keys */}
+            <h2 id="back-h">
+              Welcome back, <span>{user.name}</span>
+            </h2>
+            <p id="back-d" className="sr-only">
+              {user.kind === 'google' ? 'Your progress is remembered.' : 'You are continuing without an account, so your progress is not saved.'}
+            </p>
+            <BigButton className="back__go" aria-describedby="back-d" onClick={() => navigate('/connect-phone')}>
               Continue as {user.name}
             </BigButton>
-            <BigButton variant="secondary" onClick={() => void signOut()}>
+            <BigButton className="back__go" variant="secondary" onClick={() => void signOut()}>
               Not {user.name}? Choose another way
             </BigButton>
           </section>
         )}
 
         {!loading && !user && (
-          <>
-
-        <section className="sheet__part" aria-labelledby="google-h">
-          <h2 id="google-h">Sign in with Google</h2>
-          <p id="google-d">Your progress is remembered, so you can carry on where you left off.</p>
-          <BigButton aria-describedby="google-d" onClick={() => { voice.stop(); void google() }}>
-            Sign in with Google
-          </BigButton>
-        </section>
-
-        <section className="sheet__part" aria-labelledby="guest-h">
-          <form onSubmit={submit} className="sheet__part">
-            <h2 id="guest-h">Continue without an account</h2>
-            <p id="guest-d">Your progress is not saved.</p>
-            <div className="field">
-              <label htmlFor="first-name">Your first name, so I can greet you (optional)</label>
-              <input id="first-name" name="first-name" type="text" autoComplete="given-name" value={name} onFocus={voice.stop} onChange={(e) => setName(e.target.value)} />
+          <section className="start" aria-label="Ways in">
+            {/* the same shape as "welcome back": a big greeting, then big keys, each with its picture inside it */}
+            <p className="start__hello" aria-hidden="true">
+              Let’s <span>start</span>
+            </p>
+            <div className="start__way" role="group" aria-labelledby="google-h">
+              <h2 id="google-h" className="sr-only">
+                Sign in with Google
+              </h2>
+              <p id="google-d" className="sr-only">
+                Your progress is remembered, so you can carry on where you left off, on this computer or another.
+              </p>
+              <BigButton
+                className="start__go"
+                aria-describedby="google-d"
+                onClick={() => {
+                  voice.stop()
+                  void google()
+                }}
+              >
+                <OptionIcon name="account" />
+                Sign in with Google
+              </BigButton>
             </div>
-            <BigButton type="submit" variant="secondary" aria-describedby="guest-d">
-              Continue without an account
-            </BigButton>
-          </form>
-        </section>
-          </>
+
+            <p className="options__or" aria-hidden="true">
+              <span>or</span>
+            </p>
+
+            <form onSubmit={submit} className="start__way" aria-labelledby="guest-h">
+              <h2 id="guest-h" className="sr-only">
+                Continue without an account
+              </h2>
+              <p id="guest-d" className="sr-only">
+                Start straight away. Your progress is not saved.
+              </p>
+              <div className="field start__field">
+                <label htmlFor="first-name">
+                  Your name <span className="option__optional">(optional)</span>
+                </label>
+                <input id="first-name" name="first-name" type="text" autoComplete="given-name" value={name} onFocus={voice.stop} onChange={(e) => setName(e.target.value)} />
+              </div>
+              <BigButton className="start__go" type="submit" variant="secondary" aria-describedby="guest-d">
+                <OptionIcon name="person" />
+                Continue as guest
+              </BigButton>
+            </form>
+          </section>
         )}
 
         <div role="alert">
@@ -195,5 +240,24 @@ const SignIn = () => {
     </div>
   )
 }
+
+/** A simple line picture for each way in (not characters, which some fonts lack). */
+const OptionIcon = ({ name }: { name: 'account' | 'person' }) => (
+  <span className="option__icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" focusable="false">
+      {name === 'account' ? (
+        <>
+          <rect x="4" y="10" width="16" height="11" rx="2.5" />
+          <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14.5v2.5" />
+        </>
+      ) : (
+        <>
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4.5 21c.8-4 3.8-6.5 7.5-6.5s6.7 2.5 7.5 6.5" />
+        </>
+      )}
+    </svg>
+  </span>
+)
 
 export default SignIn

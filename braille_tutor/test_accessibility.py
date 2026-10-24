@@ -108,13 +108,20 @@ class SettingsTests(unittest.TestCase):
     def test_valid_changes_apply_and_invalid_ones_change_nothing(self):
         s = Settings()
         s.update({"speech_speed": 0.8, "pace": "relaxed", "tones": False})
-        self.assertEqual(s.to_dict(), {"speech_speed": 0.8, "pace": "relaxed", "tones": False, "hearing_feedback": True})
+        self.assertEqual(s.to_dict(), {"speech_speed": 0.8, "pace": "relaxed", "tones": False, "hearing_feedback": True, "theme": None})
         before = s.to_dict()
         for bad in ({"speech_speed": 0.2}, {"speech_speed": 9}, {"speech_speed": "fast"}, {"speech_speed": True}, {"pace": "hurried"},
-                    {"tones": "yes"}, {"hearing_feedback": 1}, {"volume": 11}, {"speech_speed": 1.0, "pace": "bogus"}):
+                    {"tones": "yes"}, {"hearing_feedback": 1}, {"volume": 11}, {"speech_speed": 1.0, "pace": "bogus"},
+                    {"theme": "purple"}, {"theme": None}):
             with self.assertRaises(ValueError, msg=bad):
                 s.update(bad)
             self.assertEqual(s.to_dict(), before, f"{bad} must change nothing, not even the valid part")
+
+    def test_the_theme_is_one_of_the_four_the_pages_know(self):
+        s = Settings()
+        for theme in ("light", "dark", "contrast-light", "contrast"):
+            s.update({"theme": theme})
+            self.assertEqual(s.theme, theme)
 
     def test_relaxed_means_a_longer_rest_and_later_help(self):
         s = Settings()
@@ -288,7 +295,8 @@ class SessionTests(unittest.TestCase):
         s.heard_fn = lambda: heard[0]
         s.page_ok_fn = None
         s.set_user("Ana", "guest")
-        self.assertTrue(wait_for(lambda: any("What do you want" in t for t in voice.said)))
+        # (the greeting is recorded a moment before its say() returns; the watcher keeps quiet while the tutor is speaking)
+        self.assertTrue(wait_for(lambda: any(tutor.MENU_LINE in t for t in voice.said) and not s.is_speaking()))
         s.watch_once(0.0)
         heard[0] = {"n": 1, "text": "what is the weather", "matched": False, "reason": Hearing.UNMATCHED}
         self.assertIsNone(s.watch_once(1.0), "at the menu the tutor stays quiet and waits for learn, read or quiz")
@@ -344,7 +352,7 @@ class ServerTests(unittest.TestCase):
     def test_settings_can_be_read_and_changed_over_the_api(self):
         code, _, s = http(self.base + "/api/settings")
         self.assertEqual((code, s["speech_speed"], s["pace"], s["hearing_feedback"]), (200, 1.0, "normal", True))  # (tones: this test server has them off)
-        self.assertEqual(sorted(s), ["hearing_feedback", "pace", "speech_speed", "tones"])
+        self.assertEqual(sorted(s), ["hearing_feedback", "pace", "speech_speed", "theme", "tones"])
         code, _, s = http(self.base + "/api/settings", {"speech_speed": 0.8, "pace": "relaxed"})
         self.assertEqual((code, s["speech_speed"], s["pace"]), (200, 0.8, "relaxed"))
         self.assertEqual(http(self.base + "/api/state")[2]["settings"]["speech_speed"], 0.8)

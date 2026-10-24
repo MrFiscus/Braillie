@@ -4,5 +4,11 @@ python-dotenv>=1.0
 pyaudio>=0.2.14
 requests>=2.31
 
+# Claude for Braillo and the lesson coach (braille_tutor/llm.py)
+anthropic>=2.1
+
+# Echo cancellation and noise suppression for the laptop microphone (WebRTC audio processing; voice_io works without it)
+livekit>=1.1
+
 # ElevenLabs debrief TTS (MP3 decode + playback)
 pydub>=0.25

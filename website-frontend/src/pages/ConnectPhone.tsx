@@ -1,7 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import BigButton from '../components/BigButton.tsx'
-import { TUTOR_API, speak } from '../tutor/tutorApi.ts'
+import Lyrics from '../components/Lyrics.tsx'
+import Mascot from '../components/Mascot.tsx'
+import MicButton from '../components/MicButton.tsx'
+import { useSpeechPosition } from '../voice/useSpeechPosition.ts'
+import { TUTOR_API, sayPrompt, setMic, shareTheme } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useTutorSession } from '../tutor/useTutorSession.ts'
 import { useUser } from '../auth/useUser.ts'
@@ -23,6 +27,22 @@ const ConnectPhone = () => {
     if (!loading && !user) navigate('/login', { replace: true })
   }, [loading, user, navigate])
 
+  // On arrival, Braillie says how to connect the phone (in its own voice, with the captions), once: someone who cannot see the QR
+  // code hears what to do, and how to type the code instead.
+  const told = useRef(false)
+  const waiting = reach === 'yes' && !!phone && !phone.connected && !!user
+  useEffect(() => {
+    if (!waiting || told.current) return
+    told.current = true
+    void sayPrompt('connect_phone', undefined, true).catch(() => {})
+  }, [waiting])
+
+  // (the tutor may have started after this page did: tell it the colours again when the phone joins, so the phone's page matches)
+  const phoneOn = !!phone?.connected
+  useEffect(() => {
+    if (phoneOn) shareTheme(document.documentElement.dataset.theme)
+  }, [phoneOn])
+
   useEffect(() => {
     if (!linked || !user || !knowsUser) return
     const t = window.setTimeout(() => navigate(menuDriven ? '/modes' : '/practice'), 2500) // long enough to hear the start of the greeting
@@ -35,82 +55,97 @@ const ConnectPhone = () => {
   else if (phone && !phone.connected) message = 'Scan the code with your phone’s camera, then open the link.'
   else if (phone) message = 'Your phone is connected. Listen: the tutor will ask what you want to do.'
 
+  const next = () => navigate(menuDriven ? '/modes' : '/practice')
+  // what Braillo says on screen when it is not talking: one short line
+  const shortLine =
+    reach === 'no' ? 'Start Braillie on the laptop' : !phone ? 'Nothing to connect' : phone.connected ? 'Phone connected!' : 'Scan the code with your phone'
+  const speaking = !!state?.speaking && !!state?.speech
+  const spoken = useSpeechPosition(speaking ? state?.speech : null, state?.settings?.speech_speed)
+
+  const muted = !!state?.muted
+  const again = () => void sayPrompt('connect_phone', undefined, true).catch(() => {})
+
+  // Laid out like home: Braillo on the left saying what to do (the mute key and "hear it again" under him), and on the right the one
+  // thing to use, the code to scan (then the phone's own view once it is linked).
   return (
-    <div className="page page--split">
-      <div className="intro">
-        <p className="eyebrow">Step 2 of 3</p>
-        <h1>Connect your phone</h1>
-        <p className="lede">
-          Your phone is Braillie’s eyes and ears: it watches the sheet and hears you, while the laptop does the thinking.
-          {user ? ` Hello, ${user.name}.` : ''}
-        </p>
-        <p className="status" role="status" aria-live="polite">
-          {message}
-        </p>
+    <div className="home2 connect2">
+      <h1 className="sr-only">Connect your phone</h1>
+      <p className="sr-only" role="status" aria-live="polite">
+        {message}
+      </p>
+
+      <section className="home2__braillo voicecard" aria-label="Braillo, your tutor">
+        <div className="voicecard__stage">
+          <Mascot state={speaking ? 'speaking' : 'idle'} words={spoken.sentence * 1000 + spoken.said} />
+          <div className="voicecard__words">
+            <div className="voicecard__body">
+              {speaking && state?.speech ? (
+                <Lyrics speech={state.speech} speed={state.settings?.speech_speed} />
+              ) : (
+                <p className="voicecard__hint" aria-hidden="true">
+                  {shortLine}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+        {reach === 'yes' && (
+          <div className="voicecard__foot">
+            <MicButton
+              state={muted ? 'muted' : 'live'}
+              label={muted ? 'Turn the microphone on' : 'Mute the microphone'}
+              onClick={() => void setMic(muted).catch(() => {})}
+            />
+            {phone && !phone.connected && (
+              <button type="button" className="roundkey" aria-label="Hear the steps again" title="Hear the steps again" onClick={again}>
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M4 12a8 8 0 1 0 2.5-5.8M4 4v4.5h4.5" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
         {reach === 'no' && (
           <p>
-            On the laptop, run <code>python tutor_server.py --phone-camera</code>
+            <code>python tutor_server.py --phone-camera</code>
           </p>
         )}
-        {phone && !phone.connected && (
-          <ol className="steps">
-            <li>
-              <span>Open the camera on your phone and point it at the code.</span>
-            </li>
-            <li>
-              <span>
-                Tap the link that appears.
-                {phone.trusted ? '' : ' If the phone says the connection is not private, choose Advanced, then continue.'}
-              </span>
-            </li>
-            <li>
-              <span>Tap the big button on the phone. Then listen: Braillie will greet you.</span>
-            </li>
-          </ol>
-        )}
-      </div>
+      </section>
 
-      <div className="sheet">
+      <div className="connect2__side">
         {phone && !phone.connected && (
           <>
-            <div className="qr">
-              <img src={`${TUTOR_API}${phone.qr}`} alt="QR code. Scan it with your phone’s camera to connect it." width={280} height={280} />
+            <div className="qr qr--big">
+              <img src={`${TUTOR_API}${phone.qr}`} alt="QR code. Scan it with your phone’s camera to connect it." width={420} height={420} />
             </div>
-            <p>
-              No camera to scan with? On the phone open <b>{phone.address}</b> and enter the code <span className="code">{phone.code}</span>
+            <p className="connect__manual">
+              No camera? Open <b>{phone.address}</b>, code <span className="code">{phone.code}</span>
             </p>
-            <div className="pair">
-              <BigButton variant="secondary" onClick={() => speak(phone.instructions)}>
-                Read the steps aloud
-              </BigButton>
-              <BigButton onClick={() => navigate(menuDriven ? '/modes' : '/practice')} disabled={!linked || !user}>
-                Continue
-              </BigButton>
-            </div>
-            {phone.diagnosis && (
-              <p className="note note--error" role="status" aria-live="polite">
-                <b>Not yet.</b> {phone.diagnosis}
-              </p>
+            {(phone.diagnosis || !phone.trusted) && (
+              <details className="trouble">
+                <summary>Trouble connecting?</summary>
+                {!phone.trusted && <p>If the phone says the connection is not private, choose Advanced, then continue.</p>}
+                {phone.diagnosis && (
+                  <p role="status" aria-live="polite">
+                    {phone.diagnosis}
+                  </p>
+                )}
+              </details>
             )}
           </>
         )}
 
-        {phone?.connected && (
-          <div className="live">
-            <img src={`${TUTOR_API}/api/video`} alt="Live view from your phone camera" />
-          </div>
-        )}
-
-        {!phone && (
-          <p className="hint">
-            {reach === 'no' ? 'Nothing to show until the tutor is running.' : 'Nothing to connect: the laptop’s own camera is in use.'}
-          </p>
-        )}
-
-        {!(phone && !phone.connected) && (
-          <BigButton onClick={() => navigate(menuDriven ? '/modes' : '/practice')} disabled={!linked || !user}>
-            Continue
-          </BigButton>
+        {linked && (
+          <>
+            {phone?.connected && (
+              <div className="live">
+                <img src={`${TUTOR_API}/api/video`} alt="Live view from your phone camera" />
+              </div>
+            )}
+            <BigButton className="connect2__go" onClick={next} disabled={!user}>
+              Continue
+            </BigButton>
+          </>
         )}
       </div>
     </div>

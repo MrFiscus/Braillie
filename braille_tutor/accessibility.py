@@ -104,6 +104,9 @@ class Hearing:
         return None
 
 
+THEMES = ("light", "dark", "contrast-light", "contrast")
+
+
 @dataclass
 class Settings:
     """Things a learner may want to change. All safe to change at any time."""
@@ -111,13 +114,14 @@ class Settings:
     pace: str = "normal"  # "relaxed": wait longer before helping, allow a longer rest to answer
     tones: bool = True  # the little sounds for right, wrong, heard
     hearing_feedback: bool = True  # "I didn't catch that"
+    theme: Optional[str] = None  # the colours the laptop's page shows (light, dark, contrast-light, contrast): the phone's page matches them
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def update(self, changes: dict) -> None:
         """Apply the given changes, or raise ValueError (and change nothing) if any is not allowed."""
-        known = {"speech_speed", "pace", "tones", "hearing_feedback"}
+        known = {"speech_speed", "pace", "tones", "hearing_feedback", "theme"}
         unknown = set(changes) - known
         if unknown:
             raise ValueError(f"unknown setting(s): {', '.join(sorted(unknown))}; choose from {', '.join(sorted(known))}")
@@ -132,6 +136,8 @@ class Settings:
         for k in ("tones", "hearing_feedback"):
             if k in new and not isinstance(new[k], bool):
                 raise ValueError(f"{k} must be true or false")
+        if "theme" in new and new["theme"] not in THEMES:
+            raise ValueError(f"theme must be one of: {', '.join(THEMES)}")
         for k, v in new.items():
             setattr(self, k, v)
 
@@ -146,8 +152,8 @@ class Settings:
 
 def help_text(hub_mode: Optional[str], mode: str, state: str) -> str:
     """What can be said right now, in a sentence or two (the tutor speaks it)."""
-    ends = ("You can also say braillo and then ask me a question, slower or faster to change how quickly I talk, "
-            "and take your time if you would like more time.")
+    ends = ("You can also say braillo and then ask me a question, quiet to stop me talking, slower or faster to change how "
+            "quickly I talk, and take your time if you would like more time.")
     if hub_mode == "menu":
         return ("Choose an option. Learn teaches the letters. Read reads words aloud. Quiz asks you to find a letter. "
                 f"Say learn, read, or quiz. {ends}")

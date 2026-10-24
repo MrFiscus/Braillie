@@ -281,6 +281,61 @@ class FirstLessonTests(unittest.TestCase):
         j.on_next()
         self.assertEqual((j.phase, j.lesson.id, j.target), ("teach", "l2", "f"))
 
+    def test_letters_that_went_wrong_are_taught_again_at_the_start_of_the_next_lesson(self):
+        p = Progress()
+        p.lesson_done("l1", 1.0)  # lesson 1 passed, but C was missed and D was mixed up with F twice (in a lesson or the quiz)
+        for l in "abe":
+            p.record(l, True)
+        p.record("c", False)
+        p.record("d", True)
+        p.record_confusion("f", "d")
+        p.record_confusion("f", "d")
+        j, host, clock, p = make(progress=p)
+        j.on_start()
+        self.assertEqual((j.phase, j.lesson.id), ("warmup", "l2"), host.last(3))
+        self.assertIn("let's go back over a few from before that went wrong: C and D", " ".join(host.said))
+        self.assertEqual(j.target, "c", "the most troublesome first: missed beats found")
+        answer(j, host, clock, "c")
+        leave(j, host, clock)
+        self.assertEqual(j.target, "d")
+        self.assertIn("Careful: it's been mixed up with the letter F.", host.last(), "taught with the letter it was confused with")
+        answer(j, host, clock, "d")
+        leave(j, host, clock)
+        self.assertEqual((j.phase, j.target), ("teach", "f"), "then the new letters, as usual")
+        self.assertEqual(p.box("c"), 1, "the warm-up counts as practice: C found cleanly moved up")
+
+    def test_a_lesson_with_nothing_gone_wrong_starts_straight_away(self):
+        p = Progress()
+        p.lesson_done("l1", 1.0)
+        for l in "abcde":
+            p.record(l, True)
+        j, host, clock, p = make(progress=p)
+        j.on_start()
+        self.assertEqual((j.phase, j.target), ("teach", "f"))
+
+    def test_the_letters_that_went_wrong_come_first_in_the_next_lessons_practice(self):
+        p = Progress()
+        p.lesson_done("l1", 1.0)
+        for l in "abde":
+            p.record(l, True)
+        p.record("c", False)
+        j, host, clock, p = make(progress=p)
+        j.on_start()
+        self.assertEqual((j.phase, j.target), ("warmup", "c"))
+        j.on_next()  # skipped in the warm-up too: still not known
+        for letter in "fghij":
+            answer(j, host, clock, letter)
+            leave(j, host, clock)
+        self.assertEqual(j.phase, "practice")
+        asked = []
+        while j.phase == "practice":
+            asked.append(j.target)
+            answer(j, host, clock, j.target)
+            leave(j, host, clock)
+        self.assertIn("The ones that went wrong before are mixed in", " ".join(host.said))
+        self.assertIn("c", asked, "the letter that went wrong is asked for again in the practice")
+        self.assertTrue(set("fghij") <= set(asked))
+
     def test_the_teaching_of_each_letter_builds_on_the_ones_before(self):
         j, host, clock, p = make()
         j.on_start()
