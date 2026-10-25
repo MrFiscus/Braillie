@@ -15,6 +15,7 @@ tests with no camera, no voice and no clock. The tutor session is the real host 
 from __future__ import annotations
 
 import random
+import re
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -199,6 +200,31 @@ def compare_pair(a: str, b: str) -> str:
     return f"Let's compare {name(a)} and {name(b)}. {cap(name(a))}: {dot_words(a)} {cap(name(b))}: {dot_words(b)}"
 
 
+# ---- how much braille they know already ----------------------------------------------------------------------------------------
+# Asked once, before a new learner's first lesson, so someone who reads braille already does not start from A. The lessons before
+# their start are still there ("lesson one" goes back), and practice mixes in letters from them, so what they said is checked as
+# they go: a letter they miss comes back in the next warm-up.
+LEVELS = {"new": "l1", "some": "l3", "alphabet": "l6", "numbers": "l8"}  # what they said -> the lesson to start at
+ASK_LEVEL = ("Before we start, how much braille do you know already? Say new, if you're just starting. Say some, if you know a few "
+             "letters. Say alphabet, if you know A to Z. Or say numbers, if you know the numbers too.")
+RETRY_LEVEL = "Sorry, I didn't catch that. Say new, some, alphabet, or numbers."
+_NOT_KNOWN = re.compile(r"\b(?:no|not|don'?t know|do not know|never learn(?:ed|t)|without)\s+(?:any\s+|the\s+)?(?:numbers?|alphabet|letters?)\b")
+
+
+def level_of(text: str) -> Optional[str]:
+    """How much braille someone says they know ("I know the alphabet", "a few letters", "I'm new"): a key of LEVELS, or None."""
+    t = _NOT_KNOWN.sub(" ", " ".join(re.sub(r"[^a-z' ]", " ", text.lower()).split()))
+    if re.search(r"\b(numbers?|advanced|expert|everything|fluent|a lot|lots)\b", t):
+        return "numbers"
+    if re.search(r"\b(alphabet|a to z|(all|the|every|my) letters?|intermediate)\b", t):
+        return "alphabet"
+    if re.search(r"\b(some|few|little|bit|basics?|not much)\b", t):
+        return "some"
+    if re.search(r"\b(new|nothing|none|no|nope|beginner|never|not sure|don'?t know|zero|beginning|scratch)\b", t):
+        return "new"
+    return None
+
+
 def welcome_first_time() -> str:
     return ("Before we start, here's how braille works. Each letter is a small cell with room for six dots, in two columns of three. "
             "I'll tell you which dots a letter has, and you find it on the sheet with your finger.")
@@ -299,7 +325,7 @@ class Journey:
     # ---- public commands (voice) --------------------------------------------------------------
     def on_start(self) -> None:
         """"Start": begin, or continue where we were."""
-        if self.phase in ASKING:
+        if self.phase in ASKING or self.phase == "placing":
             return self.on_repeat()
         if self.phase in ("recap", "explore", "idle", "done"):
             return self._begin_or_continue()
@@ -311,6 +337,8 @@ class Journey:
             self._ask(repeat=True)
         elif self.phase == "await_sheet":
             self._remind_sheet()
+        elif self.phase == "placing":
+            self._speak(ASK_LEVEL)
         elif self.phase == "recap":
             self._say_options()
         elif self.phase == "explore":
@@ -337,6 +365,8 @@ class Journey:
         """"Next": skip this letter, or move on from a recap, or leave free exploring."""
         if self.phase in ASKING and self.target:
             self._give_up(skipped=True)
+        elif self.phase == "placing":  # (skipping the question: from the beginning, then)
+            self.on_level("new")
         elif self.phase in ("recap", "explore", "idle", "done"):
             self._begin_or_continue()
         elif self.phase == "await_sheet":
@@ -352,6 +382,39 @@ class Journey:
             self._abandon_round()
         self._lead = ""
         self._start_lesson(self.lessons[max(0, min(index, len(self.lessons) - 1))])
+
+    def ask_level(self) -> None:
+        """"Change my level": leave whatever is going on and ask again how much braille they know."""
+        if self.phase in ASKING + ("await_sheet",):
+            self._abandon_round()
+        self._lead = ""
+        self.phase, self.target, self.last_activity = "placing", None, self.clock()
+        self._speak(ASK_LEVEL)
+
+    def on_level(self, level: str) -> None:
+        """Their answer to ASK_LEVEL (said, or pressed on the screen): keep it, and start the lessons from there."""
+        if level not in LEVELS:
+            raise ValueError(f"level must be one of {', '.join(LEVELS)}")
+        if not self.session_started:
+            self.session_started = True
+            self.progress.start_session()
+        if self.phase in ASKING + ("await_sheet",):
+            self._abandon_round()
+        self.progress.level, self.progress.start_lesson = level, LEVELS[level]
+        self._save()
+        start = next(l for l in self.lessons if l.id == LEVELS[level])
+        where = f"lesson {self.lessons.index(start) + 1}, {start.title}"
+        if level == "new":
+            self._hold(f"Then we'll start at the very beginning. {welcome_first_time()}")
+        else:
+            self._hold(f"{'Brilliant' if level == 'numbers' else 'Great'}. Then we'll start at {where}. "
+                       "I'll mix in some earlier ones too, to check them as we go.")
+        self._start_lesson(start)
+
+    def _new_learner(self) -> bool:
+        """Nothing practised, no lesson done and no level given yet: someone to ask where to start."""
+        p = self.progress
+        return not p.level and not p.lessons and not p.letters
 
     def lesson_index(self) -> Optional[int]:
         """Which lesson is on now (from 0), or None between lessons."""
@@ -393,6 +456,11 @@ class Journey:
                 self.last_activity = now
                 self._say_options(nag=True)
             return
+        if self.phase == "placing":
+            if now - self.last_activity >= REMIND_EVERY:
+                self.last_activity = now
+                self._nag(ASK_LEVEL)
+            return
         if self.phase not in ASKING or not self.target:
             return
         pos = self.host.finger()
@@ -426,6 +494,9 @@ class Journey:
             self.session_started = True
             self.progress.start_session()
             self._save()
+            if self._new_learner():
+                self.phase, self.target, self.last_activity = "placing", None, self.clock()
+                return self._speak(ASK_LEVEL)
             self._greet()
         lesson = self.progress.next_lesson(self.lessons)
         if lesson is None:
@@ -753,6 +824,8 @@ class Journey:
             text += f" That's {known} of the 26 letters you know well now."
         elif met:
             text += f" You've met {met} of the 26 letters so far."
+        if not mastered and self.lesson.id == self.progress.start_lesson and self.lessons.index(self.lesson) > 0:
+            text += " If that felt too hard, say lesson one, and we'll go back to the beginning."  # (they started further on)
         text += " " + self.rng.choice(FACTS)
         self._hold(text)
         self.phase, self.last_activity = "recap", self.clock()

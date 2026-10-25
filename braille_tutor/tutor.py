@@ -40,7 +40,7 @@ import audio_speed
 import phonelink
 from earcons import Earcons
 from fingertip import FingerTracker, best_finder
-from learn import DOTS as LETTER_DOTS, DWELL_SECONDS, LESSONS, Dwell, Journey
+from learn import DOTS as LETTER_DOTS, DWELL_SECONDS, LESSONS, LEVELS, RETRY_LEVEL, Dwell, Journey, level_of
 from page import to_image, to_page
 from progress import Progress, progress_path
 from sheets import Symbol, feel_for, get_sheet, letter_symbol
@@ -329,6 +329,7 @@ LANDING_AGAIN = "You're on Braillie's front page. Say start learning to begin, o
 LANDING_NO = "Okay, I'll stay quiet. If you want me, just say Braillo."
 _YES = re.compile(r"^(?:yes|yeah|yep|yup|sure|please|okay|ok|yes please|go on|go ahead|of course|i would|i do|please do)\b")
 _NO = re.compile(r"^(?:no|nope|nah|no thanks|no thank you|not now|i'?m fine|that'?s okay)\b")
+_CHANGE_LEVEL = re.compile(r"\b(?:change|set|reset|pick|choose|switch|redo)\b.*\blevel\b|\bmy level\b")
 # "Help" on the pages of the way in, where the activities' own help does not apply yet (nothing can be learned before signing in).
 PAGE_HELP = {
     "login": "Say Google to sign in, or guest to carry on without an account.",
@@ -952,6 +953,21 @@ class TutorSession:
                 self.hearing.seen = int(heard["n"])
                 self._press(control)
                 return None
+            level = self._answers_level(heard)
+            if level is not None:  # "I know the alphabet", to "how much braille do you know already?" ("": not understood)
+                self.hearing.seen = int(heard["n"])
+                if level:
+                    self._learn("on_level", level)
+                elif heard.get("reason") != OVER_SPEECH:  # (a word or two of its own voice, misheard: not worth a "sorry")
+                    self.say(RETRY_LEVEL)
+                return None
+            if self._asks_to_change_level(heard):  # "change my level"
+                self.hearing.seen = int(heard["n"])
+                if self.journey is not None and (not self.hub or self.hub_mode == "learn"):
+                    self._learn("ask_level")
+                else:
+                    self.say("Your level belongs to the lessons. Say learn, then change my level.")
+                return None
             index = self._asks_for_lesson(heard)
             if index is not None:  # "lesson three", "go to K to O"
                 self.hearing.seen = int(heard["n"])
@@ -986,6 +1002,29 @@ class TutorSession:
         if self.hearing.seen is None or n <= self.hearing.seen:
             return None
         return lesson_named(str(heard.get("text") or ""))
+
+    def _new_heard(self, heard: Optional[dict]) -> bool:
+        """Something new was said that is not a command, while nobody is signing in and the microphone is on."""
+        if not heard or heard.get("matched") or self.dialogue_active() or self.muted:
+            return False
+        return self.hearing.seen is not None and int(heard.get("n", 0)) > self.hearing.seen
+
+    def _answers_level(self, heard: Optional[dict]) -> Optional[str]:
+        """While "how much braille do you know already?" is asked: the level said (a key of LEVELS), "" if not understood, else None."""
+        if self.journey is None or self.journey.phase != "placing" or not self._new_heard(heard):
+            return None
+        return level_of(str(heard.get("text") or "")) or ""
+
+    def _asks_to_change_level(self, heard: Optional[dict]) -> bool:
+        return self._new_heard(heard) and bool(_CHANGE_LEVEL.search(str(heard.get("text") or "").lower()))
+
+    def choose_level(self, level: str) -> None:
+        """How much braille they know, picked on the screen (the same as saying it): the lessons start from there."""
+        if level not in LEVELS:
+            raise ValueError(f"level must be one of {', '.join(LEVELS)}")
+        if self.journey is None:
+            raise ValueError("the level belongs to the lessons (learn mode)")
+        self._learn("on_level", level)
 
     def _answers_by_name(self, heard: Optional[dict]) -> bool:
         """Something new was said that names a letter ("E", "is this E?", "it's the letter E") while a letter is being asked for:
@@ -1114,7 +1153,7 @@ class TutorSession:
         if self.hub and self.user is not None:
             p = self.progress
             nxt = p.next_lesson(LESSONS)
-            ctx["progress"] = {"letters_known_well": len(p.learned()), "letters_met": len(p.practised()),
+            ctx["progress"] = {"letters_known_well": len(p.learned()), "letters_met": len(p.practised()), "starting_level": p.level or "not asked yet",
                                "lessons_done": [l.title for l in LESSONS if l.id in p.lessons],
                                "next_lesson": nxt.title if nxt is not None else "all done", "days_in_a_row": p.streak}
         ctx["waiting_for"] = self._waiting_for()
@@ -1342,7 +1381,8 @@ class TutorSession:
     # ---- the menu: who is here, and what they chose -----------------------------------------------
     def set_user(self, name, kind: str, profile: Optional[str] = None) -> None:
         """Who is using the tutor. A "google" learner's progress is kept (in a file named for their account, and by the website in their
-        account); a "guest" gets fresh, unsaved progress: nothing they do is written anywhere."""
+        account); a "guest" gets fresh, unsaved progress: nothing they do is written anywhere. (A guest's `profile` is the website visit's
+        id: the same guest after a page reload keeps their lesson, and the next guest, another visit, starts afresh.)"""
         name = clean_name(name)
         key = f"{kind}:{profile or name}"
         with self.lock:

@@ -1,11 +1,12 @@
 import { useEffect, useState, type MouseEvent, type ReactNode } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
+import BigButton from '../components/BigButton.tsx'
 import DotCell from '../components/DotCell.tsx'
 import Lyrics from '../components/Lyrics.tsx'
 import Mascot from '../components/Mascot.tsx'
 import MicButton from '../components/MicButton.tsx'
 import { describeDots } from '../tutor/describeDots.ts'
-import { TUTOR_API, sendCommand, sendFinger, setMic, setMode, type LearningStatus, type TutorState } from '../tutor/tutorApi.ts'
+import { TUTOR_API, sendCommand, sendFinger, setLevel, setMic, setMode, type LearningStatus, type Level, type TutorState } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useProgressSync } from '../tutor/useProgressSync.ts'
 import { useTutorSession } from '../tutor/useTutorSession.ts'
@@ -61,7 +62,7 @@ const Dots = ({ done, of, label }: { done: number; of: number; label: string }) 
 /** The letter to find, big, and (when it should be shown) its dots beside it. */
 const Target = ({ letter, dots, showDots }: { letter: string; dots: number[]; showDots: boolean }) => (
   <div className="target" aria-live="polite">
-    <div className="target__letter" key={letter} aria-label={`The letter ${letter.toUpperCase()}`}>
+    <div className="target__letter" key={letter} aria-label={/^[a-z]$/i.test(letter) ? `The letter ${letter.toUpperCase()}` : letter.toUpperCase()}>
       {letter.toUpperCase()}
     </div>
     {showDots && (
@@ -72,6 +73,15 @@ const Target = ({ letter, dots, showDots }: { letter: string; dots: number[]; sh
   </div>
 )
 
+// Before a new learner's first lesson: how much braille do they know already? (The same as saying it; the lessons start from there.)
+const LEVELS: { level: Level; label: string; start: string }[] = [
+  { level: 'new', label: 'New to braille', start: 'Start from A' },
+  { level: 'some', label: 'Some letters', start: 'Start at K' },
+  { level: 'alphabet', label: 'The alphabet', start: 'Start at look-alikes' },
+  { level: 'numbers', label: 'Letters and numbers', start: 'Start at punctuation' },
+]
+const SHEET_WORDS: Record<string, string> = { alphabet: 'alphabet', words: 'words', lookalikes: 'look-alikes', numbers: 'numbers' }
+
 /** Learn: the lesson, the letter being learned, how far through, and the few keys that matter now. */
 const LearnStage = ({ learning, state }: { learning: LearningStatus; state: TutorState }) => {
   const { phase, lesson, target, target_dots: dots } = learning
@@ -80,6 +90,23 @@ const LearnStage = ({ learning, state }: { learning: LearningStatus; state: Tuto
   const showDots = phase === 'teach' || phase === 'warmup' || learning.hints > 0 || learning.tries > 0 // in practice the pattern is a hint, not a giveaway
   const score = lesson && state.progress?.lessons[lesson.id]
   const finger = state.finger.cell
+  if (phase === 'placing')
+    return (
+      <>
+        <p className="play__kicker">Before your first lesson</p>
+        <p className="play__big play__big--words" id="level-q">
+          How much braille do you know?
+        </p>
+        <div className="levels" role="group" aria-labelledby="level-q">
+          {LEVELS.map((l) => (
+            <BigButton key={l.level} className="levels__pick" onClick={() => void setLevel(l.level)}>
+              {l.label}
+              <span className="levels__start">{l.start}</span>
+            </BigButton>
+          ))}
+        </div>
+      </>
+    )
   return (
     <>
       {lesson && (
@@ -93,7 +120,7 @@ const LearnStage = ({ learning, state }: { learning: LearningStatus; state: Tuto
       )}
       {asking && target ? (
         <>
-          <Target letter={target} dots={dots} showDots={showDots} />
+          <Target letter={learning.target_label ?? target} dots={dots} showDots={showDots} />
           {learning.letters > 0 && phase !== 'warmup' && (
             <Dots done={done} of={learning.letters} label={phase === 'word' ? `${done} of ${learning.letters} letters of the word` : `${done} of ${learning.letters} letters done`} />
           )}
@@ -120,7 +147,7 @@ const LearnStage = ({ learning, state }: { learning: LearningStatus; state: Tuto
             {phase === 'recap' && score
               ? `${Math.round(score.last * 100)}% first time`
               : phase === 'await_sheet'
-                ? 'Put the alphabet sheet down'
+                ? `Put the ${SHEET_WORDS[lesson?.sheet ?? 'alphabet'] ?? 'alphabet'} sheet down`
                 : phase === 'done'
                   ? 'Well done!'
                   : 'Ready?'}

@@ -16,7 +16,7 @@ export interface PhoneInfo {
   mic?: boolean
 }
 
-export type LearningPhase = 'idle' | 'await_sheet' | 'warmup' | 'teach' | 'practice' | 'review' | 'word' | 'recap' | 'explore' | 'done' // warmup: letters that went wrong before, taught again; word: spelling a real word at the end of a lesson
+export type LearningPhase = 'placing' | 'idle' | 'await_sheet' | 'warmup' | 'teach' | 'practice' | 'review' | 'word' | 'recap' | 'explore' | 'done' // placing: a new learner is asked how much braille they know; warmup: letters that went wrong before, taught again; word: spelling a real word at the end of a lesson
 
 /** Where the learner is in the guided lessons (only when the tutor runs with --mode learn). */
 export interface LearningStatus {
@@ -26,6 +26,7 @@ export interface LearningStatus {
   word?: string | null // while spelling a word at the end of a lesson: the word
   correct?: number // right answers this session (counts up: Braillo hops for joy at each)
   target_dots: number[]
+  target_label?: string | null // how the sheet labels it: the letter, a digit, or NUM, CAP and the punctuation marks
   remaining: number // letters still to do in this part of the lesson, including the current one
   letters: number // letters in the lesson
   in_a_row: number
@@ -44,6 +45,7 @@ export interface ProgressSummary {
   mastery: Record<string, number>
   confusions: { touched: string; wanted: string; count: number }[]
   lessons: Record<string, { best: number; last: number; times: number }>
+  level?: Level | '' // how much braille they said they knew before their first lesson ('' if not asked)
 }
 
 export type HubMode = 'menu' | 'learn' | 'read' | 'quiz'
@@ -96,6 +98,10 @@ const post = (path: string, body: unknown) =>
 
 /** Say a voice command to the tutor without speaking: "next page", "repeat", "hint", "stop", ... */
 export const sendCommand = (command: string) => post('/api/command', { command })
+
+/** How much braille a new learner knows (asked before their first lesson): the lessons start from there. */
+export type Level = 'new' | 'some' | 'alphabet' | 'numbers'
+export const setLevel = (level: Level) => post('/api/level', { level })
 
 /** Tell the tutor where the fingertip is on the video, as fractions (0-1) of its width and height. Stands in for the
  *  camera's own tracking for 10 s, then the camera has it back; send it again to keep it. */

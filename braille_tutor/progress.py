@@ -48,6 +48,7 @@ class Progress:
         self.confusions: dict = {}  # "touched>wanted" -> how many times that letter was touched when the other was asked for
         self.lessons: dict = {}  # lesson id -> {"best": 0..1, "last": 0..1, "times": n}
         self.sessions, self.streak, self.best_streak, self.last_day = 0, 0, 0, ""
+        self.level, self.start_lesson = "", ""  # how much braille they said they knew at the start, and the lesson that put them at
 
     # ---- recording ----------------------------------------------------------------------------
     def stat(self, letter: str) -> LetterStat:
@@ -116,8 +117,11 @@ class Progress:
         return self.lessons.get(lesson_id, {}).get("best", 0.0) >= LESSON_MASTERY
 
     def next_lesson(self, lessons: Iterable) -> Optional[object]:
-        """The first lesson not yet mastered, or None when they all are."""
-        return next((l for l in lessons if not self.lesson_mastered(l.id)), None)
+        """The first lesson not yet mastered, from the one their level started them at, or None when they all are."""
+        lessons = list(lessons)
+        ids = [l.id for l in lessons]
+        start = ids.index(self.start_lesson) if self.start_lesson in ids else 0
+        return next((l for l in lessons[start:] if not self.lesson_mastered(l.id)), None)
 
     def top_confusions(self, n: int = 3) -> list:
         """[(touched, wanted, count)], the pairs mixed up most."""
@@ -186,13 +190,13 @@ class Progress:
                 "best_streak": self.best_streak,
                 "mastery": {l: round(self.mastery(l), 2) for l in sorted(self.letters)},
                 "confusions": [{"touched": t, "wanted": w, "count": c} for t, w, c in self.top_confusions(5)],
-                "lessons": dict(self.lessons)}
+                "lessons": dict(self.lessons), "level": self.level}
 
     # ---- storage ------------------------------------------------------------------------------
     def to_dict(self) -> dict:
         return {"version": 1, "letters": {l: asdict(s) for l, s in sorted(self.letters.items())}, "confusions": dict(self.confusions),
                 "lessons": {k: dict(v) for k, v in self.lessons.items()}, "sessions": self.sessions, "streak": self.streak,
-                "best_streak": self.best_streak, "last_day": self.last_day}
+                "best_streak": self.best_streak, "last_day": self.last_day, "level": self.level, "start_lesson": self.start_lesson}
 
     @classmethod
     def from_dict(cls, data: dict, clock: Callable[[], float] = time.time) -> "Progress":
@@ -208,6 +212,7 @@ class Progress:
                      for k, v in (data.get("lessons") or {}).items() if isinstance(v, dict)}
         p.sessions, p.streak = int(data.get("sessions", 0)), int(data.get("streak", 0))
         p.best_streak, p.last_day = int(data.get("best_streak", 0)), str(data.get("last_day", ""))
+        p.level, p.start_lesson = str(data.get("level") or ""), str(data.get("start_lesson") or "")
         return p
 
     def merge(self, other: "Progress") -> "Progress":
@@ -231,6 +236,8 @@ class Progress:
         if other.last_day > self.last_day:
             self.last_day, self.streak = other.last_day, other.streak
         self.best_streak = max(self.best_streak, other.best_streak, self.streak)
+        if other.level and not self.level:  # (asked on another computer: keep their answer)
+            self.level, self.start_lesson = other.level, other.start_lesson
         return self
 
     def save(self, path: Path) -> None:

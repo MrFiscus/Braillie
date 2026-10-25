@@ -37,13 +37,16 @@ test('a Google account: given name first, then the full name, then the email, th
   assert.equal(userFromAccount({ id: 'u6', user_metadata: { given_name: 42 } }).name, 'friend', 'a non-text name is ignored, not crashed on')
 })
 
-test('a guest is remembered for this tab and only ever by first name', () => {
+test('a guest is remembered for this tab and only ever by first name, with an id for the visit', () => {
   const s = new Storage()
   assert.equal(loadGuest(s), null)
   const g = saveGuest(s, 'Gina Rossi')
-  assert.deepEqual(g, { kind: 'guest', name: 'Gina' })
-  assert.deepEqual(JSON.parse(s.getItem(GUEST_KEY)), { name: 'Gina' }, 'nothing but the name is stored')
-  assert.deepEqual(loadGuest(s), { kind: 'guest', name: 'Gina' })
+  assert.equal(g.kind, 'guest')
+  assert.equal(g.name, 'Gina')
+  assert.match(g.id, /^[A-Za-z0-9_-]{1,80}$/)
+  assert.deepEqual(JSON.parse(s.getItem(GUEST_KEY)), { name: 'Gina', id: g.id }, 'nothing but the name and the visit is stored')
+  assert.deepEqual(loadGuest(s), g, 'a refresh is the same guest')
+  assert.notEqual(saveGuest(new Storage(), 'Gina').id, g.id, 'the next guest is another visit')
   assert.equal(saveGuest(s, '   ').name, 'friend', 'no name given: a friendly default')
   clearGuest(s)
   assert.equal(loadGuest(s), null)
@@ -51,11 +54,11 @@ test('a guest is remembered for this tab and only ever by first name', () => {
 
 test('storage that is missing, broken or full never stops a guest continuing', () => {
   assert.equal(loadGuest(null), null)
-  assert.deepEqual(saveGuest(null, 'Ana'), { kind: 'guest', name: 'Ana' })
+  assert.equal(saveGuest(null, 'Ana').name, 'Ana')
   clearGuest(null)
   const broken = { getItem() { throw new Error('blocked') }, setItem() { throw new Error('full') }, removeItem() { throw new Error('blocked') } }
   assert.equal(loadGuest(broken), null)
-  assert.deepEqual(saveGuest(broken, 'Ana'), { kind: 'guest', name: 'Ana' })
+  assert.equal(saveGuest(broken, 'Ana').name, 'Ana')
   clearGuest(broken)
   for (const junk of ['not json', '{"name": 5}', '{}', 'null', '"x"']) {
     const s = new Storage()
@@ -67,6 +70,8 @@ test('storage that is missing, broken or full never stops a guest continuing', (
 test('what is sent to the tutor: a google learner brings their account id, a guest brings nothing to keep', () => {
   assert.deepEqual(sessionFor({ kind: 'google', name: 'Ana', id: 'u1' }).body, { kind: 'google', name: 'Ana', profile: 'u1' })
   assert.deepEqual(sessionFor({ kind: 'guest', name: 'Gina' }).body, { kind: 'guest', name: 'Gina' })
+  assert.deepEqual(sessionFor({ kind: 'guest', name: 'Guest', id: 'v1' }).body, { kind: 'guest', name: 'Guest', profile: 'v1' }, 'a visit id, to tell guests apart')
+  assert.notEqual(sessionFor({ kind: 'guest', name: 'Guest', id: 'v1' }).key, sessionFor({ kind: 'guest', name: 'Guest', id: 'v2' }).key)
   assert.deepEqual(sessionFor({ kind: 'google', name: 'Ana' }).body, { kind: 'guest', name: 'Ana' }, 'a google user with no account id is treated as a guest: nothing is saved under nobody')
   const a = sessionFor({ kind: 'google', name: 'Ana', id: 'u1' }).key
   assert.notEqual(a, sessionFor({ kind: 'google', name: 'Ana', id: 'u2' }).key)

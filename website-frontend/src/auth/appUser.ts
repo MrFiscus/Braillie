@@ -4,7 +4,8 @@
 export interface AppUser {
   kind: 'google' | 'guest'
   name: string // what the tutor calls them
-  id?: string // the account id (google only): the progress is kept under it
+  id?: string // google: the account id, the progress is kept under it. guest: an id for this visit only, so the tutor can tell one
+  // guest from the next (each starts afresh, and is asked again how much braille they know), never saved anywhere
 }
 
 export const GUEST_KEY = 'braillie.guest'
@@ -35,23 +36,33 @@ interface StorageLike {
   removeItem(key: string): void
 }
 
-/** A guest, remembered for this browser tab only (sessionStorage), so a page refresh does not ask again. Never anything but the name. */
+const visitId = (): string => {
+  try {
+    return crypto.randomUUID().replace(/-/g, '')
+  } catch {
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`
+  }
+}
+
+/** A guest, remembered for this browser tab only (sessionStorage), so a page refresh does not ask again. Never anything but the name
+ * and the visit's id. */
 export function loadGuest(storage: StorageLike | null): AppUser | null {
   try {
     const raw = storage?.getItem(GUEST_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw)
     const name = firstName(typeof parsed?.name === 'string' ? parsed.name : '')
-    return name ? { kind: 'guest', name } : null
+    const id = typeof parsed?.id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(parsed.id) ? parsed.id : undefined
+    return name ? { kind: 'guest', name, ...(id ? { id } : {}) } : null
   } catch {
     return null
   }
 }
 
 export function saveGuest(storage: StorageLike | null, name: string): AppUser {
-  const user: AppUser = { kind: 'guest', name: firstName(name) || 'friend' }
+  const user: AppUser = { kind: 'guest', name: firstName(name) || 'friend', id: visitId() } // (a new guest each time: a new visit)
   try {
-    storage?.setItem(GUEST_KEY, JSON.stringify({ name: user.name }))
+    storage?.setItem(GUEST_KEY, JSON.stringify({ name: user.name, id: user.id }))
   } catch {
     // storage may be blocked: the guest still continues, they are just asked again after a refresh
   }
@@ -68,6 +79,9 @@ export function clearGuest(storage: StorageLike | null): void {
 
 /** What to send the tutor for this user, and a key that changes only when the person does (so it is sent once, not on every render). */
 export function sessionFor(user: AppUser): { body: { kind: 'google' | 'guest'; name: string; profile?: string }; key: string } {
-  const body = user.kind === 'google' && user.id ? { kind: 'google' as const, name: user.name, profile: user.id } : { kind: 'guest' as const, name: user.name }
+  const body =
+    user.kind === 'google' && user.id
+      ? { kind: 'google' as const, name: user.name, profile: user.id }
+      : { kind: 'guest' as const, name: user.name, ...(user.id ? { profile: user.id } : {}) } // (a guest's id only tells visits apart)
   return { body, key: `${body.kind}:${body.profile ?? ''}:${body.name}` }
 }

@@ -27,6 +27,18 @@ from progress import Progress
 from test_server import http
 from test_tutor import WC, FakeVoice
 
+
+_ANSWERED = mock.patch("learn.Journey._new_learner", return_value=False)
+
+
+def setUpModule():
+    """A new learner is first asked how much braille they know (test_learn.py tests that); here they have answered "new"."""
+    _ANSWERED.start()
+
+
+def tearDownModule():
+    _ANSWERED.stop()
+
 SHEETS = {n: sheets.get_sheet(n) for n in sheets.SHEET_NAMES}
 
 
@@ -235,6 +247,49 @@ class ModeTests(unittest.TestCase):
         finger.pos = cell_pos("alphabet", "a")
         self.assertTrue(wait_for(lambda: s.learning_status()["target"] == "b"))
         s.set_mode("menu")
+
+    def test_a_new_learner_says_how_much_braille_they_know_and_starts_there(self):
+        with mock.patch("learn.Journey._new_learner", lambda self: not self.progress.level):  # (as for a real new learner)
+            s, voice, finger, feed = hub()
+            heard = {"n": 0, "text": "", "matched": False, "reason": None}
+            s.heard_fn = lambda: heard
+            s.watch_once(0.0)
+            s.set_mode("learn")
+            self.assertEqual(s.learning_status()["phase"], "placing")
+            self.assertIn("how much braille do you know already?", voice.said[-1])
+            heard.update(n=1, text="banana")  # (not an answer: asked again, briefly)
+            s.watch_once(1.0)
+            self.assertEqual(voice.said[-1], learn.RETRY_LEVEL)
+            heard.update(n=2, text="I know the whole alphabet")
+            s.watch_once(2.0)
+            self.assertEqual((s.learning_status()["lesson"]["id"], s.progress.level), ("l6", "alphabet"))
+            heard.update(n=3, text="can I change my level")
+            s.watch_once(3.0)
+            self.assertEqual(s.learning_status()["phase"], "placing")
+            s.choose_level("new")  # (the same, pressed on the screen)
+            self.assertEqual(s.learning_status()["target"], "a")
+            with self.assertRaises(ValueError):
+                s.choose_level("expert")
+            s.set_mode("menu")
+
+    def test_a_guest_is_asked_too_and_so_is_the_next_guest(self):
+        """A guest's progress is never kept, so every guest is asked where to start, and one guest's answer is not the next one's."""
+        with mock.patch("learn.Journey._new_learner", lambda self: not self.progress.level and not self.progress.lessons):
+            s, voice, finger, feed = hub()
+            s.set_user("Guest", "guest", "visit1")
+            s.set_mode("learn")
+            self.assertEqual(s.learning_status()["phase"], "placing")
+            self.assertIn("how much braille do you know already?", voice.said[-1])
+            s.choose_level("alphabet")
+            self.assertEqual(s.learning_status()["lesson"]["id"], "l6")
+            s.set_mode("menu")
+            s.set_user("Guest", "guest", "visit1")  # (the same guest, after a page reload: their lesson is kept)
+            self.assertEqual(s.progress.level, "alphabet")
+            self.assertIsNone(s.user["profile"], "nothing is saved for a guest")
+            s.set_user("Guest", "guest", "visit2")  # (the next guest)
+            s.set_mode("learn")
+            self.assertEqual((s.learning_status()["phase"], s.progress.level), ("placing", ""))
+            s.set_mode("menu")
 
     def test_quiz_uses_the_look_alikes_sheet_and_resting_a_finger_answers(self):
         s, voice, finger, feed = hub()

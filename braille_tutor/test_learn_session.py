@@ -24,6 +24,18 @@ from progress import Progress
 from test_server import http
 from test_tutor import WC, FakeVoice
 
+
+_ANSWERED = mock.patch("learn.Journey._new_learner", return_value=False)
+
+
+def setUpModule():
+    """A new learner is first asked how much braille they know (test_learn.py tests that); here they have answered "new"."""
+    _ANSWERED.start()
+
+
+def tearDownModule():
+    _ANSWERED.stop()
+
 ALPHABET = sheets.get_sheet("alphabet")
 
 

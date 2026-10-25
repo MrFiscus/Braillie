@@ -99,7 +99,10 @@ class Host:
 
 def make(progress=None, coach=None, sheet="alphabet", seed=1):
     clock, host = Clock(), Host(sheet)
-    p = progress or Progress(clock=lambda: clock.t)
+    if progress is None:  # (a new learner who has said they are new to braille: the question itself is tested in LevelTests)
+        progress = Progress(clock=lambda: clock.t)
+        progress.level, progress.start_lesson = "new", "l1"
+    p = progress
     j = Journey(host, p, coach=coach, rng=random.Random(seed), clock=clock)
     return j, host, clock, p
 
@@ -283,6 +286,89 @@ class AdvancedLessonTests(unittest.TestCase):
         j.on_start()
         self.assertEqual((j.lesson.id, j.target), ("l8", "^"))
         self.assertIn("the capital sign", host.last())
+
+
+class LevelTests(unittest.TestCase):
+    """Before a new learner's first lesson: how much braille do they know already? The lessons start from there."""
+
+    def fresh(self, sheet="alphabet"):
+        clock = Clock()
+        j, host, clock, p = make(progress=Progress(clock=lambda: clock.t), sheet=sheet)
+        return j, host, clock, p
+
+    def test_a_new_learner_is_asked_first_and_nothing_is_taught_until_they_answer(self):
+        j, host, clock, p = self.fresh()
+        j.on_start()
+        self.assertEqual((j.phase, j.target), ("placing", None))
+        self.assertIn("how much braille do you know already?", host.last())
+        j.on_start()  # ("start" again: the question again)
+        self.assertEqual(j.phase, "placing")
+        self.assertEqual(host.said[-1], learn.ASK_LEVEL)
+
+    def test_new_starts_at_the_beginning_with_how_braille_works(self):
+        j, host, clock, p = self.fresh()
+        j.on_start()
+        j.on_level("new")
+        self.assertEqual((j.lesson.id, j.target, p.level), ("l1", "a", "new"))
+        self.assertIn("start at the very beginning", host.last())
+        self.assertIn("here's how braille works", host.last())
+
+    def test_knowing_the_alphabet_starts_at_the_look_alikes_and_asks_for_that_sheet(self):
+        j, host, clock, p = self.fresh()
+        j.on_start()
+        j.on_level("alphabet")
+        self.assertEqual((j.lesson.id, j.phase, p.level, p.start_lesson), ("l6", "await_sheet", "alphabet", "l6"))
+        self.assertIn("start at lesson 6, Look-alikes", host.last())
+        self.assertIn("look-alikes sheet", host.last())
+        self.assertEqual(p.next_lesson(LESSONS).id, "l6")
+        self.assertEqual(Progress.from_dict(p.to_dict()).level, "alphabet")
+
+    def test_the_earlier_letters_are_practised_too_so_what_they_said_is_checked(self):
+        j, host, clock, p = self.fresh()
+        j.on_start()
+        j.on_level("some")
+        self.assertEqual(j.lesson.id, "l3")
+        self.assertEqual(set(j.taught), set("abcdefghij"))
+
+    def test_next_skips_the_question_and_starts_from_the_beginning(self):
+        j, host, clock, p = self.fresh()
+        j.on_start()
+        j.on_next()
+        self.assertEqual((j.lesson.id, p.level), ("l1", "new"))
+
+    def test_no_answer_brings_the_question_back_after_a_while(self):
+        j, host, clock, p = self.fresh()
+        j.on_start()
+        n = len(host.said)
+        run(j, host, clock, learn.REMIND_EVERY + 1)
+        self.assertGreater(len(host.said), n)
+        self.assertEqual(host.said[-1], learn.ASK_LEVEL)
+
+    def test_someone_who_has_had_lessons_is_not_asked(self):
+        p = Progress()
+        p.lesson_done("l1", 1.0)
+        j, host, clock, _ = make(progress=p)
+        j.on_start()
+        self.assertNotEqual(j.phase, "placing")
+
+    def test_the_level_can_be_changed_in_the_middle_of_a_lesson(self):
+        j, host, clock, p = make()
+        j.on_start()
+        self.assertEqual(j.target, "a")
+        j.ask_level()
+        self.assertEqual((j.phase, j.target), ("placing", None))
+        j.on_level("numbers")
+        self.assertEqual((j.lesson.id, p.level), ("l8", "numbers"))
+
+    def test_what_people_say_is_understood(self):
+        for said, level in [("I'm new", "new"), ("nothing at all", "new"), ("not sure", "new"), ("beginner", "new"),
+                            ("I know a few letters", "some"), ("some", "some"), ("just a little", "some"),
+                            ("alphabet", "alphabet"), ("I know all the letters", "alphabet"), ("a to z", "alphabet"),
+                            ("I know the alphabet but no numbers", "alphabet"), ("numbers", "numbers"),
+                            ("letters and numbers too", "numbers"), ("I'm advanced", "numbers"), ("banana", None)]:
+            self.assertEqual(learn.level_of(said), level, said)
+        with self.assertRaises(ValueError):
+            make()[0].on_level("expert")
 
 
 class FirstLessonTests(unittest.TestCase):

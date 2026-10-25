@@ -33,6 +33,7 @@ import cv2
 
 import phonelink
 import tutor
+from learn import LEVELS
 from progress import Progress
 from detect import cell_at, letter_of, open_camera, page_source_from_args
 
@@ -177,9 +178,11 @@ class TutorRuntime:
                 raise ValueError('"kind" must be "google" or "guest"')
             if not isinstance(name, str) or not name.strip():
                 raise ValueError('"name" must be a non-empty string')
-            if kind == "google" and not (isinstance(profile, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", profile)):
+            good = isinstance(profile, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", profile)
+            if kind == "google" and not good:
                 raise ValueError('a google session needs a "profile" (the account id: letters, digits, - and _)')
-            session.set_user(name, kind, profile if kind == "google" else None)
+            # (a guest's "profile" is the visit's id: it only tells one guest from the next, so each starts afresh; nothing is saved)
+            session.set_user(name, kind, profile if good else None)
             return 200, {"ok": True, "hub": session.hub_status()}
         if path == "/api/mode":
             mode = str(body.get("mode", "")).lower()
@@ -394,6 +397,12 @@ def make_handler(rt: TutorRuntime):
                 except (ValueError, TypeError) as e:
                     return self._json(400, {"error": str(e)})
                 return self._json(200, {"summary": rt.session.progress.summary(), "data": rt.session.progress.to_dict()})
+            if path == "/api/level":  # {"level": "new" | "some" | "alphabet" | "numbers"}: how much braille they know, picked on the screen
+                level = str(body.get("level", ""))
+                if level not in LEVELS or rt.session.journey is None:
+                    return self._json(400, {"error": "level must be one of " + ", ".join(LEVELS) + ", during the lessons"})
+                threading.Thread(target=rt.session.choose_level, args=(level,), daemon=True).start()  # (speaking blocks)
+                return self._json(202, {"accepted": level})
             if path == "/api/command":
                 name = str(body.get("command", "")).replace("_", " ").strip().lower()
                 if name not in COMMANDS:

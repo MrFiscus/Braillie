@@ -27,7 +27,7 @@ export function progressSignature(p: ProgressSummary | null | undefined): string
   if (!p) return ''
   const mastery = Object.entries(p.mastery).map(([l, m]) => `${l}${m}`).join(',')
   const lessons = Object.entries(p.lessons).map(([id, v]) => `${id}:${v.best}:${v.times}`).join(',')
-  return [p.sessions, p.practised, p.learned, p.streak, mastery, lessons, p.confusions.map((c) => `${c.touched}${c.wanted}${c.count}`).join(',')].join('|')
+  return [p.sessions, p.practised, p.learned, p.streak, mastery, lessons, p.confusions.map((c) => `${c.touched}${c.wanted}${c.count}`).join(','), p.level ?? ''].join('|')
 }
 
 export class ProgressSync {

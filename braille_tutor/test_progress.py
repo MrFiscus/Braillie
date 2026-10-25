@@ -230,8 +230,26 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(s["confusions"], [{"touched": "d", "wanted": "f", "count": 1}])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class LevelTests(unittest.TestCase):
+    def test_the_level_is_kept_and_the_lessons_start_where_it_put_them(self):
+        from learn import LESSONS
+        p = Progress()
+        p.level, p.start_lesson = "alphabet", "l6"
+        q = Progress.from_dict(p.to_dict())
+        self.assertEqual((q.level, q.start_lesson, q.summary()["level"]), ("alphabet", "l6", "alphabet"))
+        self.assertEqual(q.next_lesson(LESSONS).id, "l6")
+        for lid in ("l6", "l7", "l8"):
+            q.lesson_done(lid, 1.0)
+        self.assertIsNone(q.next_lesson(LESSONS), "the lessons before the start were skipped, not owed")
+        self.assertEqual(Progress().next_lesson(LESSONS).id, "l1")
+
+    def test_merging_keeps_an_answer_given_elsewhere_and_never_overwrites_one(self):
+        here, there = Progress(), Progress()
+        there.level, there.start_lesson = "some", "l3"
+        self.assertEqual(here.merge(there).level, "some")
+        other = Progress()
+        other.level, other.start_lesson = "new", "l1"
+        self.assertEqual(here.merge(other).start_lesson, "l3")
 
 
 class ReteachTests(unittest.TestCase):
@@ -249,3 +267,6 @@ class ReteachTests(unittest.TestCase):
         self.assertEqual(set(weak), {"b", "c", "d"})
         self.assertEqual(len(p.needs_reteaching("abcdz", n=2)), 2)
 
+
+if __name__ == "__main__":
+    unittest.main()
