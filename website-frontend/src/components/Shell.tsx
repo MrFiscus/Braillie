@@ -39,8 +39,9 @@ const Shell = () => {
   }, [pathname])
 
   const inApp = !!user && pathname !== '/login' // signed in and past the welcome: the app around the page
-  // home and the activities are Braillo and a few big keys: no sidebar (home is a key) and no voice bar (Braillo shows his own words)
-  const bare = pathname === '/modes' || pathname === '/practice' || pathname === '/account'
+  // home, connecting the phone, the activities and your page are Braillo and a few big keys: no sidebar (home is a key) and no voice
+  // bar (Braillo shows his own words)
+  const bare = ['/connect-phone', '/modes', '/practice', '/account'].includes(pathname)
   const framed = inApp && !bare
 
   return (
