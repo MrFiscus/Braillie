@@ -6,21 +6,35 @@ Braillie watches a printed braille sheet through your phone's camera, follows yo
 touching. Then Braillo, its friendly braille-cell tutor, teaches you, reads to you, or quizzes you out loud. It's built for people
 who can't see the screen: from the front page to your progress, **everything can be done by voice.**
 
-<p align="center"><img src="docs/img/screenshot-landing.png" alt="The Braillie front page: 'Feel the dots. Hear the letters.' beside a drawing of a fingertip reading the word braillie in braille, with Start learning and How it works buttons." width="820"></p>
+<table>
+<tr>
+<td width="50%" valign="top"><img src="docs/img/screenshot-landing.png" alt="The Braillie front page: 'Feel the dots. Hear the letters.' beside a drawing of a fingertip reading the word braillie in braille, with Start learning and How it works buttons."><br><b>The front page</b>: Braillo offers to talk you through it.</td>
+<td width="50%" valign="top"><img src="docs/img/screenshot-signin.png" alt="Sign-in: Braillo and two big keys: Sign in with Google, or Continue as guest."><br><b>Sign in</b>: say "Google" or "guest".</td>
+</tr>
+<tr>
+<td width="50%" valign="top"><img src="docs/img/screenshot-connect.png" alt="Connect your phone: Braillo beside a large QR code."><br><b>Connect your phone</b>: scan the code; Braillo talks you through it.</td>
+<td width="50%" valign="top"><img src="docs/img/screenshot-modes.png" alt="Home: Braillo listening, with three big keys: Learn, Read and Quiz."><br><b>Home</b>: say learn, read or quiz.</td>
+</tr>
+<tr>
+<td width="50%" valign="top"><img src="docs/img/screenshot-lesson.png" alt="A lesson: the letter G with its braille cell, progress dots, and Found it, Hint, Next and Finish keys."><br><b>A lesson</b>: find the letter by touch, with hints when you need them.</td>
+<td width="50%" valign="top"><img src="docs/img/screenshot-account.png" alt="Your page: three numbers (letters known, days in a row, sessions) and the alphabet, each letter with a bar showing how well it is known."><br><b>Your page</b>: Braillo reads out how you're doing.</td>
+</tr>
+</table>
 
 ## What it does
 
-- **Voice first, from the very first page.** Braillo offers to talk you through the website as soon as you arrive. Say any
-  button's name to press it ("start learning", "dark", "privacy policy"), or "go back", "scroll down", "home", "my page",
-  "sign out". "Help" says what you can do right there, in a sentence; "more options" lists everything.
+- **Lessons that feel like lessons.** Eight short lessons take you from A to Z, then letters that look alike, numbers, and
+  capitals and punctuation. Each letter is described by its dots and how it grows from one you know; you find it and rest your
+  finger on it, or point and say "this one". Then a mixed practice and, if it went well, you **spell a real word** by touch.
+  Mistakes are explained ("That's F. D has a dot at the middle-right…"), and letters that went wrong come back next lesson.
+- **Starts where you are.** Before your first lesson, Braillo asks how much braille you know (new, some letters, the alphabet,
+  or numbers too) and starts you there, checking the earlier letters as you go.
 - **Reads a real printed braille sheet.** A YOLOv8 detector finds every raised dot and registers the page, so it knows which
   cell your finger is on. **MediaPipe's hand model** finds your index fingertip, across skin tones and lighting.
-- **Lessons that feel like lessons.** Six short lessons (A to E, F to J, K to O, P to T, U to Z, then look-alikes). Each letter is
-  described by its dots and how it grows from one you know; you find it and rest your finger on it, or point and say "this one".
-  Then a mixed practice, and, if it went well, you **spell a real word** by touch. Mistakes are explained ("That's F. D has a dot at
-  the middle-right…"), and letters that went wrong come back at the start of the next lesson.
 - **Read and Quiz.** **Read** speaks a word aloud when you rest a finger on it. **Quiz** names a look-alike letter, and you point
   at it and say "this one", or its name.
+- **Everything works by voice.** Say a button's name to press it, or "go back", "home", "my page". "Help" says what you can do
+  on the page you're on.
 - **Braillo knows what's going on.** Say "Braillo" and ask anything, or just talk: with an Anthropic API key, Claude works out what
   you meant, knowing the page you're on, what the camera sees, which letter your finger is on, your progress, and what he's
   waiting for you to do. ("I can't find it" gets a hint; "can we move on?" goes to the next lesson.)
@@ -31,20 +45,6 @@ who can't see the screen: from the front page to your progress, **everything can
 - **Built for blind and low-vision users.** Screen-reader-friendly markup, every action on a key as well as by voice, WCAG AAA
   colour contrast, light, dark and two high-contrast themes, and four text sizes.
 - **Remembers your progress.** Google sign-in keeps it across sessions. Guests go straight in, and nothing of theirs is saved.
-
-<table>
-<tr>
-<td width="50%"><img src="docs/img/screenshot-signin.png" alt="Sign-in: Braillo beside 'You can learn new letters, read some words, or take a quiz', and two big keys: Sign in with Google, or Continue as guest."><br><sub><b>Sign in</b> by voice ("Google" or "guest") or with the keys.</sub></td>
-<td width="50%"><img src="docs/img/screenshot-connect.png" alt="Connect your phone: Braillo saying 'To connect your phone, scan the code on the screen with its camera, open the link, and tap Start' beside a large QR code."><br><sub><b>Connect your phone</b>: scan the code; Braillo talks you through it.</sub></td>
-</tr>
-<tr>
-<td width="50%"><img src="docs/img/screenshot-modes.png" alt="Home: Braillo listening, with 'Good morning, Guest! What shall we do?', and three big keys: Learn (F to J next), Read and Quiz."><br><sub><b>Home</b>: say learn, read or quiz.</sub></td>
-<td width="50%"><img src="docs/img/screenshot-lesson.png" alt="A lesson: Braillo saying 'G is dots 1, 2, 4, 5', the letter G with its braille cell, progress dots, and Found it, Hint, Next and Finish keys."><br><sub><b>A lesson</b>: find the letter by touch, with hints when you need them.</sub></td>
-</tr>
-<tr>
-<td colspan="2" align="center"><img src="docs/img/screenshot-account.png" alt="Your page: 'Hi, Guest', Braillo, three numbers (letters known, days in a row, sessions) and the alphabet, each letter with a bar showing how well it is known." width="620"><br><sub><b>Your page</b>: Braillo reads out how you're doing; say "letters" to hear your alphabet.</sub></td>
-</tr>
-</table>
 
 ## Try it in a few minutes
 
