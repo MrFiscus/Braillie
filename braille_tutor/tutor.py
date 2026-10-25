@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import difflib
 import json
 import logging
 import os
@@ -38,7 +39,7 @@ import accessibility as acc
 import audio_speed
 import phonelink
 from earcons import Earcons
-from fingertip import FingerTracker
+from fingertip import FingerTracker, best_finder
 from learn import DOTS as LETTER_DOTS, DWELL_SECONDS, LESSONS, Dwell, Journey
 from page import to_image, to_page
 from progress import Progress, progress_path
@@ -152,130 +153,271 @@ PROMPTS = {  # canned things the website may ask the tutor to say (it cannot mak
     # The lines heard at every start have a few versions, each saying the same thing in other words, so it never sounds like one script
     # read again and again (next_prompt picks; never the same one twice running). The short replies stay one line each.
     "welcome": (
-        "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. To sign in, say"
-        " Google. To carry on without an account, say guest. Or use the tab key to move between the options. If you "
-        "sign in, your progress is remembered. If you continue without an account, it is not.",
-        "Hi, and welcome to Braillie. You can sign in with Google, so your progress is remembered, or carry on as a "
-        "guest, and nothing is saved. Say Google, or say guest. You can also press tab to move between the options.",
-        "Hello! I'm Braillo, and this is Braillie. To keep your progress, say Google to sign in. To try it without an "
-        "account, say guest, but your progress won't be saved. Or press tab to move between the options.",
-        "Hi there, welcome to Braillie. There are two ways in. Say Google to sign in and keep your progress, or say "
-        "guest to start straight away without saving anything. The tab key moves between the options too.",
-        "Welcome! I'm Braillo, your braille tutor. Would you like to sign in? Say Google, and I'll remember how you're "
-        "getting on. Or say guest to carry on without an account, and nothing is kept. You can press tab to move "
-        "between the options instead.",
-        "Hello, and welcome to Braillie. Say Google to sign in with your Google account, and your progress is saved. "
-        "Say guest to carry on without one, and it is not. Or use tab to move between the options.",
-        "Good to have you here. This is Braillie, and I'm Braillo. To save your progress, sign in by saying Google. To "
-        "just try it out, say guest, and nothing will be saved. Pressing tab moves between the options as well.",
-        "Welcome to Braillie! First, how would you like to start? Say Google to sign in, so I can remember your "
-        "progress. Say guest to go without an account, and your progress won't be kept. Or press tab to move between "
-        "the options.",
-        "Hi! Braillo here, welcome to Braillie. You can say Google to sign in and keep your progress from one visit to "
-        "the next, or say guest to carry on without an account, which saves nothing. The tab key moves between the "
-        "options too.",
-        "Hello, welcome to Braillie. Two choices: say Google to sign in, and your progress is remembered, or say guest "
-        "to continue without an account, and it is forgotten when you leave. You can also use tab to move between them.",
+        "Hi, I'm Braillo, and I'll be teaching you braille. Would you like to sign in with Google, so I can remember "
+        "your progress, or carry on as a guest? Just say Google, or guest.",
+        "Welcome to Braillie! I'm Braillo. If you sign in with Google, I'll keep track of how you're doing. If you'd "
+        "rather not, you can come in as a guest. Say Google, or guest.",
+        "Hello, and welcome to Braillie. I'm Braillo, your braille tutor. To save your progress, say Google and sign "
+        "in. To just try it out, say guest. You can also use the tab key to move between the options.",
+        "Hi there, welcome to Braillie. You can sign in with Google to keep your progress, or come in as a guest, "
+        "without an account. Say Google, or say guest.",
+        "Welcome! I'm Braillo. Before we begin, would you like to sign in? Say Google to save your progress, or guest "
+        "to jump straight in.",
+        "Hello! This is Braillie, and I'm Braillo. Say Google if you'd like me to remember your progress, or say guest "
+        "to start without an account.",
+        "Hi, I'm Braillo. Welcome to Braillie. There are two ways in: say Google to sign in and save your progress, or "
+        "say guest to start right away.",
+        "Welcome to Braillie. I'm Braillo, and I'm here to help you learn braille by touch. Say Google to sign in, or "
+        "guest to carry on without an account.",
+        "Hello, welcome to Braillie! Would you like to sign in with Google, so your progress is saved? Say Google, or "
+        "say guest to come in as a guest. The tab key works too.",
+        "Hi! Braillo here. Welcome to Braillie. Sign in with Google and I'll remember where you got to, or say guest to"
+        " start fresh, without an account.",
     ),
     "welcome_back": (
-        "Welcome back, {name}. Say continue to carry on as {name}, or say switch to choose another way.",
-        "Hi again, {name}! Say continue to pick up where you left off, or say switch to use another way in.",
-        "Good to see you, {name}. Say continue to carry on, or say switch if this isn't you.",
-        "Hello again, {name}. To carry on, say continue. To sign in another way, say switch.",
-        "Nice to have you back, {name}! Say continue to keep going, or switch to choose a different way in.",
-        "{name}, welcome back. Say continue, and we'll carry on. Say switch if you'd like another way in.",
-        "Hey, {name}, good to hear from you again. Say continue to carry on as {name}, or say switch.",
-        "Welcome back! Is that you, {name}? Say continue to carry on, or say switch to choose another way.",
-        "Hi, {name}, back for more? Say continue to pick up where you left off, or say switch if it's someone else.",
-        "There you are, {name}. Say continue to carry on, or say switch to sign in another way.",
+        "Welcome back, {name}! Say continue to pick up where you left off, or switch if this isn't you.",
+        "Hi again, {name}. Shall we carry on? Say continue, or say switch to use a different account.",
+        "Good to see you again, {name}. Say continue to keep going, or switch if you're someone else.",
+        "Hello again, {name}! Ready to carry on? Just say continue. Or say switch to sign in another way.",
+        "Nice to have you back, {name}. Say continue, and we'll pick up where we left off. Or say switch.",
+        "{name}, welcome back! Say continue to carry on, or switch if this isn't you.",
+        "Hey, {name}, good to hear from you again. Say continue when you're ready, or switch to change accounts.",
+        "Welcome back! Is that you, {name}? Say continue if it is, or switch if it's someone else.",
+        "Hi, {name}, back for more? Say continue to pick up where you left off, or say switch.",
+        "There you are, {name}! Say continue to keep going, or switch to sign in another way.",
     ),
-    "retry_back": "Sorry, I did not catch that. Say continue, or say switch.",
-    "again_name": "Okay. Please say your first name again, or say skip.",
-    "retry_choice": "Sorry, I did not catch that. Say Google to sign in, or say guest to continue without an account.",
+    "retry_back": "Sorry, I didn't catch that. Say continue, or switch.",
+    "again_name": "Okay. What's your first name, then? Or say skip.",
+    "retry_choice": "Sorry, I didn't catch that. Say Google to sign in, or guest to carry on without an account.",
     "ask_name": (
-        "Okay, without an account. Your progress will not be saved. What is your first name? Or say skip.",
-        "Okay, no account. Just so you know, your progress won't be saved. What's your first name? You can also say "
+        "Okay, no account. Just so you know, your progress won't be saved this time. What's your first name? Or say "
         "skip.",
-        "Sure, let's go without an account. Nothing will be saved. What should I call you? Say your first name, or say "
+        "Sure, we'll go without an account, so nothing gets saved. What should I call you? You can also say skip.",
+        "Alright, as a guest, then. Your progress won't be kept, but that's fine. What's your first name? Or just say "
         "skip.",
-        "Alright, as a guest, then. Your progress won't be kept. What's your first name? Or just say skip.",
-        "No account, no problem. Remember, nothing is saved this way. Tell me your first name, or say skip.",
-        "Great, we'll carry on without an account, so your progress won't be saved. What's your first name? Say skip if"
-        " you'd rather not.",
-        "Okay, guest it is. Your progress won't be saved. What would you like me to call you? Say your first name, or "
-        "say skip.",
-        "Got it, no account. Just a heads up, nothing gets saved. What's your first name? Or say skip.",
-        "Fine by me. Without an account, your progress isn't kept. Could you tell me your first name? Or say skip.",
-        "Okay, let's skip the account. Your progress won't be saved. What's your first name? You can say skip, too.",
+        "No account, no problem. Remember, nothing is saved this way. What's your first name? Say skip if you'd rather "
+        "not.",
+        "Great, let's start as a guest. Your progress won't be saved. What would you like me to call you? Or say skip.",
+        "Okay, guest it is. Nothing will be saved, just so you know. What's your first name? You can say skip, too.",
+        "Got it, no account. Your progress won't be kept this time. What's your first name? Or say skip.",
+        "Fine by me. Without an account, I won't keep your progress. Could you tell me your first name? Or say skip.",
+        "Okay, let's skip the account. Your progress won't be saved. What's your first name? Or say skip.",
+        "Sure thing. As a guest, nothing gets saved. What's your first name? If you'd rather not say, just say skip.",
     ),
-    "confirm_name": "Is your name {name}? Say yes, or say your name again.",
-    "retry_name": "Sorry, I did not catch that. Please say your first name, or say skip.",
+    "confirm_name": "Is your name {name}? Say yes, or tell me your name again.",
+    "retry_name": "Sorry, I didn't catch that. What's your first name? Or say skip.",
     "go_guest": (
-        "Nice to meet you, {name}. Let us connect your phone.",
-        "Lovely to meet you, {name}. Next, let's connect your phone.",
-        "Hi, {name}! Now let's get your phone connected.",
-        "Great to meet you, {name}. Now, your phone.",
-        "Hello, {name}! Let's connect your phone next.",
-        "Welcome, {name}. Next up, connecting your phone.",
+        "Nice to meet you, {name}! Now let's connect your phone.",
+        "Lovely to meet you, {name}. Next, let's get your phone connected.",
+        "Hi, {name}! Let's connect your phone next.",
+        "Great to meet you, {name}. Now for your phone.",
+        "Hello, {name}! Next up, your phone.",
+        "Welcome, {name}. Let's get your phone set up.",
         "Nice one, {name}. Now let's link your phone.",
         "Pleased to meet you, {name}. Let's set up your phone.",
         "Hi there, {name}! Time to connect your phone.",
         "Good to meet you, {name}. Let's get your phone ready.",
     ),
-    "go_guest_anon": (
-        "Okay. Let us connect your phone.",
-        "No problem. Next, let's connect your phone.",
-        "Alright. Now let's get your phone connected.",
-        "Sure thing. Now, your phone.",
-        "That's fine. Let's connect your phone next.",
-        "Okay then. Next up, connecting your phone.",
-        "No worries. Now let's link your phone.",
-        "Fair enough. Let's set up your phone.",
-        "Alright then. Time to connect your phone.",
-        "Okay. Let's get your phone ready.",
+    "go_guest_anon": (  # (a guest is not asked for a name: just "guest". The next page says what to do: connect the phone)
+        "Hi, guest!",
+        "Hello, guest!",
+        "Welcome, guest!",
+        "Hi there, guest!",
+        "Welcome in, guest!",
+        "Hello there, guest!",
+        "Hi, guest, good to have you!",
+        "Welcome aboard, guest!",
+        "Hey there, guest!",
+        "Hi, guest! Glad you're here.",
     ),
-    "go_google": "Opening Google. From here, use your keyboard or screen reader on the Google page.",
-    "give_up": "I will stop listening now. You can use the buttons on the screen: press tab to move between them.",
+    "go_google": "Opening Google now. From here, use your keyboard or screen reader on the Google page.",
+    "give_up": "I'll stop listening for now. You can use the buttons on the screen instead: press tab to move between "
+               "them.",
     "connect_phone": (
-        "Now let us connect your phone. Open the camera on your phone and point it at the code on the screen, then tap "
-        "the link that appears. When the page opens, tap the big button, and I will greet you. If the code cannot be "
-        "scanned, open the address shown on the screen in the phone's browser, and type the code {code}.",
-        "Next, your phone. Point your phone's camera at the code on the screen, and tap the link that pops up. When the"
-        " page opens, tap the big Start button, and I'll say hello. Can't scan it? Open the address on the screen in "
-        "your phone's browser, and type the code {code}.",
-        "Let's link your phone. Open its camera, aim it at the code on the screen, and tap the link. Then tap the big "
-        "Start button on the page that opens. If scanning doesn't work, type the address on the screen into your "
-        "phone's browser, and enter the code {code}.",
-        "Time to connect your phone. Open the phone's camera and hold it up to the code on the screen. Tap the link it "
-        "shows, then tap the big Start button, and I'll greet you. If it won't scan, open the address on the screen in "
-        "the phone's browser and type the code {code}.",
-        "Now for your phone. Use its camera to scan the code on the screen, then tap the link. On the page that opens, "
-        "tap the big Start button. No luck scanning? Type the address shown on the screen into the phone's browser, "
-        "with the code {code}.",
-        "Let's get your phone ready. Point the phone's camera at the code on the screen until a link appears, and tap "
-        "it. Then tap the big Start button, and you'll hear me say hello. If that doesn't work, open the address on the"
-        " screen in the phone's browser and type the code {code}.",
-        "Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. Tap "
-        "the big Start button on the new page, and I'll greet you. If the code won't scan, go to the address on the "
-        "screen in the phone's browser and enter the code {code}.",
-        "Okay, the phone. Scan the code on the screen with your phone's camera, then tap the link. When the page loads,"
-        " tap the big Start button. If scanning is tricky, type the address on the screen into the phone's browser, and"
-        " the code {code}.",
-        "Now we'll connect your phone. Hold its camera up to the code on the screen and tap the link that appears. Then"
-        " press the big Start button, and I'll say hello. Or, if it won't scan, open the address on the screen in your "
-        "phone's browser and type the code {code}.",
-        "Let's bring in your phone. Point its camera at the code on the screen and tap the link. On the page that "
+        "Now let's connect your phone. Open its camera, point it at the code on the screen, and tap the link that pops "
+        "up. Then tap the big Start button, and I'll say hello. If it won't scan, type the address on the screen into "
+        "your phone's browser, and enter the code {code}.",
+        "Next, your phone. Point its camera at the code on the screen and tap the link that appears. When the page "
+        "opens, tap the big Start button, and you'll hear me say hello. Can't scan it? Type the address from the screen"
+        " into your phone's browser, then the code {code}.",
+        "Let's link your phone. Open the camera, aim it at the code on the screen, and tap the link. On the page that "
+        "opens, tap the big Start button. If scanning doesn't work, type the address on the screen into the phone's "
+        "browser, with the code {code}.",
+        "Time to connect your phone. Hold its camera up to the code on the screen, then tap the link it shows. Tap the "
+        "big Start button, and I'll greet you. If it won't scan, open the address on the screen in the phone's browser,"
+        " and type the code {code}.",
+        "Now for your phone. Scan the code on the screen with its camera, and tap the link. When the page loads, tap "
+        "the big Start button. No luck scanning? Type the address on the screen into the phone's browser, and the code "
+        "{code}.",
+        "Let's get your phone ready. Point its camera at the code on the screen until a link appears, and tap it. Then "
+        "tap the big Start button, and I'll say hello. If that doesn't work, open the address on the screen in the "
+        "phone's browser, and type the code {code}.",
+        "Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. On "
+        "the new page, tap the big Start button. If the code won't scan, go to the address on the screen in the phone's"
+        " browser, and enter the code {code}.",
+        "Okay, now the phone. Use its camera to scan the code on the screen, and tap the link. When the page loads, tap"
+        " the big Start button. If scanning is tricky, type the address on the screen into the phone's browser, with "
+        "the code {code}.",
+        "Now we'll connect your phone. Hold its camera up to the code on the screen, and tap the link that appears. "
+        "Then press the big Start button, and I'll say hello. If it won't scan, open the address on the screen in your "
+        "phone's browser, and type the code {code}.",
+        "Let's bring in your phone. Point its camera at the code on the screen, and tap the link. On the page that "
         "opens, tap the big Start button, and I'll greet you. Can't scan? Type the address from the screen into the "
         "phone's browser, then the code {code}.",
     ),
 }
 DIALOGUE_SECONDS = 30.0  # the sign-in page keeps the conversation open by pinging; if it stops (tab closed) the tutor goes back to normal
+# Your page (the profile). Only the tutor says these, never the browser's own voice: {progress} and {letters} are filled in from the
+# tutor's record of the learner (see progress_line and letters_line), never from the page.
+PROMPTS.update({
+    "account": (
+        "This is your page, {name}. {progress} Say continue to go home, letters to hear your alphabet, or sign out.",
+        "Here's how you're getting on, {name}. {progress} Say letters to hear which ones you know, continue to go home, or sign out.",
+        "Hi, {name}, this is your page. {progress} To hear your alphabet, say letters. Say continue to go home, or say sign out.",
+        "{name}, here's your progress. {progress} Say continue to carry on, letters for your alphabet, or sign out.",
+        "Welcome to your page, {name}. {progress} You can say letters, continue, or sign out.",
+    ),
+    "account_letters": "{letters} Say continue to go home, or say learn to practise.",
+    "account_help": "On this page, say letters to hear your alphabet, continue to go home, learn, read or quiz to start one of them, "
+                    "or sign out. Say repeat to hear your page again.",
+    "account_retry": "Sorry, I did not catch that. Say continue, letters, or sign out.",
+    "account_bye": "Signing you out. See you soon, {name}.",
+})
 
 
 def clean_name(name) -> str:
     """A name safe to show and to say: letters, digits, spaces and a few marks, at most 40 characters; "friend" if nothing is left."""
     text = re.sub(r"[^\w .'\-]", "", str(name or ""), flags=re.UNICODE)
     return " ".join(text.split())[:40].strip() or "friend"
+
+
+# How a letter's name comes back from speech recognition when it is said on its own ("B" is often written "be" or "bee").
+LETTER_SOUNDS = {"ay": "a", "bee": "b", "be": "b", "see": "c", "sea": "c", "dee": "d", "ee": "e", "eff": "f", "gee": "g", "aitch": "h",
+                 "eye": "i", "jay": "j", "kay": "k", "el": "l", "elle": "l", "em": "m", "en": "n", "oh": "o", "pee": "p", "cue": "q",
+                 "queue": "q", "are": "r", "ess": "s", "tea": "t", "tee": "t", "you": "u", "vee": "v", "ex": "x", "why": "y", "zed": "z",
+                 "zee": "z", "double you": "w", "double u": "w"}
+_SPOKEN_LETTER = re.compile(
+    r"^(?:(?:um|uh|so|okay|ok|yes|yeah)\s+)?(?:(?:is (?:this|it|that)|it'?s|it is|this is|that'?s|that is|i think (?:it'?s|this is)?|here'?s)\s+)?"
+    r"(?:the\s+)?(?:letter\s+)?(?P<l>[a-z]|double (?:you|u)|[a-z]{2,6})(?:\s+(?:here|right|now))?$")
+
+
+# The website's pages, as Braillo is told about them (the website says which is open, see set_page).
+WEBSITE_PAGES = {
+    "landing": "the front page of the website, about Braillie; nothing is running yet",
+    "login": "signing in: they say Google to sign in (progress saved) or guest (nothing saved), then their first name",
+    "connect-phone": "connecting the phone: they scan the QR code on the laptop screen with the phone's camera, open the link, and tap "
+                     "Start; the phone then becomes the camera that watches the sheet",
+    "modes": "home: they choose Learn (the letters, a few at a time), Read (words read aloud) or Quiz (find look-alike letters)",
+    "practice": "the activity they chose, with the sheet under the phone's camera",
+    "account": "their own page: how many letters they know, days in a row, sessions, and their alphabet",
+    "privacy": "the privacy policy: what Braillie keeps and sends, and what it does not",
+    "terms": "the terms of use",
+    "accessibility": "the accessibility statement: how Braillie works with screen readers, keyboards and voice",
+}
+# Pages that have no voice of their own: arriving on one, Braillo says where they are and how to hear what they can do there.
+ARRIVAL_LINES = {
+    "landing": "Hi, I'm Braillo. Would you like me to talk you through this website by voice? Say yes, or no.",
+    "privacy": "This is the privacy policy. Say go back to return, or what can I say to hear the links on this page.",
+    "terms": "These are the terms of use. Say go back to return, or what can I say to hear the links on this page.",
+    "accessibility": "This is the accessibility statement. Say go back to return, or what can I say to hear the links on this page.",
+}
+# The front page asks first (above); a "yes" gets the welcome, and later visits a short reminder; a "no" and it stays quiet there.
+LANDING_WELCOME = ("Welcome to Braillie. Here you learn braille by touch, with me, Braillo, talking you through it. First, print the "
+                   "practice sheets, and press each dot through from the back with a pen, so the dots stand up. If you can't do that "
+                   "yourself, ask someone to print and poke them for you. When you're ready, say start learning to begin.")
+LANDING_AGAIN = "You're on Braillie's front page. Say start learning to begin, or what can I say to hear everything here."
+LANDING_NO = "Okay, I'll stay quiet. If you want me, just say Braillo."
+_YES = re.compile(r"^(?:yes|yeah|yep|yup|sure|please|okay|ok|yes please|go on|go ahead|of course|i would|i do|please do)\b")
+_NO = re.compile(r"^(?:no|nope|nah|no thanks|no thank you|not now|i'?m fine|that'?s okay)\b")
+# "Help" on the pages of the way in, where the activities' own help does not apply yet (nothing can be learned before signing in).
+PAGE_HELP = {
+    "login": "Say Google to sign in, or guest to carry on without an account.",
+    "connect-phone": ("Scan the code on the screen with your phone's camera, open the link, and tap Start. If it won't scan, type the "
+                      "address on the screen into the phone's browser."),
+    "account": "Say letters to hear your alphabet, continue to go home, or sign out.",
+}
+HELP_CONTROLS = 4  # "help" on a page names this many of its controls (its main ones: the website lists those first)
+UTILITY_CONTROLS = {"braillie, home", "sign in", "display", "standard", "large", "larger", "largest", "match my device", "light", "dark",
+                    "black on white", "yellow on black"}  # (on every page: not what "help" there is about)
+
+
+def _or_list(names: list) -> str:
+    """ "A", "A or B", "A, B, or C" """
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])}, or {names[-1]}"
+
+
+ARRIVAL_AGAIN_SECONDS = 10.0  # (the same page reported twice in quick succession, by two quick reloads say, is announced once)
+_CONTROL_LEAD = re.compile(r"^(?:(?:please|can you|could you|okay|ok|now)\s+)*(?:press|click|tap|select|choose|open|go to|hit|pick|use)\s+(?:the\s+)?")
+_CONTROL_TAIL = re.compile(r"\s+(?:button|link|option|please|for me)$")
+_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "first": 1, "second": 2, "third": 3, "fourth": 4,
+            "fifth": 5, "sixth": 6}
+
+
+def lesson_named(text: str) -> Optional[int]:
+    """The lesson a short request names, counted from 0: "lesson three", "go to lesson 2", "let's do K to O", "the look-alikes
+    lesson". None if it names none (a name alone, without "lesson" or a word like "go to", is not taken: it may be about letters)."""
+    t = " ".join(re.sub(r"[^a-z0-9' ]", " ", str(text or "").lower().replace("-", " ")).split())
+    if not t or len(t.split()) > 9:
+        return None
+    m = re.search(r"\blesson (?:number )?(\d|one|two|three|four|five|six)\b|\b(first|second|third|fourth|fifth|sixth) lesson\b", t)
+    if m:
+        word = m.group(1) or m.group(2)
+        number = int(word) if word.isdigit() else _NUMBERS[word]
+        return number - 1 if 1 <= number <= len(LESSONS) else None
+    if not ("lesson" in t or re.match(r"^(?:go to|do|start|open|switch to|let'?s do|let'?s learn|teach me|take me to|can we do)\b", t)):
+        return None
+    for i, lesson in enumerate(LESSONS):
+        names = {lesson.title.lower().replace("-", " "), f"{lesson.letters[0]} to {lesson.letters[-1]}"}
+        if lesson.id == "l6":
+            names |= {"look alikes", "lookalikes", "look alike"}
+        if any(re.search(rf"\b{re.escape(name)}\b", t) for name in names):
+            return i
+    return None
+
+
+def spoken_letter(text: str) -> Optional[str]:
+    """The letter a short answer names ("E", "is this E?", "it's the letter bee"), or None if it does not name one on its own."""
+    t = " ".join(re.sub(r"[^a-z' ]", " ", str(text or "").lower()).split())
+    m = _SPOKEN_LETTER.match(t)
+    if not m:
+        return None
+    word = m.group("l")
+    return word if len(word) == 1 else LETTER_SOUNDS.get(word)
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _spoken_list(letters) -> str:
+    """"A", "A and B", "A, B and C": letters as they are said."""
+    up = [l.upper() for l in letters]
+    return up[0] if len(up) == 1 else f"{', '.join(up[:-1])} and {up[-1]}"
+
+
+def progress_line(summary: dict) -> str:
+    """The learner's progress in a sentence or two, for their page: letters known, days in a row, sessions."""
+    learned, streak, sessions = summary.get("learned", 0), summary.get("streak", 0), summary.get("sessions", 0)
+    if not sessions and not summary.get("practised", 0):
+        return "You have not had a lesson yet. Say learn to start your first one."
+    known = "You do not know any letters yet." if not learned else f"You know {learned} of 26 letters."
+    return f"{known} You have practised {_count(streak, 'day', 'days')} in a row, over {_count(sessions, 'session', 'sessions')}."
+
+
+def letters_line(summary: dict, learned=(), practised=()) -> str:
+    """Which letters the learner knows, which they are still learning, and how many are left to try."""
+    learning = [l for l in practised if l not in learned]
+    left = 26 - len(set(learned) | set(practised))
+    parts = []
+    if learned:
+        parts.append(f"You know {_spoken_list(learned)}.")
+    if learning:
+        parts.append(f"You are still learning {_spoken_list(learning)}.")
+    if not parts:
+        return "You have not practised any letters yet."
+    if left:
+        parts.append(f"{_count(left, 'letter is', 'letters are')} still to try.")
+    return " ".join(parts)
 
 
 _prompt_rng = random.Random()
@@ -568,6 +710,13 @@ class TutorSession:
         self.coach, self.confusions, self.last_debrief = coach, {}, None  # coach = optional LLM extras; see llm.py
         self.ask = ask  # optional Claude Q&A: say "braillo" then ask anything
         self._ask_armed = False
+        self.nav = {"n": 0, "to": None, "target": None}  # what the website is asked to do (a page, scrolling, a control): see _go
+        self.controls: list = []  # the names of the buttons, links and options on the open page (see set_page)
+        self._announced: dict = {}  # page -> when it was last announced
+        self.guided: Optional[bool] = None  # asked on the front page: talk them through it? (None: not answered yet)
+        self._offer_n: Optional[int] = None  # what had been heard when that was asked: an answer comes after it
+        self.website = False  # the website signs people in (tutor_server sets this): until it has, voice starts nothing
+        self.page: Optional[str] = None  # which page of the website is open (see set_page): Braillo knows where the learner is
         self._ask_heard_n = 0
         self.names = names  # (row, col) -> sheets.Symbol for every cell of a printed sheet; None = every letter cell is a letter
         self.voice, self.wc, self.cells, self.finger, self.scan = voice, wc, cells, finger, scan
@@ -616,7 +765,17 @@ class TutorSession:
         """Register the voice commands. Each one plays a tiny sound first, so a learner who cannot see the screen knows they were heard."""
         def heard(handler):
             def run() -> None:
-                if self.dialogue_active() or self.muted:  # someone is answering the sign-in page (a name must not start a lesson), or muted
+                if self.muted:
+                    return
+                getting_around = handler in (self.on_back, self.on_scroll_down, self.on_scroll_up, self.on_top)
+                if self.dialogue_active() and not getting_around:  # answering the sign-in page (a name must not start a lesson)
+                    return
+                if self.website and not self.dialogue_active():  # a button's own name on the open page wins over a command
+                    heard_now = self.heard_fn() if self.heard_fn is not None else None
+                    control = self._control_for(str((heard_now or {}).get("text") or ""))
+                    if control is not None:
+                        return self._press(control)
+                if handler in self._starts_something() and self._not_ready_to_start():
                     return
                 if self._ask_armed and handler is not self.on_braillo:
                     self._ask_armed = False  # another command: drop the pending question
@@ -634,13 +793,37 @@ class TutorSession:
         if callable(defer):  # Braillo can judge a long sentence: a command word buried in one is not run blindly
             defer(self.ask is not None and self.ask.enabled)
 
+    def _starts_something(self) -> tuple:
+        """The commands that start an activity or go somewhere (the rest only talk, or change how the tutor talks)."""
+        return (self.on_start, self.on_mode_learn, self.on_mode_read, self.on_mode_quiz, self.on_next_lesson, self.on_previous_lesson,
+                self.on_my_page, self.on_practice, self.on_explore, self.on_found_it, self.on_next, self.on_next_page)
+
+    def _not_ready_to_start(self) -> bool:
+        """Said by voice before anyone has signed in, or before the phone (the camera) is linked: nothing starts yet; it says why. (The
+        website's own buttons are not stopped: they only appear once both are done.)"""
+        if not self.hub or not self.website:
+            return False
+        if self.user is None:  # ("start learning" on the front page, say): that begins with signing in, so off to it
+            if self.page == "login":
+                self.say("Let's get you signed in first. Say Google, or guest.")
+            else:
+                self._go("login")  # (the sign-in page then speaks for itself)
+            return True
+        if self.phone_ready_fn is not None and not self.phone_ready_fn():
+            self.say("Let's connect your phone first, so I can see the sheet. Scan the code on the screen with its camera.")
+            return True
+        return False
+
     def _commands(self) -> dict:
         """Voice command name -> handler (also what Braillo's understanding of free speech can run, see _talk)."""
         return {"start quiz": self.on_start, "repeat": self.on_repeat, "hint": self.on_hint, "found it": self.on_found_it,
                 "next": self.on_next, "next page": self.on_next_page, "explore": self.on_explore, "practice": self.on_practice,
                 "learn": self.on_mode_learn, "read": self.on_mode_read, "quiz": self.on_mode_quiz, "menu": self.on_mode_menu,
                 "help": self.on_help, "slower": self.on_slower, "faster": self.on_faster, "take your time": self.on_relaxed,
-                "normal pace": self.on_normal, "stop": self.on_stop, "hush": self.on_hush, "braillo": self.on_braillo}
+                "normal pace": self.on_normal, "stop": self.on_stop, "hush": self.on_hush, "braillo": self.on_braillo,
+                "next lesson": self.on_next_lesson, "previous lesson": self.on_previous_lesson, "my page": self.on_my_page,
+                "sign out": self.on_sign_out, "more help": self.on_more_help, "back": self.on_back, "scroll down": self.on_scroll_down, "scroll up": self.on_scroll_up,
+                "top": self.on_top}
 
     def _voice_module(self):
         return getattr(self.voice, "voice", self.voice)  # (a wrapped voice keeps the real module as .voice)
@@ -767,6 +950,25 @@ class TutorSession:
             return msg if self.nag(msg, now) else None
         if self.heard_fn is not None:
             heard = self.heard_fn()
+            answer = self._answers_offer(heard)
+            if answer is not None:  # "yes" (or "no") to "would you like me to talk you through this website?"
+                self.hearing.seen, self.guided, self._offer_n = int(heard["n"]), answer, None
+                self.say(LANDING_WELCOME if answer else LANDING_NO)
+                return None
+            control = self._names_a_control(heard)
+            if control is not None:  # "privacy policy", "press dark": that button, link or option on the open page
+                self.hearing.seen = int(heard["n"])
+                self._press(control)
+                return None
+            index = self._asks_for_lesson(heard)
+            if index is not None:  # "lesson three", "go to K to O"
+                self.hearing.seen = int(heard["n"])
+                self.on_lesson(index)
+                return None
+            if self._answers_by_name(heard):  # "is this E?" with a finger on a cell: that is an answer, so check it
+                self.hearing.seen = int(heard["n"])
+                self.on_found_it()
+                return None
             if self._wants_talk(heard):
                 self.hearing.seen = int(heard["n"])  # dealt with here: Hearing must not also say "I didn't catch that"
                 return self._talk(str(heard.get("text") or ""))
@@ -775,10 +977,42 @@ class TutorSession:
             return msg if self.nag(msg, now) else None
         return None
 
+    def _names_a_control(self, heard: Optional[dict]) -> Optional[str]:
+        """Something new was said (no command) that names a control on the open page: which one."""
+        if not self.website or not heard or heard.get("matched") or self.dialogue_active() or self.muted:
+            return None
+        n = int(heard.get("n", 0))
+        if self.hearing.seen is None or n <= self.hearing.seen:
+            return None
+        return self._control_for(str(heard.get("text") or ""))
+
+    def _asks_for_lesson(self, heard: Optional[dict]) -> Optional[int]:
+        """Something new was said that asks for a lesson by number or name ("lesson three", "go to K to O"): which one (from 0)."""
+        if not self.hub or not heard or heard.get("matched") or self.dialogue_active() or self.muted:
+            return None
+        n = int(heard.get("n", 0))
+        if self.hearing.seen is None or n <= self.hearing.seen:
+            return None
+        return lesson_named(str(heard.get("text") or ""))
+
+    def _answers_by_name(self, heard: Optional[dict]) -> bool:
+        """Something new was said that names a letter ("E", "is this E?", "it's the letter E") while a letter is being asked for:
+        the learner is answering with their finger on it, so it counts as "found it" (the finger decides; the name is not graded)."""
+        if not heard or heard.get("matched") or self.dialogue_active() or self.muted:
+            return False
+        n = int(heard.get("n", 0))
+        if self.hearing.seen is None or n <= self.hearing.seen:
+            return False
+        waiting = (self.journey is not None and self.journey.target is not None) or (
+            self.journey is None and self.state == "asking" and self.mode not in ("read", "word-quiz"))
+        return waiting and spoken_letter(str(heard.get("text") or "")) is not None
+
     # ---- talking with Braillo: free speech that is not a command ------------------------------------
     def _wants_talk(self, heard: Optional[dict]) -> bool:
         """Something new was said that matched no command, and Braillo is on to work out what was meant."""
         if not heard or heard.get("matched") or self.ask is None or not self.ask.enabled or self.dialogue_active() or self.muted:
+            return False
+        if self.hub and self.website and self.user is None:  # before signing in, free speech is not acted on (a quiz on the sign-in page)
             return False
         if heard.get("reason") == OVER_SPEECH:  # a word or two caught while it was talking: only an answer the page expects counts
             return False
@@ -787,31 +1021,164 @@ class TutorSession:
             return False
         return len(str(heard.get("text") or "").split()) >= TALK_MIN_WORDS
 
+    def set_page(self, page: str, controls: Optional[list] = None, arrived: bool = False, listen: bool = False) -> None:
+        """Which page of the website is open, and the names of the buttons, links and options on it (it says so whenever they change):
+        Braillo knows where the learner is, and any of them can be used by voice. A page with no voice of its own is announced when
+        they arrive on it (`arrived`: opened, reloaded, or its tab brought to the front), or at once when they ask (`listen`)."""
+        if page not in WEBSITE_PAGES:
+            return
+        arrived = arrived or page != self.page
+        self.page = page
+        if controls is not None:
+            self.controls = [" ".join(str(c).split())[:60] for c in controls if str(c).strip()][:60]
+        if (arrived or listen) and page in ARRIVAL_LINES and not self.dialogue_active():
+            now = time.monotonic()
+            if listen or now - self._announced.get(page, -1e9) >= ARRIVAL_AGAIN_SECONDS:
+                self._announced[page] = now
+                if listen:
+                    self.cut_speech()  # (asked for: it replaces whatever was being said)
+                line = self._arrival_line(page, listen)
+                if line:
+                    threading.Thread(target=self.say, args=(line,), daemon=True).start()
+
+    def _arrival_line(self, page: str, listen: bool) -> Optional[str]:
+        """What to say on arriving at a page with no voice of its own. The front page asks first whether to talk them through it."""
+        if page != "landing":
+            return ARRIVAL_LINES[page]
+        if listen:  # (the Listen key: they asked for it)
+            return LANDING_WELCOME
+        if self.guided is None:
+            self._offer_n = self._heard_n()
+            return ARRIVAL_LINES["landing"]  # "would you like me to talk you through it?"
+        return LANDING_AGAIN if self.guided else None
+
+    def _heard_n(self) -> int:
+        heard = self.heard_fn() if self.heard_fn is not None else None
+        return int((heard or {}).get("n", 0))
+
+    def _answers_offer(self, heard: Optional[dict]) -> Optional[bool]:
+        """A yes or a no, said to the front page's question (whether to talk them through it): which, or None."""
+        if self._offer_n is None or self.page != "landing" or not heard or heard.get("matched"):
+            return None
+        if int(heard.get("n", 0)) <= self._offer_n:
+            return None
+        t = " ".join(re.sub(r"[^a-z' ]", " ", str(heard.get("text") or "").lower()).split())
+        return True if _YES.match(t) else False if _NO.match(t) else None
+
+    def _control_for(self, text: str) -> Optional[str]:
+        """The control on the open page that `text` names ("start learning", "press the dark button"), or None."""
+        if not self.controls:
+            return None
+        said = " ".join(re.sub(r"[^\w' ]", " ", str(text or "").lower()).split())
+        said = _CONTROL_TAIL.sub("", _CONTROL_LEAD.sub("", said)).strip()
+        if not said or len(said.split()) > 8:
+            return None
+        names = {" ".join(re.sub(r"[^\w' ]", " ", c.lower()).split()): c for c in self.controls}
+        if said in names:
+            return names[said]
+        close = difflib.get_close_matches(said, list(names), n=1, cutoff=0.86)  # (a word misheard: "dork" for "dark")
+        return names[close[0]] if close else None
+
+    def _press(self, control: str) -> None:
+        """Use a control on the open page by voice: the website presses it (see VoiceControl)."""
+        self.earcons.play("locked")
+        self._go("click", control)
+
     def talk_context(self) -> dict:
-        """What is happening right now, for Braillo (lesson facts only: no names, images or audio). No lock: a command may hold it
-        while it speaks."""
+        """What is happening right now, for Braillo: where the learner is, what the camera sees, how they are getting on, and what he
+        is waiting for them to do (lesson facts only: no names, images or audio). No lock: a command may hold it while it speaks."""
         ctx: dict = {"activity": self.hub_mode if self.hub else self.mode, "state": self.state}
+        if self.page:
+            ctx["page"], ctx["page_is_for"] = self.page, WEBSITE_PAGES[self.page]
+        if self.hub:
+            ctx["signed_in"] = "no" if self.user is None else ("with Google (progress saved)" if self.user["kind"] == "google"
+                                                               else "as a guest (progress not saved)")
+        if self.phone_ready_fn is not None:
+            ctx["phone_connected"] = bool(self.phone_ready_fn())
         try:
             ctx["sheet"] = self.current_sheet()
         except Exception:
             pass
+        if self.page_ok_fn is not None:
+            ctx["camera_sees_the_sheet"] = bool(self.page_ok_fn())
+        ctx["finger"] = self._finger_words()
         j = self.journey
         if j is not None:
             st = j.status()
             ctx["lesson_phase"] = st["phase"]
             if st["lesson"]:
-                ctx["lesson"] = st["lesson"]["title"]
+                ctx["lesson"] = f"{st['lesson']['title']} (lesson {st['lesson']['index']} of {st['lesson']['of']})"
+            if st.get("word"):
+                ctx["spelling_word"] = st["word"]
             if st["target"]:
-                ctx.update(target_letter=st["target"], target_dots=st["target_dots"], hints_given=st["hints"], wrong_tries=st["tries"])
+                ctx.update(target_letter=st["target"].upper(), target_dots=st["target_dots"], hints_given=st["hints"],
+                           wrong_tries=st["tries"], letters_left_in_this_part=st["remaining"])
         elif self.state == "asking":
             try:
                 ctx["quiz_prompt"] = self._prompt()
                 ctx["question"] = f"{self.index + 1} of {len(self.items)}"
             except (IndexError, StopIteration, AttributeError):
                 pass
-        ctx["you_said_last"] = list(self._recent)[-3:]
-        ctx["commands"] = acc.help_text(self.hub_mode if self.hub else None, self.mode, self.state)
+        if self.hub and self.user is not None:
+            p = self.progress
+            nxt = p.next_lesson(LESSONS)
+            ctx["progress"] = {"letters_known_well": len(p.learned()), "letters_met": len(p.practised()),
+                               "lessons_done": [l.title for l in LESSONS if l.id in p.lessons],
+                               "next_lesson": nxt.title if nxt is not None else "all done", "days_in_a_row": p.streak}
+        ctx["waiting_for"] = self._waiting_for()
+        recent = list(self._recent)[-3:]
+        if self.user is not None and self.user.get("name"):  # (no names go to the model: the learner's is taken out of what was said)
+            name = re.compile(rf"\b{re.escape(self.user['name'])}\b", re.IGNORECASE)
+            recent = [name.sub("you", line) for line in recent]
+        ctx["you_said_last"] = recent
+        ctx["commands"] = acc.more_help_text(self.hub_mode if self.hub else None, self.mode, self.state)
+        if self.controls:
+            ctx["buttons_on_this_page"] = self.controls
         return ctx
+
+    def _finger_words(self) -> str:
+        """Where the learner's finger is, in words: on which letter, or that it is not on a cell, or not seen."""
+        try:
+            pos = self.finger()
+        except Exception:
+            pos = None
+        if pos is None:
+            return "not seen by the camera"
+        cells = self.grade_cells() if callable(getattr(self, "grade_cells", None)) else self.cells
+        hit = cell_at(cells or self.cells or [], *pos)
+        if hit is None:
+            return "on the sheet, but not on a letter"
+        letter = letter_of(hit["dots"])
+        dots = ", ".join(str(d) for d in sorted(hit["dots"]))
+        return f"on the letter {letter.upper()} (dots {dots})" if letter else f"on a cell with dots {dots}"
+
+    def _waiting_for(self) -> str:
+        """What the tutor expects the learner to do next, in a sentence."""
+        if self.hub and self.website and self.user is None:
+            return "them to sign in: say Google, or guest, on the sign-in page"
+        if self.hub and self.phone_ready_fn is not None and not self.phone_ready_fn():
+            return "them to connect their phone: scan the QR code on the screen with the phone's camera, then tap Start"
+        if self.hub and self.hub_mode == "menu":
+            return "them to choose: learn, read or quiz (or say my page to hear how they are doing)"
+        j = self.journey
+        if j is not None:
+            st = j.status()
+            if st["phase"] == "await_sheet" and st["lesson"]:
+                return f"them to put the {st['lesson']['sheet']} sheet under the camera, flat and all in view"
+            if st["phase"] == "word" and st["target"]:
+                return f"them to find the letter {st['target'].upper()} (spelling the word {st.get('word')}) and rest a finger on it"
+            if st["target"]:
+                return (f"them to find the letter {st['target'].upper()} (dots {', '.join(map(str, st['target_dots']))}) on the sheet and "
+                        "rest a finger on it, or point and say this one")
+            if st["phase"] in ("recap", "done"):
+                return "them to say next for the next lesson, practice for a review, explore, or home"
+            if st["phase"] == "explore":
+                return "them to rest a finger on any letter, and you say what it is"
+        if self.state == "asking":
+            return "them to point at the letter asked for and say this one, or rest a finger on it"
+        if self.state == "reading":
+            return "them to rest a finger on a word on the words sheet, and you read it aloud"
+        return "them to say what they would like to do"
 
     def _talk(self, text: str) -> Optional[str]:
         """Let Braillo work out what free speech meant: run the command it names and/or say its reply. Falls back to the plain
@@ -826,8 +1193,13 @@ class TutorSession:
             self.say(line)
             if action in ("repeat", "hint", "help"):
                 return line  # those only talk, and Braillo has just answered: running one too would say it all twice
+        if action == "lesson":  # "let's do K to O": the lesson by its number
+            if not self._not_ready_to_start():
+                self.on_lesson(reply.get("lesson", 1) - 1)
+            return line or None
         handler = self._commands().get("start quiz" if action == "start" else action)
-        if handler is not None and action not in ("none", "braillo", "hush"):
+        if handler is not None and action not in ("none", "braillo", "hush") and not (
+                handler in self._starts_something() and self._not_ready_to_start()):
             handler()
         return line or None
 
@@ -872,6 +1244,9 @@ class TutorSession:
             self._ask_armed = False
             self._answer_ask(question)
             return
+        if self.website and self.page == "landing" and not self.guided:  # (on the front page, "Braillo" alone: talk me through it)
+            self.guided, self._offer_n = True, None
+            return self.say(LANDING_WELCOME)
         self._ask_heard_n = int((heard or {}).get("n", 0))
         self._ask_armed = True
         self.say("What's your question?")
@@ -892,8 +1267,27 @@ class TutorSession:
         self.say(answer)
 
     def on_help(self) -> None:
-        """"What can I say?": the commands that mean something right now."""
+        """"Help": in a sentence or so, the few things that matter right now (on a page of the website, its main buttons). Short on
+        purpose: someone who asked must not be left listening for a minute. "More options" gives everything."""
+        if self.website and self.page in PAGE_HELP and (self.user is None or self.page != "login"):
+            return self.say(f"{PAGE_HELP[self.page]} Say more options for everything else.")
+        if self.website and self.page in ARRIVAL_LINES:  # (a page of the website, not an activity: its own controls are what matter)
+            main = [c for c in self.controls if c.lower() not in UTILITY_CONTROLS][:HELP_CONTROLS]
+            if not main:
+                return self.say("Say go back to return, or more options for everything else.")
+            return self.say(f"Here you can say {_or_list(main)}. Say more options for everything else.")
         self.say(acc.help_text(self.hub_mode if self.hub else None, self.mode, self.state))
+
+    def on_more_help(self) -> None:
+        """"More options": everything that can be said here, the page's buttons and links included."""
+        parts = []
+        if self.website and self.controls:
+            parts.append(f"On this page you can say {_or_list(self.controls)}. You can also say go back, scroll down, or scroll up.")
+        if self.website and self.page in PAGE_HELP:
+            parts.insert(0, PAGE_HELP[self.page])
+        elif not (self.website and self.page in ARRIVAL_LINES):
+            parts.append(acc.more_help_text(self.hub_mode if self.hub else None, self.mode, self.state))
+        self.say(" ".join(parts) or acc.more_help_text(self.hub_mode if self.hub else None, self.mode, self.state))
 
     def on_slower(self) -> None:
         s = self.settings
@@ -929,10 +1323,10 @@ class TutorSession:
             except OSError as e:
                 print(f"could not save progress to {self.progress_file}: {e}", flush=True)
 
-    def _learn(self, command: str) -> None:
+    def _learn(self, command: str, *args) -> None:
         """Run a voice command in learn mode: the lesson engine handles it, and its clock loop is kept running."""
         with self.lock:
-            if command == "on_start":
+            if command in ("on_start", "go_to_lesson"):
                 self.finished.clear()  # "start" after "stop" begins again
                 self.state = "learning"
                 alive = getattr(self, "_learn_thread", None) is not None and self._learn_thread.is_alive()
@@ -940,7 +1334,7 @@ class TutorSession:
                     self._learn_epoch = self._epoch
                     self._learn_thread = threading.Thread(target=self._learn_loop, args=(self._epoch,), daemon=True, name="learn")
                     self._learn_thread.start()
-            getattr(self.journey, command)()
+            getattr(self.journey, command)(*args)
 
     def _learn_loop(self, epoch: int) -> None:
         while not self.finished.is_set() and epoch == self._epoch:
@@ -1012,6 +1406,9 @@ class TutorSession:
         if text:
             code = self.phone_code_fn() if self.phone_code_fn is not None else ""
             spelled = " ".join(code) if code else "shown on the screen"  # one digit at a time: "6 7 9 9 7 0", not a large number
+            if "{progress}" in text or "{letters}" in text:  # (your page: the numbers come from the tutor's own record of you)
+                p = self.progress
+                text = text.replace("{progress}", progress_line(p.summary())).replace("{letters}", letters_line(p.summary(), p.learned(), p.practised()))
             self.say(text.replace("{name}", clean_name(who)).replace("{code}", spelled))
 
     def dialogue(self, open_: bool) -> None:
@@ -1030,6 +1427,73 @@ class TutorSession:
             return self.say("Choosing a mode is part of the menu: start the tutor without --mode, or use --mode learn, explore or another.")
         self.set_mode(mode)
 
+    # ---- getting around by voice, from anywhere: lessons, your page, signing out --------------------------------
+    def on_lesson(self, index: int) -> None:
+        """"Lesson three", "K to O": that lesson, now (learn mode starts first if it is not on)."""
+        if not self.hub:
+            return self.say("Choosing a lesson is part of the menu: start the tutor without --mode.")
+        if self.hub_mode != "learn":
+            return self.set_mode("learn", lesson=index)
+        self._learn("go_to_lesson", index)
+
+    def on_next_lesson(self) -> None:
+        self._lesson_step(+1)
+
+    def on_previous_lesson(self) -> None:
+        self._lesson_step(-1)
+
+    def _lesson_step(self, step: int) -> None:
+        here = self.journey.lesson_index() if (self.hub_mode == "learn" and self.journey is not None) else None
+        if here is None:  # not in a lesson: "next" is the one due, "previous" the one before it
+            due = self.progress.next_lesson(LESSONS)
+            base = LESSONS.index(due) if due is not None else len(LESSONS)
+            index = base if step > 0 else base - 1
+        else:
+            index = here + step
+        if index < 0:
+            return self.say("This is the first lesson.")
+        if index >= len(LESSONS):
+            return self.say("That was the last lesson. Say practice for a review, or explore to feel the letters freely.")
+        self.on_lesson(index)
+
+    def _go(self, to: str, target: Optional[str] = None) -> None:
+        """Ask the website to do something ("login", "account", "signout", "back", "home", "scroll-down", "scroll-up", "top", or "click" a
+        control named `target`): it watches `nav` in the state."""
+        self.nav = {"n": self.nav["n"] + 1, "to": to, "target": target}
+
+    def on_back(self) -> None:
+        self._go("back")
+
+    def on_scroll_down(self) -> None:
+        self._go("scroll-down")
+
+    def on_scroll_up(self) -> None:
+        self._go("scroll-up")
+
+    def on_top(self) -> None:
+        self._go("top")
+
+    def _leave_quietly(self) -> None:
+        """Stop whatever is running, back at the menu, without the menu's spoken prompt (another page is about to speak)."""
+        with self.lock:
+            self._epoch += 1
+            self.journey, self._ex, self.items, self.index = None, None, [], 0
+            self.mode, self.hub_mode, self.state = "menu", "menu", "menu"
+
+    def on_my_page(self) -> None:
+        """"My page": the learner's own page (it reads out how they are getting on)."""
+        if not self.hub:
+            return
+        self._leave_quietly()
+        self._go("account")
+
+    def on_sign_out(self) -> None:
+        if not self.hub:
+            return
+        self._leave_quietly()
+        self.say("Signing you out. See you soon.")
+        self._go("signout")
+
     def on_mode_learn(self) -> None:
         self.on_mode("learn")
 
@@ -1042,6 +1506,14 @@ class TutorSession:
         self.on_mode("quiz")
 
     def on_mode_menu(self) -> None:
+        """"Home" / "menu": back to choosing what to do (before signing in, the website's front page)."""
+        if self.hub and self.website:
+            if self.user is None:
+                return self._go("home")
+            self._go("home")
+        return self._on_mode_menu()
+
+    def _on_mode_menu(self) -> None:
         self.on_mode("menu")
 
     def _read_word_now(self) -> None:
@@ -1051,8 +1523,9 @@ class TutorSession:
             return self.say("I can't see your finger. Rest it on a word, or click the picture where it is.")
         self._read_word(pos)
 
-    def set_mode(self, mode: str) -> None:
-        """Switch to learn, read or quiz (each on its own printed sheet), or back to the menu. Whatever was running stops."""
+    def set_mode(self, mode: str, lesson: Optional[int] = None) -> None:
+        """Switch to learn, read or quiz (each on its own printed sheet), or back to the menu. Whatever was running stops. With
+        `lesson` (learn only), that lesson starts instead of the next one due."""
         if mode != "menu" and mode not in HUB_MODES:
             raise ValueError(f"unknown mode {mode!r}; choose menu, {', '.join(HUB_MODES)}")
         with self.lock:
@@ -1068,7 +1541,7 @@ class TutorSession:
                 self.select_sheet(cfg["sheet"])  # switches what the camera reads for, and (through set_sheet) which cells this session knows
             if mode == "learn":
                 self.journey = self._new_journey()
-                return self._learn("on_start")
+                return self._learn("go_to_lesson", lesson) if lesson is not None else self._learn("on_start")
             self.contracted = False  # the printed sheets are plain letters and words
             self._start_dwell_loop()
             if mode == "read":
@@ -1154,6 +1627,8 @@ class TutorSession:
             self._ask()
 
     def on_repeat(self) -> None:
+        if self.website and self.page in ARRIVAL_LINES and (self.hub_mode == "menu" or not self.hub):
+            return self.say(LANDING_WELCOME if self.page == "landing" else ARRIVAL_LINES[self.page])  # (that page's welcome, again)
         if self.journey is not None:
             return self._learn("on_repeat")
         with self.lock:
@@ -1195,6 +1670,8 @@ class TutorSession:
     def on_found_it(self) -> None:
         if self.journey is not None:
             return self._learn("on_found_it")
+        if self.hub and self.hub_mode == "menu":
+            return self.say(MENU_LINE_SHORT)  # ("this one" at the menu: nothing is being looked for yet)
         with self.lock:
             if self.state == "exploring":
                 return self._explore_here(full=False)  # don't wait for the finger to settle
@@ -1617,7 +2094,8 @@ class CameraFeed:
 
     def __init__(self, page_src, overlay_cells: Optional[list] = None, labels: Optional[dict] = None, detector=None,
                  always_reading: bool = False, track_finger: bool = False, observe_sheet: Optional[list] = None,
-                 show_reading: bool = True, known_sheets: Optional[dict] = None, sheet_name: str = "alphabet"):
+                 show_reading: bool = True, known_sheets: Optional[dict] = None, sheet_name: str = "alphabet",
+                 finder: Optional[Callable] = None):
         self.page_src, self.overlay_cells, self.labels = page_src, overlay_cells, labels
         self.detector, self.always_reading = detector, always_reading  # detector: optional live reading; needs no page
         self.frame, self.H, self.frames = None, None, 0
@@ -1625,7 +2103,8 @@ class CameraFeed:
         self.finger_px: Optional[tuple] = None
         self.finger_mm: Optional[tuple] = None
         self.finger_posted = 0.0  # when, so a click stands in for the fingertip only while it is fresh
-        self.tracker = FingerTracker() if track_finger else None
+        # finder: how a fingertip is found in a frame (the apps pass best_finder(), MediaPipe's hand model; default the skin-colour one)
+        self.tracker = (FingerTracker(find=finder) if finder is not None else FingerTracker()) if track_finger else None
         self.observe_sheet = observe_sheet  # a known sheet's cells: scan() then reports the dots the camera SEES on them
         # ...and (show_reading) that reading runs continuously, is locked in cell by cell as it proves steady, and is drawn on the
         # video as a box per cell with the detected dots and letter: green = locked in, amber = still reading
@@ -1877,7 +2356,8 @@ def run_camera(session: TutorSession, cap, page_src, overlay_cells: Optional[lis
 
     layout_scan=True makes word modes read from the session's known cells instead of running the detector."""
     feed = CameraFeed(page_src, overlay_cells, labels, detector, track_finger=track_finger, observe_sheet=observe_sheet,
-                      show_reading=show_reading, known_sheets=known_sheets, sheet_name=sheet_name)
+                      show_reading=show_reading, known_sheets=known_sheets, sheet_name=sheet_name,
+                      finder=best_finder() if track_finger else None)
     wire_new_page(session, feed)
     session.start_watching()  # says so if the camera loses the sheet, or if it did not understand what was said
     session.finger = feed.finger

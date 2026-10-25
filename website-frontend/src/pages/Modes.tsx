@@ -10,6 +10,7 @@ import { setMic, setMode, type HubMode } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useTutorSession } from '../tutor/useTutorSession.ts'
 import { useSpeechPosition } from '../voice/useSpeechPosition.ts'
+import { useSpokenLine } from '../voice/useSpokenLine.ts'
 import { useUser } from '../auth/useUser.ts'
 
 // Each way of using Braillie is drawn as its own first letter in braille: L, R, Q.
@@ -49,8 +50,8 @@ const Modes = () => {
 
   const start = (mode: Exclude<HubMode, 'menu'>) => void setMode(mode)
   const greeting = `${greetingFor(new Date().getHours())}${user?.name ? `, ${user.name}` : ''}`
-  const speaking = !!state?.speaking && !!state?.speech
-  const spoken = useSpeechPosition(speaking ? state?.speech : null, state?.settings?.speech_speed)
+  const { speaking, speech } = useSpokenLine(state) // (the caption is held a moment after each line, so it does not flicker)
+  const spoken = useSpeechPosition(speech, state?.settings?.speech_speed)
   const listening = !speaking && !!state?.heard
   const muted = !!state?.muted
   // what Braillo shows when he is not talking: one short line
@@ -73,8 +74,8 @@ const Modes = () => {
           <Mascot state={speaking ? 'speaking' : listening ? 'listening' : 'idle'} words={spoken.sentence * 1000 + spoken.said} />
           <div className="voicecard__words">
             <div className="voicecard__body">
-              {speaking && state?.speech ? (
-                <Lyrics speech={state.speech} speed={state.settings?.speech_speed} />
+              {speech ? (
+                <Lyrics speech={speech} speed={state?.settings?.speech_speed} />
               ) : (
                 <p className="voicecard__hint" aria-hidden="true">
                   {shortLine}

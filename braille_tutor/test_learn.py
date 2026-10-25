@@ -2,6 +2,7 @@
 import random
 import unittest
 
+import learn
 import sheets
 from learn import (DOTS, Dwell, HINT_AFTER, Journey, LESSONS, MAX_TRIES, LESSON_BY_ID, cap, compare_pair, contrast, dot_words, letter_of_dots,
                    name, relation, welcome_first_time)
@@ -123,16 +124,16 @@ class TeachingTextTests(unittest.TestCase):
         self.assertEqual(dot_words("g"), "Four dots: top-left, middle-left, top-right and middle-right.")
 
     def test_a_letter_is_explained_from_one_the_learner_knows(self):
-        self.assertEqual(relation("b", ["a"]), "It is the letter A with one more dot, at the middle-left.")
-        self.assertEqual(relation("k", list("abcde")), "It is the letter A with one more dot, at the bottom-left.")
-        self.assertEqual(relation("w", list("abcdefghij")), "It is the letter J with one more dot, at the bottom-right.")
+        self.assertEqual(relation("b", ["a"]), "It's A with one more dot, at the middle-left.")
+        self.assertEqual(relation("k", list("abcde")), "It's A with one more dot, at the bottom-left.")
+        self.assertEqual(relation("w", list("abcdefghij")), "It's J with one more dot, at the bottom-right.")
         self.assertIsNone(relation("a", list("bcde")), "nothing is a start of A")
         self.assertIsNone(relation("b", []))
         self.assertIsNone(relation("b", ["b", "q"]), "not itself, and q (12345) is not a start of b")
 
     def test_the_nearest_known_letter_with_the_fewest_extra_dots_is_chosen(self):
-        self.assertIn("the letter C", relation("d", list("abc")))  # d (145) grows from c (14), one dot; a (1) would need two
-        self.assertIn("the letter A", relation("d", ["a"]))
+        self.assertIn("It's C ", relation("d", list("abc")))  # d (145) grows from c (14), one dot; a (1) would need two
+        self.assertIn("It's A ", relation("d", ["a"]))
         self.assertIn("two more dots", relation("d", ["a"]))
 
     def test_every_letter_a_to_z_can_be_described_and_its_relation_is_true(self):
@@ -140,7 +141,7 @@ class TeachingTextTests(unittest.TestCase):
             self.assertTrue(dot_words(letter).endswith("."))
             rel = relation(letter, [l for l in "abcdefghijklmnopqrstuvwxyz" if l < letter])
             if rel:  # whatever it says, the named letter must really be a start of this one
-                named = rel.split("the letter ")[1][0].lower()
+                named = rel.split("It's ")[1][0].lower()
                 self.assertLess(DOTS[named], DOTS[letter], (letter, rel))
 
     def test_contrast_says_what_the_finger_is_on_and_what_differs(self):
@@ -158,7 +159,7 @@ class TeachingTextTests(unittest.TestCase):
 
     def test_first_time_welcome_explains_the_cell(self):
         text = welcome_first_time()
-        for part in ("six places", "two columns of three", "one, two, three", "four, five, six"):
+        for part in ("room for six dots", "two columns of three", "find it on the sheet with your finger"):
             self.assertIn(part, text)
 
     def test_letter_of_dots(self):
@@ -234,12 +235,13 @@ class FirstLessonTests(unittest.TestCase):
         j, host, clock, p = make()
         j.on_start()
         text = " ".join(host.said)
-        self.assertIn("six places for raised dots", text)  # the first-ever welcome
-        self.assertIn("The first five letters", text)
-        self.assertIn("top four dots", text)  # the insight
+        self.assertIn("room for six dots", text)  # the first-ever welcome
+        self.assertIn("your first five letters, A to E", text)
+        self.assertIn("just four dots to feel for", text)  # the insight
         self.assertEqual(j.phase, "teach")
         self.assertEqual(j.target, "a")
-        self.assertEqual(host.last(), "The letter A. One dot, at the top-left. Find it and rest your finger on it.")
+        self.assertEqual(len(host.said), 1)  # the welcome, the lesson and its first letter: one line, no gaps between them
+        self.assertTrue(host.last().endswith("Let's start with the letter A. One dot, at the top-left. Find it, and rest your finger on it."))
         self.assertEqual(host.tones, ["ready"])
         self.assertEqual(p.sessions, 1)
 
@@ -268,14 +270,26 @@ class FirstLessonTests(unittest.TestCase):
             leave(j, host, clock)
         self.assertEqual(sorted(asked), list("abcde"), "each letter asked once, in a fresh order")
         self.assertNotEqual("".join(asked), "abcde", "not simply the same order")
+        # it went well, so: a real word to spell, letter by letter
+        self.assertEqual(j.phase, "word")
+        word = j.word
+        self.assertIn(f"let's spell a real word, {word.upper()}", host.last())
+        spelled = []
+        while j.phase == "word":
+            spelled.append(j.target)
+            answer(j, host, clock, j.target)
+            leave(j, host, clock)
+        self.assertEqual("".join(spelled), word)
         self.assertEqual(j.phase, "recap")
-        self.assertIn("Lesson complete", " ".join(host.said[-4:]))
-        self.assertIn("5 of 5", " ".join(host.said[-4:]))
+        self.assertIn(f"You just spelled {word.upper()} in braille", host.said[-1])
+        self.assertIn("Lesson complete", host.said[-1])
+        self.assertIn("5 of 5", host.said[-1])
+        self.assertIn("You've met 5 of the 26 letters so far", host.said[-1])
         self.assertIn("say next for F to J", host.said[-1])
-        self.assertEqual(host.tones.count("correct"), 10)
+        self.assertEqual(host.tones.count("correct"), 10 + len(word))
         self.assertEqual(host.tones[-1], "done")
         self.assertTrue(p.lesson_mastered("l1"))
-        self.assertTrue(all(p.box(l) == 1 for l in "abcde"), "found clean in practice: each moved up a box")
+        self.assertTrue(all(p.box(l) >= 1 for l in "abcde"), "found clean in practice: each moved up a box")
         self.assertEqual(len(p.practised()), 5)
         # and "next" carries on to the next lesson
         j.on_next()
@@ -293,12 +307,12 @@ class FirstLessonTests(unittest.TestCase):
         j, host, clock, p = make(progress=p)
         j.on_start()
         self.assertEqual((j.phase, j.lesson.id), ("warmup", "l2"), host.last(3))
-        self.assertIn("let's go back over a few from before that went wrong: C and D", " ".join(host.said))
+        self.assertIn("a quick warm-up with a few letters that tripped you up last time: C and D", " ".join(host.said))
         self.assertEqual(j.target, "c", "the most troublesome first: missed beats found")
         answer(j, host, clock, "c")
         leave(j, host, clock)
         self.assertEqual(j.target, "d")
-        self.assertIn("Careful: it's been mixed up with the letter F.", host.last(), "taught with the letter it was confused with")
+        self.assertIn("It's been getting mixed up with F", host.last(), "taught with the letter it was confused with")
         answer(j, host, clock, "d")
         leave(j, host, clock)
         self.assertEqual((j.phase, j.target), ("teach", "f"), "then the new letters, as usual")
@@ -332,7 +346,7 @@ class FirstLessonTests(unittest.TestCase):
             asked.append(j.target)
             answer(j, host, clock, j.target)
             leave(j, host, clock)
-        self.assertIn("The ones that went wrong before are mixed in", " ".join(host.said))
+        self.assertIn("I've mixed in the ones that went wrong before", " ".join(host.said))
         self.assertIn("c", asked, "the letter that went wrong is asked for again in the practice")
         self.assertTrue(set("fghij") <= set(asked))
 
@@ -340,15 +354,16 @@ class FirstLessonTests(unittest.TestCase):
         j, host, clock, p = make()
         j.on_start()
         answer(j, host, clock, "a")
-        self.assertIn("That's the letter A. One dot, at the top-left.", host.said[-2])  # the praise, then the next letter is asked
+        # the praise and the next letter are one line (no gap between them), and A's dots are not said again
+        self.assertIn("That's A.", host.last())
+        self.assertIn("the letter B. Two dots: top-left and middle-left. It's A with one more dot, at the middle-left.", host.last())
+        self.assertNotIn("One dot, at the top-left", host.last())
         leave(j, host, clock)
-        self.assertEqual(host.last(), "The letter B. Two dots: top-left and middle-left. It is the letter A with one more dot, at the middle-left. "
-                                      "Find it and rest your finger on it.")
         answer(j, host, clock, "b")
         leave(j, host, clock)
         answer(j, host, clock, "c")
         leave(j, host, clock)
-        self.assertIn("It is the letter C with one more dot, at the middle-right.", host.last())  # D is taught from C, the closest start
+        self.assertIn("It's C with one more dot, at the middle-right.", host.last())  # D is taught from C, the closest start
 
 
 class WrongAnswerTests(unittest.TestCase):
@@ -455,7 +470,7 @@ class HintTests(unittest.TestCase):
         host.finger_pos = None
         run(j, host, clock, HINT_AFTER[0] + 1)
         first = host.said[n:]
-        self.assertTrue(any("Here's a hint" in s and dot_words(want) in s for s in first), first)
+        self.assertTrue(any("Here's a hint" in s and learn.has_dots(want) in s for s in first), first)
         run(j, host, clock, HINT_AFTER[1] + 1)
         run(j, host, clock, HINT_AFTER[2] + 1)
         text = " | ".join(host.said[n:])
@@ -472,7 +487,7 @@ class HintTests(unittest.TestCase):
             leave(j, host, clock)
         want = j.target
         j.on_hint()
-        self.assertIn(dot_words(want), host.last())
+        self.assertIn(learn.has_dots(want), host.last())
         j.on_hint()
         j.on_hint()
         self.assertRegex(host.last(), r"row \d, column \d")
@@ -569,7 +584,7 @@ class RecapAndRetryTests(unittest.TestCase):
         self.assertEqual(j.round_no, 2)
         self.assertIn("Let's go over the tricky ones", " ".join(host.said))
         self.assertEqual(sorted(j.queue + [j.target]), sorted(fails))
-        while j.phase == "practice":
+        while j.phase in ("practice", "word"):  # (put right in round 2, it went well enough for the word at the end)
             answer(j, host, clock, j.target)
             leave(j, host, clock)
         self.assertEqual(j.phase, "recap")
@@ -625,7 +640,7 @@ class SheetTests(unittest.TestCase):
         j.on_start()
         self.assertEqual(j.phase, "await_sheet")
         self.assertEqual(host.requests, ["lookalikes"])
-        self.assertIn("lookalikes sheet", host.last())
+        self.assertIn("look-alikes sheet", host.last())
         run(j, host, clock, 3)
         self.assertEqual(j.phase, "await_sheet", "still the alphabet sheet on the desk")
         host.sheet = "lookalikes"  # the learner swaps it (the tutor recognises it)
@@ -641,7 +656,7 @@ class SheetTests(unittest.TestCase):
         j.on_start()
         n = len(host.said)
         run(j, host, clock, 60)
-        self.assertGreaterEqual(sum("waiting for the lookalikes sheet" in s for s in host.said[n:]), 2)
+        self.assertGreaterEqual(sum("waiting for the look-alikes sheet" in s for s in host.said[n:]), 2)
         self.assertGreaterEqual(len(host.requests), 3, "asks the tutor to look for the sheet again each time")
 
 
@@ -717,7 +732,7 @@ class MiscTests(unittest.TestCase):
         j.on_start()
         self.assertIn("Welcome back", host.said[0])
         self.assertIn("You know 3 letters well", host.said[0])
-        self.assertNotIn("six places", host.said[0])
+        self.assertNotIn("room for six dots", host.said[0])
 
     def test_praise_can_come_from_the_ai_coach(self):
         coach = FakeCoach()

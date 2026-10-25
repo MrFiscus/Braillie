@@ -135,9 +135,10 @@ DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
 # or warns about it being absent.
 ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 
-# Deepgram TTS. Aura 1 drops the last ~200–300 ms of a short line ("cat" -> "ca"), so we keep
-# this model (it is the one that actually speaks in this demo) and add a pause + file tail below.
-DEEPGRAM_TTS_MODEL: str = "aura-asteria-en"
+# Deepgram TTS: Aura 2 (more natural than Aura 1, and it says the last word of a short line in full; checked by synthesising lines and
+# transcribing them back). DEEPGRAM_TTS_MODEL in .env picks another voice. Aura 1 ("aura-asteria-en" and the like) drops the last
+# ~200-300 ms of a short line ("cat" -> "ca"), so for an Aura 1 voice a pause is added after the last word (TTS_TAIL).
+DEEPGRAM_TTS_MODEL: str = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-thalia-en")
 TTS_TAIL = "..."  # synthesised as a pause, not a word: if anything still eats the end, this is what goes
 WAV_SILENCE_SECONDS = 0.45  # extra quiet at the end of the file, for phone players that clip the last buffer
 
@@ -238,6 +239,18 @@ _COMMAND_MAP: dict[str, str] = {
     "i found it": "found it",
     "got it": "found it",     # natural shorthand: "got it" = located the cell
     "i got it": "found it",
+    # ...and what people say while pointing at their answer, without thinking of a command
+    "this one": "found it",
+    "that one": "found it",
+    "this is it": "found it",
+    "is this it": "found it",
+    "is it this one": "found it",
+    "this is the one": "found it",
+    "here it is": "found it",
+    "it's here": "found it",
+    "its here": "found it",
+    "right here": "found it",
+    "over here": "found it",
     # --- navigation ------------------------------------------------------
     "next": "next",
     "skip": "next",
@@ -271,11 +284,53 @@ _COMMAND_MAP: dict[str, str] = {
     "menu": "menu",
     "main menu": "menu",
     "change mode": "menu",
-    "go back": "menu",
+    "home": "menu",
+    "go home": "menu",
+    "home page": "menu",
+    "home screen": "menu",
+    # --- getting around: lessons, your page, signing out (from anywhere) ---
+    "next lesson": "next lesson",
+    "skip lesson": "next lesson",
+    "skip this lesson": "next lesson",
+    "previous lesson": "previous lesson",
+    "last lesson": "previous lesson",
+    "lesson before": "previous lesson",
+    "go back a lesson": "previous lesson",
+    "my page": "my page",
+    "my profile": "my page",
+    "profile": "my page",
+    "my progress": "my page",
+    "account": "my page",
+    "my account": "my page",
+    "go back": "back",  # the website: the page before (see VoiceControl)
+    "back": "back",
+    "go back a page": "back",
+    "previous page": "back",
+    "scroll down": "scroll down",
+    "page down": "scroll down",
+    "scroll up": "scroll up",
+    "page up": "scroll up",
+    "go to the top": "top",
+    "top of the page": "top",
+    "back to the top": "top",
+    "back to top": "top",
+    "sign out": "sign out",
+    "log out": "sign out",
+    "sign me out": "sign out",
+    "log me out": "sign out",
     # --- accessibility: ask what can be said, and how fast to go -----------
     "help": "help",  # ("help me" is longer and still means hint)
     "what can i say": "help",
     "what are my options": "help",
+    "what's on this page": "help",
+    "whats on this page": "help",
+    "what can i do here": "help",
+    "read the buttons": "help",
+    "more options": "more help",  # the whole list (help itself is short)
+    "all options": "more help",
+    "everything else": "more help",
+    "list everything": "more help",
+    "more help": "more help",
     "commands": "help",
     "slower": "slower",
     "speak slower": "slower",
@@ -683,15 +738,22 @@ def is_speaking() -> bool:
 _playing: dict | None = None  # the line now playing: {"text", "started" (wall clock, s), "seconds" (its audio, at normal speed)}
 
 
-def _mark_playing(text: str, wav: bytes) -> None:
-    """The audio for `text` is about to play: note when, and how long it lasts, so a display can follow along as it is spoken."""
-    global _playing
-    seconds = 0.0
+SPOKEN_WORDS_PER_SECOND = 2.9  # how fast the voice talks (Aura 2): a line still arriving is guessed at this, then corrected
+
+
+def _wav_seconds(wav: bytes) -> float:
     try:
         with wave.open(io.BytesIO(_fix_wav_header(wav))) as wf:
-            seconds = wf.getnframes() / float(wf.getframerate() or 1)
+            return wf.getnframes() / float(wf.getframerate() or 1)
     except (wave.Error, EOFError):
-        pass
+        return 0.0
+
+
+def _mark_playing(text: str, wav: bytes | None) -> None:
+    """The audio for `text` is about to play: note when, and how long it lasts, so a display can follow along as it is spoken.
+    With no `wav` (it is still arriving, see _streamed) the length is guessed from the words, and corrected once it has all come."""
+    global _playing
+    seconds = _wav_seconds(wav) if wav is not None else len(text.split()) / SPOKEN_WORDS_PER_SECOND
     _playing = {"text": text, "started": time.time(), "seconds": round(seconds, 3)}
 
 
@@ -1603,11 +1665,19 @@ def _deepgram_listener_loop() -> None:
 # ---------------------------------------------------------------------------
 
 
+# Names the voice says wrongly as they are written, and how to write them so it says them right (found by having the voice say each
+# spelling and transcribing it back: "Braillo" came back as "brolo"; "Braylow" as "braylo"). Only what is sent to the voice changes:
+# what is shown on screen keeps the real spelling.
+SAY_AS = ((re.compile(r"\bBraillo\b", re.IGNORECASE), "Braylow"),)
+
+
 def _for_tts(text: str) -> str:
-    """Text actually sent to Deepgram. Aura treats the last word of a short line as optional and
+    """Text actually sent to Deepgram. Aura 1 treats the last word of a short line as optional and
     drops it; a trailing ellipsis is a pause, so 'cat' is no longer the last thing it generates."""
+    for name, said in SAY_AS:
+        text = name.sub(said, text or "")
     t = (text or "").rstrip()
-    if not t:
+    if not t or DEEPGRAM_TTS_MODEL.startswith("aura-2"):  # (Aura 2 keeps the last word: no pause needed, and none dragging each line out)
         return text
     if t.endswith(TTS_TAIL):
         return t
@@ -1667,11 +1737,16 @@ def _deepgram_speak(text: str) -> None:
         return
 
     try:
-        raw = _synthesise(text, DeepgramClient)
-        if playback_interrupted():  # cut off while it was still being synthesised: nothing to play
+        with _speech_cache_lock:
+            raw = _SPEECH_CACHE.get(text)
+        if raw is not None:  # made already (see prefetch_speech): it plays at once
+            _mark_playing(text, raw)
+            _play_audio_stream([_pad_wav_silence(raw)])
             return
-        _mark_playing(text, raw)
-        _play_audio_stream([_pad_wav_silence(raw)])
+        # Otherwise it plays as it arrives: Deepgram sends the first audio within a fraction of a second but takes about half the
+        # line's own length to send all of it, so waiting for the whole of a long line before playing meant seconds of silence.
+        _mark_playing(text, None)
+        _play_audio_stream(_streamed(text, DeepgramClient))
     except Exception as exc:
         log.error("Deepgram TTS failed: %s", exc)
 
@@ -1715,6 +1790,51 @@ def _synthesise(text: str, client_class=None) -> bytes:
         while len(_SPEECH_CACHE) > SPEECH_CACHE_LINES:
             _SPEECH_CACHE.popitem(last=False)
     return raw
+
+
+def _streamed(text: str, client_class):
+    """The WAV for `text`, chunk by chunk as Deepgram sends it, then a little silence (see WAV_SILENCE_SECONDS). Once it has all come
+    it is kept (as _synthesise keeps it), and the length noted for the captions is corrected. Stops early if the line is cut off."""
+    client = client_class(api_key=DEEPGRAM_API_KEY)
+    got, fmt = bytearray(), None
+    for chunk in client.speak.v1.audio.generate(text=_for_tts(text), model=DEEPGRAM_TTS_MODEL, encoding="linear16", container="wav",
+                                                request_options={"timeout_in_seconds": 30}):
+        if playback_interrupted():
+            return
+        got += chunk
+        if fmt is None:
+            fmt = _wav_format(bytes(got[:4096]))
+        yield chunk
+    raw = bytes(got)
+    with _speech_cache_lock:
+        _SPEECH_CACHE[text] = raw
+        while len(_SPEECH_CACHE) > SPEECH_CACHE_LINES:
+            _SPEECH_CACHE.popitem(last=False)
+    playing = _playing
+    if playing is not None and playing["text"] == text:
+        playing["seconds"] = round(_wav_seconds(raw), 3)
+    if fmt is not None:
+        channels, width, rate, _ = fmt
+        yield b"\x00" * (int(rate * WAV_SILENCE_SECONDS) * channels * width)
+
+
+def _wav_format(head: bytes) -> tuple[int, int, int, int] | None:
+    """(channels, bytes per sample, sample rate, where the samples start) from the start of a WAV, or None if more is needed. The
+    sizes in the header are not used: while Deepgram streams, they claim hours of audio."""
+    if head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+        return None
+    at, fmt = 12, None
+    while at + 8 <= len(head):
+        kind, size = head[at:at + 4], int.from_bytes(head[at + 4:at + 8], "little")
+        if kind == b"fmt ":
+            if at + 24 > len(head):
+                return None
+            fmt = (int.from_bytes(head[at + 10:at + 12], "little"), int.from_bytes(head[at + 22:at + 24], "little") // 8,
+                   int.from_bytes(head[at + 12:at + 16], "little"))
+        elif kind == b"data":
+            return (*fmt, at + 8) if fmt else None
+        at += 8 + size + (size & 1)
+    return None
 
 
 def prefetch_speech(lines: list[str]) -> None:
@@ -1776,53 +1896,104 @@ def _elevenlabs_speak(text: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+PLAY_AHEAD_SECONDS = 0.25  # a streamed line starts once this much of it has arrived, so a slow moment on the network does not stutter
+PLAYBACK_FRAMES = 2048  # the speaker's buffer, in samples (about 85 ms at 24 kHz): with the default (a few ms) any small delay before
+                        # the next write left it empty for an instant, and that was heard as crackling
+
+
 def _play_audio_stream(chunks) -> None:
-    """Play raw PCM / WAV bytes from an iterable of chunks."""
+    """Play WAV bytes from an iterable of chunks, as they arrive: a line still coming from Deepgram (see _streamed) starts playing
+    straight away instead of after all of it has come. The header's sizes are not trusted (a streamed one claims hours)."""
     try:
         import pyaudio  # type: ignore[import-untyped]
-        import wave  # stdlib
     except ImportError as exc:
         log.error("pyaudio not available for playback: %s", exc)
         return
 
-    data = _fix_wav_header(b"".join(chunks))
-    buf = io.BytesIO(data)
-    buf.seek(0)
+    source = iter(chunks)
+    head, fmt = bytearray(), None
+    for chunk in source:
+        head += chunk
+        fmt = _wav_format(bytes(head[:4096]))
+        if fmt is not None:
+            break
+    if fmt is None:
+        if head:
+            log.error("Audio playback failed: not a WAV this can play")
+        return
+    channels, width, rate, at = fmt
+    frame = channels * width
+    pending = bytearray(head[at:])
 
     try:
-        with wave.open(buf) as wf:
-            pa = pyaudio.PyAudio()
+        pa = pyaudio.PyAudio()
+        try:
+            pa.get_default_output_device_info()
+        except Exception as exc:
+            # No output device at all (e.g. it just disconnected): calling
+            # pa.open() here is the same native-crash risk as the input
+            # side, so refuse the call instead of attempting it.
+            log.error("No default output device available for playback: %s", exc)
+            pa.terminate()
+            return
+        stream = pa.open(format=pa.get_format_from_width(width), channels=channels, rate=rate, output=True,
+                         frames_per_buffer=PLAYBACK_FRAMES)
+        lock, arrived, finished = threading.Lock(), threading.Event(), threading.Event()
+        # The echo canceller is told what went to the speakers on a thread of its own: it shares a lock with the microphone side, and
+        # waiting for that between two writes would leave the speaker empty for a moment (a crackle).
+        heard_out: "queue.Queue[bytes | None]" = queue.Queue()
+
+        def tell_canceller() -> None:
+            while (piece := heard_out.get()) is not None:
+                if _canceller is not None:
+                    _canceller.played(piece, rate, channels, width)
+
+        threading.Thread(target=tell_canceller, daemon=True, name="speech-echo").start()
+
+        def fetch() -> None:  # the rest of the line keeps arriving while the start of it plays
             try:
-                pa.get_default_output_device_info()
+                for chunk in source:
+                    with lock:
+                        pending.extend(chunk)
+                    arrived.set()
+                    if playback_interrupted():
+                        break
             except Exception as exc:
-                # No output device at all (e.g. it just disconnected): calling
-                # pa.open() here is the same native-crash risk as the input
-                # side, so refuse the call instead of attempting it.
-                log.error("No default output device available for playback: %s", exc)
-                pa.terminate()
-                return
-            stream = pa.open(
-                format=pa.get_format_from_width(wf.getsampwidth()),
-                channels=wf.getnchannels(),
-                rate=wf.getframerate(),
-                output=True,
-            )
-            try:
-                nframes, rate = wf.getnframes(), float(wf.getframerate() or 1)
-                started = time.monotonic()
-                chunk = wf.readframes(1024)
-                while chunk and not playback_interrupted():
-                    stream.write(chunk)
-                    if _canceller is not None:  # what the speakers play is what to take back out of the microphone
-                        _canceller.played(chunk, wf.getframerate(), wf.getnchannels(), wf.getsampwidth())
-                    chunk = wf.readframes(1024)
-                remaining = (nframes / rate) - (time.monotonic() - started)
-                if remaining > 0 and not playback_interrupted():
-                    time.sleep(min(remaining, 8.0))  # never block the tutor on a lying WAV header
+                log.error("Deepgram TTS stopped part-way: %s", exc)
             finally:
-                stream.stop_stream()
-                stream.close()
-                pa.terminate()
+                finished.set()
+                arrived.set()
+
+        threading.Thread(target=fetch, daemon=True, name="speech-fetch").start()
+        try:
+            played, started, ahead = 0, None, int(rate * PLAY_AHEAD_SECONDS) * frame
+            while not playback_interrupted():
+                with lock:
+                    have = len(pending)
+                if not finished.is_set() and (have < frame or (started is None and have < ahead)):
+                    arrived.wait(0.05)
+                    arrived.clear()
+                    continue
+                with lock:
+                    usable = len(pending) - len(pending) % frame
+                    piece = bytes(pending[:min(usable, PLAYBACK_FRAMES * frame)])
+                    del pending[:len(piece)]
+                if not piece:
+                    break
+                if started is None:
+                    started = time.monotonic()
+                stream.write(piece)
+                played += len(piece)
+                heard_out.put(piece)  # what the speakers play is what to take back out of the microphone
+            if started is not None:
+                remaining = played / (rate * frame) - (time.monotonic() - started)
+                if remaining > 0 and not playback_interrupted():
+                    time.sleep(min(remaining, 8.0))  # let what is buffered finish
+        finally:
+            heard_out.put(None)
+            stream.stop_stream()
+            stream.close()
+            pa.terminate()
     except Exception as exc:
         log.error("Audio playback failed: %s", exc)
 

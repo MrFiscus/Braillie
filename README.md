@@ -52,7 +52,12 @@ This starts the tutor and the website together and opens the login flow. Visit *
 sign in (or continue as a guest — nothing is saved for guests), scan the QR code with your phone, and choose
 Learn, Read or Quiz.
 
-No phone handy, or on a network that blocks phone ↔ laptop traffic? `./run_all.sh --phone-tunnel` routes the
+On a network that blocks phone ↔ laptop traffic (most public Wi-Fi), Braillie switches to a **backup link** by itself: if
+[`cloudflared`](https://github.com/cloudflare/cloudflared) is installed, a tunnel is made ready at start, and when no phone has reached
+the laptop 40 seconds after the code is shown, the QR code changes to it (or press the globe key on the Connect Phone page). For a demo on
+poor Wi-Fi, the most reliable setup is still the phone's hotspot for both devices.
+
+No phone handy, or want the tunnel from the start? `./run_all.sh --phone-tunnel` routes the
 phone link over a public tunnel instead (needs [`cloudflared`](https://github.com/cloudflare/cloudflared)); see
 [`braille_tutor/README.md`](braille_tutor/README.md#phone-as-the-camera-scan-a-qr-code---phone-camera) for every
 connection mode and what each trades off.

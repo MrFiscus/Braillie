@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Lyrics from './Lyrics.tsx'
 import { sendCommand, type TutorState } from '../tutor/tutorApi.ts'
+import { useSpokenLine } from '../voice/useSpokenLine.ts'
 
 const HEARD_FOR_MS = 8000 // what the microphone made out stays on the bar this long
 
@@ -24,6 +25,7 @@ const VoiceBar = ({ state }: { state: TutorState }) => {
     return () => window.clearTimeout(t)
   }, [heard])
 
+  const { speech } = useSpokenLine(state) // (the caption is held a moment after each line, so it does not flicker)
   const listening = heard !== null // the tutor has a live microphone
   const on = state.speaking ? 'speaking' : listening ? 'listening' : 'off'
   const said = state.said.length ? state.said[state.said.length - 1].text : ''
@@ -41,8 +43,8 @@ const VoiceBar = ({ state }: { state: TutorState }) => {
         <span className="voicebar__label">{on === 'speaking' ? 'Speaking' : on === 'listening' ? 'Listening' : 'Mic off'}</span>
       </div>
       <div className="voicebar__words">
-        {state.speaking && state.speech ? (
-          <Lyrics speech={state.speech} speed={state.settings?.speech_speed} />
+        {speech ? (
+          <Lyrics speech={speech} speed={state.settings?.speech_speed} />
         ) : (
           said && (
             <p className="voicebar__said">

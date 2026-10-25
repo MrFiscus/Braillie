@@ -1,12 +1,14 @@
 """Tests for the menu-driven tutor: who is here (Google keeps progress, a guest keeps nothing), the greeting, and Learn / Read / Quiz."""
+import os
+os.environ["BRAILLIE_NO_PHONE_BACKUP"] = "1"  # start_phone must never open a real public tunnel from a test
 import argparse
 import contextlib
 import io
-import os
 import random
 import tempfile
 import threading
 import time
+import json
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -229,7 +231,7 @@ class ModeTests(unittest.TestCase):
         self.assertEqual((feed.sheet_name, s.hub_status()["mode"], s.mode, s.state), ("alphabet", "learn", "learn", "learning"))
         self.assertEqual(s.learning_status()["target"], "a")
         self.assertEqual(s.learning_status()["lesson"]["title"], "The first five letters")
-        self.assertIn("The letter A. One dot, at the top-left.", voice.said[-1])
+        self.assertIn("the letter A. One dot, at the top-left.", voice.said[-1])
         finger.pos = cell_pos("alphabet", "a")
         self.assertTrue(wait_for(lambda: s.learning_status()["target"] == "b"))
         s.set_mode("menu")
@@ -274,6 +276,157 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(len(voice.said), n, "resting on the same wrong cell is not counted again")
         self.assertEqual(s.progress.confusions.get(f"{wrong}>{target}"), 1, "the mix-up is kept for the lessons to teach again")
         s.set_mode("menu")
+
+    def test_with_the_website_voice_starts_nothing_before_sign_in_or_before_the_phone(self):
+        linked = [False]
+        s, voice, finger, feed = hub(phone=lambda: linked[0])
+        s.website = True
+        commands = getattr(s.voice, "voice", s.voice).commands
+        n = s.nav["n"]
+        commands["quiz"]()  # ("start learning" on the front page, say): to the sign-in page, which speaks for itself
+        self.assertEqual(s.hub_mode, "menu")
+        self.assertEqual((s.nav["n"], s.nav["to"]), (n + 1, "login"))
+        s.set_page("login")
+        commands["quiz"]()  # (on the sign-in page already: it says what to do)
+        self.assertIn("signed in first", voice.said[-1])
+        s.set_user("Sam", "guest")
+        commands["quiz"]()
+        self.assertEqual(s.hub_mode, "menu")
+        self.assertIn("connect your phone first", voice.said[-1])
+        linked[0] = True
+        commands["quiz"]()
+        self.assertEqual(s.hub_mode, "quiz")
+
+    def test_braillo_knows_the_page_the_camera_the_finger_and_what_he_is_waiting_for(self):
+        s, voice, finger, feed = hub(phone=lambda: True)
+        s.website = True
+        s.set_page("connect-phone")
+        ctx = s.talk_context()
+        self.assertEqual(ctx["page"], "connect-phone")
+        self.assertIn("scan the QR code", ctx["page_is_for"])
+        self.assertIn("sign in", ctx["waiting_for"])  # nobody signed in yet
+        s.set_user("Sam", "guest")
+        self.assertIn("choose", s.talk_context()["waiting_for"])
+        self.assertNotIn("Sam", json.dumps(s.talk_context()), "no names go to the model")
+        s.set_mode("learn")
+        finger.pos = cell_pos("alphabet", "a")
+        ctx = s.talk_context()
+        self.assertEqual(ctx["finger"], "on the letter A (dots 1)")
+        self.assertIn("find the letter A", ctx["waiting_for"])
+        self.assertEqual(ctx["target_letter"], "A")
+        self.assertIn("letters_met", ctx["progress"])
+        s.set_page("nowhere")  # (not a page it knows: ignored)
+        self.assertEqual(s.page, "connect-phone")
+
+    def test_the_front_page_asks_first_and_a_yes_gets_the_welcome(self):
+        s, voice, finger, feed = hub()
+        s.website = True
+        heard = {"n": 0, "text": "", "matched": False, "reason": None}
+        s.heard_fn = lambda: heard
+        s.watch_once(0.0)
+        said = lambda line: sum(t == line for t in voice.said)
+        s.set_page("landing", ["Start learning"], arrived=True)
+        self.assertTrue(wait_for(lambda: said(tutor.ARRIVAL_LINES["landing"]) == 1 and not s._speech.locked()))  # "would you like me to…?"
+        s.set_page("landing", ["Start learning"], arrived=True)  # (reloaded straight away: asked once)
+        time.sleep(0.2)
+        self.assertEqual(said(tutor.ARRIVAL_LINES["landing"]), 1)
+        heard.update(n=1, text="yes please")
+        s.watch_once(1.0)
+        self.assertEqual((s.guided, said(tutor.LANDING_WELCOME)), (True, 1))
+        s._announced.clear()
+        s.set_page("landing", arrived=True)  # back later: a short reminder, not the question again
+        self.assertTrue(wait_for(lambda: said(tutor.LANDING_AGAIN) == 1))
+        s.set_page("landing", listen=True)  # the Listen key: the whole welcome, and the controls are kept
+        self.assertTrue(wait_for(lambda: said(tutor.LANDING_WELCOME) == 2))
+        self.assertEqual(s.controls, ["Start learning"])
+        s.on_repeat()
+        self.assertTrue(wait_for(lambda: said(tutor.LANDING_WELCOME) == 3))
+
+    def test_a_no_on_the_front_page_keeps_braillo_quiet_there(self):
+        s, voice, finger, feed = hub()
+        s.website = True
+        heard = {"n": 0, "text": "", "matched": False, "reason": None}
+        s.heard_fn = lambda: heard
+        s.watch_once(0.0)
+        s.set_page("landing", arrived=True)
+        self.assertTrue(wait_for(lambda: tutor.ARRIVAL_LINES["landing"] in voice.said and not s._speech.locked()))
+        heard.update(n=1, text="no thanks")
+        s.watch_once(1.0)
+        self.assertEqual((s.guided, voice.said[-1]), (False, tutor.LANDING_NO))
+        s._announced.clear()
+        n = len(voice.said)
+        s.set_page("landing", arrived=True)
+        time.sleep(0.2)
+        self.assertEqual(len(voice.said), n, "quiet on the front page from now on")
+
+    def test_help_fits_the_page_of_the_way_in(self):
+        s, voice, finger, feed = hub()
+        s.website = True
+        s.set_page("login")
+        s.on_help()
+        self.assertIn("Say Google to sign in, or guest", voice.said[-1])
+        self.assertNotIn("learn, read", voice.said[-1])
+        s.set_page("connect-phone")
+        s.on_help()
+        self.assertIn("Scan the code", voice.said[-1])
+        s.on_more_help()
+        self.assertIn("Scan the code", voice.said[-1])
+        self.assertNotIn("Learn teaches", voice.said[-1])
+
+    def test_any_button_on_the_page_can_be_used_by_saying_its_name(self):
+        s, voice, finger, feed = hub()
+        s.website = True
+        s.set_page("landing", ["Start learning", "How it works", "Download all sheets", "Display", "Dark", "Privacy policy"])
+        self.assertTrue(wait_for(lambda: tutor.ARRIVAL_LINES["landing"] in voice.said and not s._speech.locked()))  # (it asks first)
+        heard = {"n": 0, "text": "", "matched": False, "reason": None}
+        s.heard_fn = lambda: heard
+        s.watch_once(0.0)
+        n = s.nav["n"]
+        heard.update(n=1, text="press the download all sheets button")
+        s.watch_once(1.0)
+        self.assertEqual((s.nav["n"], s.nav["to"], s.nav["target"]), (n + 1, "click", "Download all sheets"))
+        # a button's own name wins over a voice command with the same words ("start learning" would start a lesson)
+        commands = getattr(s.voice, "voice", s.voice).commands
+        heard.update(n=2, text="start learning", matched=True)
+        commands["start quiz"]()
+        self.assertEqual((s.nav["to"], s.nav["target"], s.hub_mode), ("click", "Start learning", "menu"))
+        # what can I say, here: the page's own controls
+        s.on_help()  # short: the page's main few, and how to hear the rest
+        self.assertIn("Start learning, How it works, Download all sheets, or Privacy policy", voice.said[-1])
+        self.assertNotIn("Dark", voice.said[-1])
+        self.assertIn("more options", voice.said[-1])
+        s.on_more_help()  # everything
+        self.assertIn("Dark", voice.said[-1])
+        self.assertIn("go back", voice.said[-1])
+        # getting around
+        s.on_back()
+        self.assertEqual(s.nav["to"], "back")
+        s.on_scroll_down()
+        self.assertEqual(s.nav["to"], "scroll-down")
+
+    def test_lessons_can_be_chosen_by_voice_from_anywhere(self):
+        s, voice, finger, feed = hub()
+        s.on_lesson(2)  # "lesson three", said at the menu: learn starts, at that lesson
+        self.assertEqual((s.hub_mode, s.journey.lesson.id), ("learn", "l3"))
+        self.assertIn("K to O", " ".join(voice.said[-2:]))
+        s.on_next_lesson()
+        self.assertEqual(s.journey.lesson.id, "l4")
+        s.on_previous_lesson()
+        s.on_previous_lesson()
+        self.assertEqual(s.journey.lesson.id, "l2")
+        s.on_lesson(0)
+        s.on_previous_lesson()
+        self.assertEqual(voice.said[-1], "This is the first lesson.")
+
+    def test_my_page_and_sign_out_ask_the_website_to_go_there(self):
+        s, voice, finger, feed = hub()
+        s.set_mode("quiz")
+        n = s.nav["n"]
+        s.on_my_page()
+        self.assertEqual((s.nav["n"], s.nav["to"], s.hub_mode), (n + 1, "account", "menu"))  # the quiz stops; the page speaks next
+        s.on_sign_out()
+        self.assertEqual((s.nav["n"], s.nav["to"]), (n + 2, "signout"))
+        self.assertIn("Signing you out", voice.said[-1])
 
     def test_a_finished_quiz_goes_back_to_the_menu(self):
         s, voice, finger, feed = hub()
@@ -406,6 +559,45 @@ class ModeTests(unittest.TestCase):
 
 
 @unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")
+class SpokenAnswerTests(unittest.TestCase):
+    def test_a_letter_named_on_its_own_is_an_answer(self):
+        cases = {"E": "e", "is this E?": "e", "it's the letter bee": "b", "Is it see": "c", "that's G": "g", "okay it's D here": "d",
+                 "the letter double you": "w", "I think it's F": "f"}
+        for said, want in cases.items():
+            self.assertEqual(tutor.spoken_letter(said), want, said)
+        for said in ("and it's not falling then it lets go", "see you later", "what is this letter", ""):
+            self.assertIsNone(tutor.spoken_letter(said), said)
+
+    def test_pointing_words_mean_found_it(self):
+        import voice_io
+        for said in ("this one", "Is this it?", "It's here.", "right here", "okay that one"):
+            self.assertEqual(voice_io._match_command(voice_io._normalize_transcript(said)), "found it", said)
+
+
+class LessonByNameTests(unittest.TestCase):
+    def test_a_lesson_is_asked_for_by_number_or_name(self):
+        cases = {"lesson three": 2, "go to lesson 2": 1, "let's do K to O": 2, "the look-alikes lesson": 5, "second lesson": 1,
+                 "do U to Z": 4}
+        for said, want in cases.items():
+            self.assertEqual(tutor.lesson_named(said), want, said)
+        for said in ("K to O", "lesson nine", "what is the letter K", ""):  # (a name alone may be about the letters, not a lesson)
+            self.assertIsNone(tutor.lesson_named(said), said)
+
+
+class ProfileLineTests(unittest.TestCase):
+    def test_the_progress_is_said_in_plain_words(self):
+        self.assertEqual(tutor.progress_line({"learned": 3, "streak": 2, "sessions": 4, "practised": 9}),
+                         "You know 3 of 26 letters. You have practised 2 days in a row, over 4 sessions.")
+        self.assertEqual(tutor.progress_line({"learned": 0, "streak": 1, "sessions": 1, "practised": 2}),
+                         "You do not know any letters yet. You have practised 1 day in a row, over 1 session.")
+        self.assertIn("not had a lesson yet", tutor.progress_line({}))
+
+    def test_the_letters_are_listed_known_then_still_learning(self):
+        self.assertEqual(tutor.letters_line({}, ["a", "b"], ["a", "b", "c"]), "You know A and B. You are still learning C. 23 letters are still to try.")
+        self.assertEqual(tutor.letters_line({}, [], ["z"]), "You are still learning Z. 25 letters are still to try.")
+        self.assertEqual(tutor.letters_line({}, [], []), "You have not practised any letters yet.")
+
+
 class ServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -505,6 +697,15 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(http(self.base + "/api/prompt", {"name": "confirm_name", "who": "Sam <script>"})[0], 202)
         self.assertTrue(wait_for(lambda: any("Is your name Sam script? Say yes" in x["text"] for x in http(self.base + "/api/state")[2]["said"][n - 1:])))
         self.assertEqual(http(self.base + "/api/prompt", {"name": "go_guest_anon", "who": "ignored"})[0], 202)
+
+    def test_your_page_reads_out_your_own_progress_from_the_tutors_record(self):
+        n = len(http(self.base + "/api/state")[2]["said"])
+        self.assertEqual(http(self.base + "/api/prompt", {"name": "account", "who": "Sam"})[0], 202)
+        self.assertEqual(http(self.base + "/api/prompt", {"name": "account_letters"})[0], 202)
+        self.assertTrue(wait_for(lambda: len(http(self.base + "/api/state")[2]["said"]) >= n + 2))
+        said = [x["text"] for x in http(self.base + "/api/state")[2]["said"][n:]]
+        self.assertTrue(any("Sam" in t and "letters" in t for t in said), said)
+        self.assertFalse(any("{" in t for t in said), said)  # every blank filled in
 
     def test_the_sign_in_conversation_silences_commands_and_the_did_not_catch_that_reply(self):
         s = self.session

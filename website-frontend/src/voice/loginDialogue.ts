@@ -4,10 +4,7 @@
 //
 //   Braillie: "Welcome ... say Google to sign in, or guest to carry on without an account."
 //   You:      "guest"
-//   Braillie: "Okay, without an account ... What is your first name? Or say skip."
-//   You:      "my name is Sam"
-//   Braillie: "Is your name Sam? Say yes, or say your name again."
-//   You:      "yes"                      -> continues as a guest called Sam
+//   Braillie: "Hi, guest!"   -> continues as a guest (the next page, connecting the phone, says what to do there)
 
 /** Everything Braillie can say on this page. The tutor has the same lines (PROMPTS in braille_tutor/tutor.py); the browser voice uses these.
  * The lines heard at every start have a few versions saying the same thing in other words, so it does not sound like one script read
@@ -17,122 +14,132 @@ const spelled = (code: string) => (code ? code.split('').join(' ') : 'shown on t
 const VERSIONS = {
   welcome: [
     () =>
-      "Welcome to Braillie. On this page you can sign in with Google, or continue without an account. To sign in, say Google. To carry on without an account, say guest. Or use the tab key to move between the options. If you sign in, your progress is remembered. If you continue without an account, it is not.",
+      "Hi, I'm Braillo, and I'll be teaching you braille. Would you like to sign in with Google, so I can remember your progress, or carry on as a guest? Just say Google, or guest.",
     () =>
-      "Hi, and welcome to Braillie. You can sign in with Google, so your progress is remembered, or carry on as a guest, and nothing is saved. Say Google, or say guest. You can also press tab to move between the options.",
+      "Welcome to Braillie! I'm Braillo. If you sign in with Google, I'll keep track of how you're doing. If you'd rather not, you can come in as a guest. Say Google, or guest.",
     () =>
-      "Hello! I'm Braillo, and this is Braillie. To keep your progress, say Google to sign in. To try it without an account, say guest, but your progress won't be saved. Or press tab to move between the options.",
+      "Hello, and welcome to Braillie. I'm Braillo, your braille tutor. To save your progress, say Google and sign in. To just try it out, say guest. You can also use the tab key to move between the options.",
     () =>
-      "Hi there, welcome to Braillie. There are two ways in. Say Google to sign in and keep your progress, or say guest to start straight away without saving anything. The tab key moves between the options too.",
+      "Hi there, welcome to Braillie. You can sign in with Google to keep your progress, or come in as a guest, without an account. Say Google, or say guest.",
     () =>
-      "Welcome! I'm Braillo, your braille tutor. Would you like to sign in? Say Google, and I'll remember how you're getting on. Or say guest to carry on without an account, and nothing is kept. You can press tab to move between the options instead.",
+      "Welcome! I'm Braillo. Before we begin, would you like to sign in? Say Google to save your progress, or guest to jump straight in.",
     () =>
-      "Hello, and welcome to Braillie. Say Google to sign in with your Google account, and your progress is saved. Say guest to carry on without one, and it is not. Or use tab to move between the options.",
+      "Hello! This is Braillie, and I'm Braillo. Say Google if you'd like me to remember your progress, or say guest to start without an account.",
     () =>
-      "Good to have you here. This is Braillie, and I'm Braillo. To save your progress, sign in by saying Google. To just try it out, say guest, and nothing will be saved. Pressing tab moves between the options as well.",
+      "Hi, I'm Braillo. Welcome to Braillie. There are two ways in: say Google to sign in and save your progress, or say guest to start right away.",
     () =>
-      "Welcome to Braillie! First, how would you like to start? Say Google to sign in, so I can remember your progress. Say guest to go without an account, and your progress won't be kept. Or press tab to move between the options.",
+      "Welcome to Braillie. I'm Braillo, and I'm here to help you learn braille by touch. Say Google to sign in, or guest to carry on without an account.",
     () =>
-      "Hi! Braillo here, welcome to Braillie. You can say Google to sign in and keep your progress from one visit to the next, or say guest to carry on without an account, which saves nothing. The tab key moves between the options too.",
+      "Hello, welcome to Braillie! Would you like to sign in with Google, so your progress is saved? Say Google, or say guest to come in as a guest. The tab key works too.",
     () =>
-      "Hello, welcome to Braillie. Two choices: say Google to sign in, and your progress is remembered, or say guest to continue without an account, and it is forgotten when you leave. You can also use tab to move between them.",
+      "Hi! Braillo here. Welcome to Braillie. Sign in with Google and I'll remember where you got to, or say guest to start fresh, without an account.",
   ],
   welcome_back: [
-    (who: string) => `Welcome back, ${who}. Say continue to carry on as ${who}, or say switch to choose another way.`,
-    (who: string) => `Hi again, ${who}! Say continue to pick up where you left off, or say switch to use another way in.`,
-    (who: string) => `Good to see you, ${who}. Say continue to carry on, or say switch if this isn't you.`,
-    (who: string) => `Hello again, ${who}. To carry on, say continue. To sign in another way, say switch.`,
-    (who: string) => `Nice to have you back, ${who}! Say continue to keep going, or switch to choose a different way in.`,
-    (who: string) => `${who}, welcome back. Say continue, and we'll carry on. Say switch if you'd like another way in.`,
-    (who: string) => `Hey, ${who}, good to hear from you again. Say continue to carry on as ${who}, or say switch.`,
-    (who: string) => `Welcome back! Is that you, ${who}? Say continue to carry on, or say switch to choose another way.`,
-    (who: string) => `Hi, ${who}, back for more? Say continue to pick up where you left off, or say switch if it's someone else.`,
-    (who: string) => `There you are, ${who}. Say continue to carry on, or say switch to sign in another way.`,
+    (who: string) =>
+      `Welcome back, ${who}! Say continue to pick up where you left off, or switch if this isn't you.`,
+    (who: string) =>
+      `Hi again, ${who}. Shall we carry on? Say continue, or say switch to use a different account.`,
+    (who: string) =>
+      `Good to see you again, ${who}. Say continue to keep going, or switch if you're someone else.`,
+    (who: string) =>
+      `Hello again, ${who}! Ready to carry on? Just say continue. Or say switch to sign in another way.`,
+    (who: string) =>
+      `Nice to have you back, ${who}. Say continue, and we'll pick up where we left off. Or say switch.`,
+    (who: string) =>
+      `${who}, welcome back! Say continue to carry on, or switch if this isn't you.`,
+    (who: string) =>
+      `Hey, ${who}, good to hear from you again. Say continue when you're ready, or switch to change accounts.`,
+    (who: string) =>
+      `Welcome back! Is that you, ${who}? Say continue if it is, or switch if it's someone else.`,
+    (who: string) =>
+      `Hi, ${who}, back for more? Say continue to pick up where you left off, or say switch.`,
+    (who: string) =>
+      `There you are, ${who}! Say continue to keep going, or switch to sign in another way.`,
   ],
-  retry_choice: [() => 'Sorry, I did not catch that. Say Google to sign in, or say guest to continue without an account.'],
-  retry_back: [() => 'Sorry, I did not catch that. Say continue, or say switch.'],
+  retry_choice: [() => "Sorry, I didn't catch that. Say Google to sign in, or guest to carry on without an account."],
+  retry_back: [() => "Sorry, I didn't catch that. Say continue, or switch."],
   ask_name: [
     () =>
-      "Okay, without an account. Your progress will not be saved. What is your first name? Or say skip.",
+      "Okay, no account. Just so you know, your progress won't be saved this time. What's your first name? Or say skip.",
     () =>
-      "Okay, no account. Just so you know, your progress won't be saved. What's your first name? You can also say skip.",
+      "Sure, we'll go without an account, so nothing gets saved. What should I call you? You can also say skip.",
     () =>
-      "Sure, let's go without an account. Nothing will be saved. What should I call you? Say your first name, or say skip.",
+      "Alright, as a guest, then. Your progress won't be kept, but that's fine. What's your first name? Or just say skip.",
     () =>
-      "Alright, as a guest, then. Your progress won't be kept. What's your first name? Or just say skip.",
+      "No account, no problem. Remember, nothing is saved this way. What's your first name? Say skip if you'd rather not.",
     () =>
-      "No account, no problem. Remember, nothing is saved this way. Tell me your first name, or say skip.",
+      "Great, let's start as a guest. Your progress won't be saved. What would you like me to call you? Or say skip.",
     () =>
-      "Great, we'll carry on without an account, so your progress won't be saved. What's your first name? Say skip if you'd rather not.",
+      "Okay, guest it is. Nothing will be saved, just so you know. What's your first name? You can say skip, too.",
     () =>
-      "Okay, guest it is. Your progress won't be saved. What would you like me to call you? Say your first name, or say skip.",
+      "Got it, no account. Your progress won't be kept this time. What's your first name? Or say skip.",
     () =>
-      "Got it, no account. Just a heads up, nothing gets saved. What's your first name? Or say skip.",
+      "Fine by me. Without an account, I won't keep your progress. Could you tell me your first name? Or say skip.",
     () =>
-      "Fine by me. Without an account, your progress isn't kept. Could you tell me your first name? Or say skip.",
+      "Okay, let's skip the account. Your progress won't be saved. What's your first name? Or say skip.",
     () =>
-      "Okay, let's skip the account. Your progress won't be saved. What's your first name? You can say skip, too.",
+      "Sure thing. As a guest, nothing gets saved. What's your first name? If you'd rather not say, just say skip.",
   ],
-  confirm_name: [(who: string) => `Is your name ${who}? Say yes, or say your name again.`],
-  again_name: [() => 'Okay. Please say your first name again, or say skip.'],
-  retry_name: [() => 'Sorry, I did not catch that. Please say your first name, or say skip.'],
+  confirm_name: [(who: string) => `Is your name ${who}? Say yes, or tell me your name again.`],
+  again_name: [() => "Okay. What's your first name, then? Or say skip."],
+  retry_name: [() => "Sorry, I didn't catch that. What's your first name? Or say skip."],
   go_guest: [
-    (who: string) => `Nice to meet you, ${who}. Let us connect your phone.`,
-    (who: string) => `Lovely to meet you, ${who}. Next, let's connect your phone.`,
-    (who: string) => `Hi, ${who}! Now let's get your phone connected.`,
-    (who: string) => `Great to meet you, ${who}. Now, your phone.`,
-    (who: string) => `Hello, ${who}! Let's connect your phone next.`,
-    (who: string) => `Welcome, ${who}. Next up, connecting your phone.`,
-    (who: string) => `Nice one, ${who}. Now let's link your phone.`,
-    (who: string) => `Pleased to meet you, ${who}. Let's set up your phone.`,
-    (who: string) => `Hi there, ${who}! Time to connect your phone.`,
-    (who: string) => `Good to meet you, ${who}. Let's get your phone ready.`,
+    (who: string) =>
+      `Nice to meet you, ${who}! Now let's connect your phone.`,
+    (who: string) =>
+      `Lovely to meet you, ${who}. Next, let's get your phone connected.`,
+    (who: string) =>
+      `Hi, ${who}! Let's connect your phone next.`,
+    (who: string) =>
+      `Great to meet you, ${who}. Now for your phone.`,
+    (who: string) =>
+      `Hello, ${who}! Next up, your phone.`,
+    (who: string) =>
+      `Welcome, ${who}. Let's get your phone set up.`,
+    (who: string) =>
+      `Nice one, ${who}. Now let's link your phone.`,
+    (who: string) =>
+      `Pleased to meet you, ${who}. Let's set up your phone.`,
+    (who: string) =>
+      `Hi there, ${who}! Time to connect your phone.`,
+    (who: string) =>
+      `Good to meet you, ${who}. Let's get your phone ready.`,
   ],
   go_guest_anon: [
-    () =>
-      "Okay. Let us connect your phone.",
-    () =>
-      "No problem. Next, let's connect your phone.",
-    () =>
-      "Alright. Now let's get your phone connected.",
-    () =>
-      "Sure thing. Now, your phone.",
-    () =>
-      "That's fine. Let's connect your phone next.",
-    () =>
-      "Okay then. Next up, connecting your phone.",
-    () =>
-      "No worries. Now let's link your phone.",
-    () =>
-      "Fair enough. Let's set up your phone.",
-    () =>
-      "Alright then. Time to connect your phone.",
-    () =>
-      "Okay. Let's get your phone ready.",
+    () => "Hi, guest!",
+    () => "Hello, guest!",
+    () => "Welcome, guest!",
+    () => "Hi there, guest!",
+    () => "Welcome in, guest!",
+    () => "Hello there, guest!",
+    () => "Hi, guest, good to have you!",
+    () => "Welcome aboard, guest!",
+    () => "Hey there, guest!",
+    () => "Hi, guest! Glad you're here.",
   ],
-  go_google: [() => 'Opening Google. From here, use your keyboard or screen reader on the Google page.'],
-  give_up: [() => 'I will stop listening now. You can use the buttons on the screen: press tab to move between them.'],
+  go_google: [() => "Opening Google now. From here, use your keyboard or screen reader on the Google page."],
+  give_up: [() => "I'll stop listening for now. You can use the buttons on the screen instead: press tab to move between them."],
   connect_phone: [
     (code: string) =>
-      `Now let us connect your phone. Open the camera on your phone and point it at the code on the screen, then tap the link that appears. When the page opens, tap the big button, and I will greet you. If the code cannot be scanned, open the address shown on the screen in the phone's browser, and type the code ${spelled(code)}.`,
+      `Now let's connect your phone. Open its camera, point it at the code on the screen, and tap the link that pops up. Then tap the big Start button, and I'll say hello. If it won't scan, type the address on the screen into your phone's browser, and enter the code ${spelled(code)}.`,
     (code: string) =>
-      `Next, your phone. Point your phone's camera at the code on the screen, and tap the link that pops up. When the page opens, tap the big Start button, and I'll say hello. Can't scan it? Open the address on the screen in your phone's browser, and type the code ${spelled(code)}.`,
+      `Next, your phone. Point its camera at the code on the screen and tap the link that appears. When the page opens, tap the big Start button, and you'll hear me say hello. Can't scan it? Type the address from the screen into your phone's browser, then the code ${spelled(code)}.`,
     (code: string) =>
-      `Let's link your phone. Open its camera, aim it at the code on the screen, and tap the link. Then tap the big Start button on the page that opens. If scanning doesn't work, type the address on the screen into your phone's browser, and enter the code ${spelled(code)}.`,
+      `Let's link your phone. Open the camera, aim it at the code on the screen, and tap the link. On the page that opens, tap the big Start button. If scanning doesn't work, type the address on the screen into the phone's browser, with the code ${spelled(code)}.`,
     (code: string) =>
-      `Time to connect your phone. Open the phone's camera and hold it up to the code on the screen. Tap the link it shows, then tap the big Start button, and I'll greet you. If it won't scan, open the address on the screen in the phone's browser and type the code ${spelled(code)}.`,
+      `Time to connect your phone. Hold its camera up to the code on the screen, then tap the link it shows. Tap the big Start button, and I'll greet you. If it won't scan, open the address on the screen in the phone's browser, and type the code ${spelled(code)}.`,
     (code: string) =>
-      `Now for your phone. Use its camera to scan the code on the screen, then tap the link. On the page that opens, tap the big Start button. No luck scanning? Type the address shown on the screen into the phone's browser, with the code ${spelled(code)}.`,
+      `Now for your phone. Scan the code on the screen with its camera, and tap the link. When the page loads, tap the big Start button. No luck scanning? Type the address on the screen into the phone's browser, and the code ${spelled(code)}.`,
     (code: string) =>
-      `Let's get your phone ready. Point the phone's camera at the code on the screen until a link appears, and tap it. Then tap the big Start button, and you'll hear me say hello. If that doesn't work, open the address on the screen in the phone's browser and type the code ${spelled(code)}.`,
+      `Let's get your phone ready. Point its camera at the code on the screen until a link appears, and tap it. Then tap the big Start button, and I'll say hello. If that doesn't work, open the address on the screen in the phone's browser, and type the code ${spelled(code)}.`,
     (code: string) =>
-      `Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. Tap the big Start button on the new page, and I'll greet you. If the code won't scan, go to the address on the screen in the phone's browser and enter the code ${spelled(code)}.`,
+      `Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. On the new page, tap the big Start button. If the code won't scan, go to the address on the screen in the phone's browser, and enter the code ${spelled(code)}.`,
     (code: string) =>
-      `Okay, the phone. Scan the code on the screen with your phone's camera, then tap the link. When the page loads, tap the big Start button. If scanning is tricky, type the address on the screen into the phone's browser, and the code ${spelled(code)}.`,
+      `Okay, now the phone. Use its camera to scan the code on the screen, and tap the link. When the page loads, tap the big Start button. If scanning is tricky, type the address on the screen into the phone's browser, with the code ${spelled(code)}.`,
     (code: string) =>
-      `Now we'll connect your phone. Hold its camera up to the code on the screen and tap the link that appears. Then press the big Start button, and I'll say hello. Or, if it won't scan, open the address on the screen in your phone's browser and type the code ${spelled(code)}.`,
+      `Now we'll connect your phone. Hold its camera up to the code on the screen, and tap the link that appears. Then press the big Start button, and I'll say hello. If it won't scan, open the address on the screen in your phone's browser, and type the code ${spelled(code)}.`,
     (code: string) =>
-      `Let's bring in your phone. Point its camera at the code on the screen and tap the link. On the page that opens, tap the big Start button, and I'll greet you. Can't scan? Type the address from the screen into the phone's browser, then the code ${spelled(code)}.`,
+      `Let's bring in your phone. Point its camera at the code on the screen, and tap the link. On the page that opens, tap the big Start button, and I'll greet you. Can't scan? Type the address from the screen into the phone's browser, then the code ${spelled(code)}.`,
   ],
 } as const satisfies Record<string, readonly ((w: string) => string)[]>
 
@@ -257,6 +264,8 @@ export interface DialogueOptions {
 
 const HINT = { choice: 'Say “Google” or “guest”', back: 'Say “continue” or “switch”', name: 'Say your first name, or “skip”', confirm: 'Say “yes”, or say your name again' }
 
+export const GUEST_NAME = 'Guest' // what a guest is called (they are not asked for a name)
+
 export async function runLoginDialogue(o: DialogueOptions): Promise<Outcome> {
   const { channel, actions, signal, onStatus } = o
   const maxMisses = o.maxMisses ?? 3
@@ -307,9 +316,10 @@ export async function runLoginDialogue(o: DialogueOptions): Promise<Outcome> {
         return done('google')
       }
       if (c === 'guest') {
-        step = 'name'
-        misses = 0
-        await say('ask_name')
+        // straight in, as "Guest": no name to ask for (a guest's name is not kept anyway)
+        await say('go_guest_anon')
+        actions.guest(GUEST_NAME)
+        return done('guest')
       } else if (c === 'repeat') await say('welcome')
       else {
         const end = await miss('retry_choice')

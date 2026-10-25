@@ -8,6 +8,8 @@
   GET  /api/video        the camera as an MJPEG stream (use it as an <img src>)
   GET  /api/cells        the printed sheet's cells in page mm, with their names (for drawing your own overlay)
   POST /api/command      {"command": "start quiz" | "repeat" | "hint" | "found it" | "next" | "stop"}
+  POST /api/page         {"page": "landing" | "login" | "connect-phone" | "modes" | ..., "controls": [names]}: which page is open,
+                         and its buttons, links and options by name (any of them can then be used by voice)
   POST /api/finger       {"u": 0..1, "v": 0..1} (a point on the video, as fractions)  |  {"x_mm":..,"y_mm":..}  |  {"clear": true}
 
 Only pages served from localhost / 127.0.0.1 may call the POST endpoints, and the server binds to 127.0.0.1 by default.
@@ -150,6 +152,7 @@ class TutorRuntime:
                 "learning": session.learning_status(),
                 # (on the menu too, once someone is here: the home screen shows how they are getting on)
                 "progress": session.progress.summary() if session.journey is not None or (session.hub and session.user) else None,
+                "nav": session.nav if session.hub else None,  # "my page", "sign out" said anywhere: the website goes there
                 "camera": {"ok": self.camera_ok, "frames": feed.frames}, "phone": self.phone_info(),
                 "page": {"ok": feed.page_ok, "message": feed.message},
                 "tutor": session.status(),
@@ -192,6 +195,8 @@ class TutorRuntime:
         name = str(body.get("name", ""))
         if name not in tutor.PROMPTS:
             raise ValueError(f'"name" must be one of: {", ".join(tutor.PROMPTS)}')
+        if name == "connect_phone" and self.phone is not None and self.phone.waiting_since is None:
+            self.phone.waiting_since = self.phone.clock()  # the page with the code is open: the backup link's timer starts now
         if body.get("cut") is True:  # this line replaces whatever is still being said (cut first, so it is not dropped as stale)
             session.cut_speech()
         threading.Thread(target=session.speak_prompt, args=(name, body.get("who")), daemon=True).start()
@@ -211,7 +216,7 @@ class TutorRuntime:
         if link is None:
             return None
         return {"connected": link.connected, "url": link.url, "address": link.base, "code": link.code, "qr": "/api/phone/qr.png",
-                "tunnel": link.tunnelled, "trusted": link.no_warning, "instructions": link.spoken_instructions(), "diagnosis": link.diagnose(), "sound": link.sound_ready(), "mic": link.mic_live(),
+                "tunnel": link.tunnelled, "backup": link.backup_url is not None, "trusted": link.no_warning, "instructions": link.spoken_instructions(), "diagnosis": link.diagnose(), "sound": link.sound_ready(), "mic": link.mic_live(),
                 "events": [text for _, text in list(link.events)[-8:]]}
 
     def cells(self) -> list:
@@ -343,12 +348,25 @@ def make_handler(rt: TutorRuntime):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt", "/api/dialogue", "/api/settings",
-                            "/api/mic"):
+            if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt", "/api/dialogue", "/api/settings", "/api/page",
+                            "/api/mic", "/api/phone/backup"):
                 return self._json(404, {"error": "not found"})
             body = self._read_json()
             if body is None:
                 return
+            if path == "/api/phone/backup":  # "use the backup link": the QR code shows the tunnel instead (it must be ready)
+                if rt.phone is None:
+                    return self._json(404, {"error": "the camera is not a phone (start with --phone-camera)"})
+                return self._json(200 if rt.phone.use_backup() else 409, {"backup": rt.phone.tunnelled})
+            if path == "/api/page":  # which page of the website is open: Braillo knows where the learner is
+                page = str(body.get("page", ""))
+                if page not in tutor.WEBSITE_PAGES:
+                    return self._json(400, {"error": f'"page" must be one of: {", ".join(tutor.WEBSITE_PAGES)}'})
+                controls = body.get("controls", [])
+                if not isinstance(controls, list) or len(controls) > 100:
+                    return self._json(400, {"error": '"controls" must be a list of names'})
+                rt.session.set_page(page, [str(c) for c in controls], arrived=body.get("arrived") is True, listen=body.get("listen") is True)
+                return self._json(200, {"page": page, "controls": len(rt.session.controls)})
             if path == "/api/mic":  # the mute key: {"on": false} turns the microphone off, {"on": true} back on
                 if not isinstance(body.get("on"), bool):
                     return self._json(400, {"error": '"on" must be true or false'})
@@ -455,7 +473,7 @@ def main() -> None:
                             detector=tutor._Detector(0.15, "auto") if a.show_detections else None,
                             track_finger=not a.no_finger_tracking, observe_sheet=setup.cells if setup.observed else None,
                             show_reading=not a.hide_detections, known_sheets=tutor.known_sheets_for(a, setup),
-                            sheet_name=a.sheet or "alphabet")
+                            sheet_name=a.sheet or "alphabet", finder=tutor.best_finder() if not a.no_finger_tracking else None)
     progress, progress_file = tutor.progress_for(a)
     session = tutor.TutorSession(rv, wc, setup.cells, feed.finger, feed.scan, a.mode, a.questions, setup.words,
                                  rng=random.Random(a.seed), names=setup.names, coach=tutor.make_coach(a),
@@ -473,14 +491,17 @@ def main() -> None:
     tutor.install_speed(voice, session, a)  # after the phone speaker, so the phone gets the slowed speech too
     link = phone[0] if phone else None
     if link is not None and session.hub:
+        link.waiting_since = None  # (signing in comes first: the backup link's timer starts when the page with the code opens)
+    session.website = session.hub  # the menu-driven tutor is the website's: people sign in there before voice can start anything
+    if link is not None and session.hub:
         session.phone_ready_fn = lambda: link.connected  # the greeting waits until the phone is linked
         session.phone_code_fn = lambda: link.code  # (read out on the connect page, for anyone who cannot scan the code)
     rt = TutorRuntime(phone[1] if phone else open_camera(a.camera), feed, session, rv,
                       loop_file=not phone and bool(a.camera) and Path(a.camera).is_file(), phone=link)
     rt.start()
     def opening() -> None:
-        if link is not None:  # someone who cannot see the QR code hears how to connect
-            session.say(link.spoken_instructions())
+        if link is not None and not session.hub:  # someone who cannot see the QR code hears how to connect (with the website, its
+            session.say(link.spoken_instructions())  # connect page says it, when they get there: not at start-up, before signing in)
         if a.mode in ("explore", "learn"):  # nothing to wait for: it starts by itself
             session.on_start()
 

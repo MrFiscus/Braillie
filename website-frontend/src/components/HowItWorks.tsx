@@ -135,9 +135,6 @@ const HowItWorks = () => (
     {STEPS.map(({ label, Scene, describe }, n) => (
       <li key={label} className="how__step">
         <figure role="img" aria-label={describe}>
-          <span className="how__n" aria-hidden="true">
-            {n + 1}
-          </span>
           <Scene />
           <figcaption aria-hidden="true">{label}</figcaption>
         </figure>

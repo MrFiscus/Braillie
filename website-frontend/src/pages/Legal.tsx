@@ -62,7 +62,7 @@ export const Privacy = () => (
     <section aria-labelledby="p-short">
       <h2 id="p-short">The short version</h2>
       <ul>
-        <li>Camera pictures stay on the computer running Braillie. They are never sent to any other company.</li>
+        <li>Camera pictures go to the computer running Braillie and stay there. No company sees them.</li>
         <li>What you say is sent to Deepgram, only to turn your speech into words and Braillie’s words into speech.</li>
         <li>Braillo’s answers come from Claude, by Anthropic. It gets lesson facts and your question, never pictures, audio or your name.</li>
         <li>No adverts, no tracking, and we never sell anything about you.</li>
@@ -74,7 +74,9 @@ export const Privacy = () => (
       <h3>Your camera</h3>
       <p>
         Your phone’s camera (or the laptop’s) watches the printed sheet and your fingertip. The pictures go over your own Wi-Fi to the computer
-        running Braillie, are used there to find the braille and your finger, and are not saved or sent anywhere else.
+        running Braillie, are used there to find the braille and your finger, and are not saved. If your Wi-Fi blocks the phone from reaching
+        the laptop, Braillie offers a backup link: then the pictures travel to the laptop through an encrypted tunnel run by Cloudflare,
+        which passes them on without keeping them.
       </p>
       <h3>Your voice</h3>
       <p>
@@ -109,6 +111,7 @@ export const Privacy = () => (
         <li>Deepgram: speech recognition and the voice.</li>
         <li>Anthropic (Claude): Braillo’s answers and memory aids.</li>
         <li>Supabase: sign-in and keeping a signed-in learner’s progress.</li>
+        <li>Cloudflare: only for the backup link, carrying the camera pictures from the phone to the laptop when the Wi-Fi blocks them.</li>
         <li>Google: signing in with your Google account, if you choose to.</li>
       </ul>
       <p>Each handles the data under its own privacy policy, only to provide that part of Braillie.</p>

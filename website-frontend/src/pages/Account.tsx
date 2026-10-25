@@ -1,7 +1,14 @@
 import { Navigate, useNavigate } from 'react-router-dom'
-import type { ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import BigButton from '../components/BigButton.tsx'
+import Lyrics from '../components/Lyrics.tsx'
+import Mascot from '../components/Mascot.tsx'
+import MicButton from '../components/MicButton.tsx'
+import { sayPrompt, setMic, setMode } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
+import { useAccountVoice } from '../voice/useAccountVoice.ts'
+import { useSpeechPosition } from '../voice/useSpeechPosition.ts'
+import { useSpokenLine } from '../voice/useSpokenLine.ts'
 import { useUser } from '../auth/useUser.ts'
 
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz'.split('')
@@ -18,24 +25,93 @@ const ICONS: Record<string, ReactNode> = {
   ),
 }
 
+const COUNT_MS = 900
+
+/** A number that counts up to `to` when it first shows (and on to a new value when it changes); straight there for anyone who has asked
+ * their device for less motion. A picture of the number: the page gives a screen reader the number itself. */
+const useCountUp = (to: number) => {
+  const [n, setN] = useState(0)
+  const at = useRef(0) // where the count is now, to go on from when the number changes
+  useEffect(() => {
+    const still = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (still) {
+      at.current = to
+      setN(to)
+      return
+    }
+    const from = at.current
+    const start = performance.now()
+    let frame = 0
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / COUNT_MS)
+      at.current = Math.round(from + (to - from) * (1 - (1 - t) ** 3))
+      setN(at.current)
+      if (t < 1) frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frame)
+  }, [to])
+  return n
+}
+
+const Stat = ({ icon, value, of, label }: { icon: string; value: number; of?: string; label: string }) => {
+  const shown = useCountUp(value)
+  return (
+    <li>
+      <span className="account__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          {ICONS[icon]}
+        </svg>
+      </span>
+      <span className="account__value" aria-hidden="true">
+        {shown}
+        {of && <small>{of}</small>}
+      </span>
+      <span className="account__label">
+        <span className="sr-only">
+          {value}
+          {of && ` of ${of.slice(1)}`}{' '}
+        </span>
+        {label}
+      </span>
+    </li>
+  )
+}
+
 /**
- * Your page: who you are and whether your progress is kept, how you are getting on (three big numbers, each with a picture), and your
- * alphabet, each letter
- * with four dots under it that fill in as you get to know it. Then carry on, or sign out.
+ * Your page: who you are and whether your progress is kept; Braillo, who reads out how you are getting on and answers "letters",
+ * "continue", "learn", "sign out" and the like (his words as captions beside him, the mute key there too); three big numbers, each
+ * with a picture; and your alphabet, each letter with a bar under it that fills as you get to know it (a letter you know fills in
+ * whole). Then carry on, or sign out.
  */
 const Account = () => {
   const { user, loading, signOut } = useUser()
   const navigate = useNavigate()
-  const { state, reach } = useTutorState(2000)
+  const { state, reach } = useTutorState(500) // (often enough to show each spoken sentence as it starts)
   const progress = state?.progress ?? null
+  const leave = () => void signOut().then(() => navigate('/'))
+  useAccountVoice({
+    reach,
+    state,
+    name: user?.name ?? null,
+    act: (ask) => {
+      if (ask === 'home') navigate('/modes')
+      else if (ask === 'signout') void sayPrompt('account_bye', user?.name, true).catch(() => {}).finally(leave)
+      else void setMode(ask).then(() => navigate('/practice')).catch(() => navigate('/modes'))
+    },
+  })
+  const { speaking, speech } = useSpokenLine(state) // (the caption is held a moment after each line, so it does not flicker)
+  const spoken = useSpeechPosition(speech, state?.settings?.speech_speed)
+  const listening = !speaking && !!state?.heard
+  const muted = !!state?.muted
 
   if (!loading && !user) return <Navigate to="/login" replace />
   if (!user) return null
 
   const stats = [
-    { icon: 'letters', value: `${progress?.learned ?? 0}`, of: '/26', label: 'letters known' },
-    { icon: 'streak', value: `${progress?.streak ?? 0}`, label: (progress?.streak ?? 0) === 1 ? 'day in a row' : 'days in a row' },
-    { icon: 'sessions', value: `${progress?.sessions ?? 0}`, label: (progress?.sessions ?? 0) === 1 ? 'session' : 'sessions' },
+    { icon: 'letters', value: progress?.learned ?? 0, of: '/26', label: 'letters known' },
+    { icon: 'streak', value: progress?.streak ?? 0, label: (progress?.streak ?? 0) === 1 ? 'day in a row' : 'days in a row' },
+    { icon: 'sessions', value: progress?.sessions ?? 0, label: (progress?.sessions ?? 0) === 1 ? 'session' : 'sessions' },
   ]
 
   return (
@@ -52,43 +128,51 @@ const Account = () => {
         </div>
       </header>
 
+      <section className="account__voice" aria-label="Braillo, your tutor">
+        <Mascot state={speaking ? 'speaking' : listening ? 'listening' : 'idle'} size={150} words={spoken.sentence * 1000 + spoken.said} />
+        <div className="account__words">
+          {speech ? (
+            <Lyrics speech={speech} speed={state?.settings?.speech_speed} />
+          ) : (
+            <p className="account__hint" aria-hidden="true">
+              {reach === 'no' ? 'Start Braillie on the laptop to talk to me.' : 'Say “letters”, “continue” or “sign out”.'}
+            </p>
+          )}
+        </div>
+        {reach === 'yes' && (
+          <MicButton
+            state={muted ? 'muted' : 'live'}
+            label={muted ? 'Turn the microphone on' : 'Mute the microphone'}
+            onClick={() => void setMic(muted).catch(() => {})}
+          />
+        )}
+      </section>
+
       {progress ? (
         <>
           <ul className="account__stats" aria-label="How you are getting on">
             {stats.map((s) => (
-              <li key={s.label}>
-                <span className="account__icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" focusable="false">
-                    {ICONS[s.icon]}
-                  </svg>
-                </span>
-                <span className="account__value">
-                  {s.value}
-                  {s.of && <small>{s.of}</small>}
-                </span>
-                <span className="account__label">{s.label}</span>
-              </li>
+              <Stat key={s.label} {...s} />
             ))}
           </ul>
 
           <section aria-labelledby="alpha-h" className="account__alpha">
             <h2 id="alpha-h">Your alphabet</h2>
             <ul className="alpha">
-              {ALPHABET.map((l) => {
+              {ALPHABET.map((l, n) => {
                 const practised = l in progress.mastery
-                const pips = Math.round((progress.mastery[l] ?? 0) * 4)
+                const known = progress.mastery[l] ?? 0
+                const level = !practised ? 'none' : Math.round(known * 4) === 4 ? 'known' : 'some'
                 return (
-                  <li key={l} data-none={!practised}>
+                  <li key={l} data-level={level} style={{ '--known': known, '--n': n } as CSSProperties}>
                     <span className="alpha__letter" aria-hidden="true">
                       {l.toUpperCase()}
                     </span>
-                    <span className="alpha__pips" aria-hidden="true">
-                      {[0, 1, 2, 3].map((i) => (
-                        <i key={i} data-on={i < pips} />
-                      ))}
+                    <span className="alpha__bar" aria-hidden="true">
+                      <i />
                     </span>
                     <span className="sr-only">
-                      {l.toUpperCase()}: {practised ? `${Math.round((progress.mastery[l] ?? 0) * 100)} percent known` : 'not practised yet'}
+                      {l.toUpperCase()}: {practised ? `${Math.round(known * 100)} percent known` : 'not practised yet'}
                     </span>
                   </li>
                 )
@@ -103,16 +187,8 @@ const Account = () => {
       )}
 
       <div className="account__keys">
-        <BigButton onClick={() => navigate('/modes')}>
-          <svg className="btn__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="M4 12h16m-6-6 6 6-6 6" />
-          </svg>
-          Continue
-        </BigButton>
-        <BigButton variant="secondary" onClick={() => void signOut().then(() => navigate('/'))}>
-          <svg className="btn__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M9 16l-4-4 4-4M5 12h10" />
-          </svg>
+        <BigButton onClick={() => navigate('/modes')}>Continue</BigButton>
+        <BigButton variant="secondary" className="btn--line" onClick={leave}>
           Sign out
         </BigButton>
       </div>

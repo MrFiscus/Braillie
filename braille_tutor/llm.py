@@ -243,31 +243,58 @@ def _braille_facts() -> str:
 
 
 BRAILLE_FACTS = _braille_facts()
+PERSONA = (
+    "You are Braillo, a friendly little robot shaped like a braille cell, and the voice of Braillie, an app that teaches braille by "
+    "touch to people who are often blind or have low vision. You talk like a warm, patient, upbeat teacher: short, natural spoken "
+    "sentences, a little playful, never patronising. Celebrate effort as well as success. If they sound frustrated or lost, be kind, "
+    "and offer the next small step."
+)
+APP_MAP = (
+    "How Braillie works: the learner prints practice sheets (the alphabet, words, and look-alike letters), presses each dot through "
+    "from the back so it is raised, and lays the sheet under their phone's camera. The phone streams video to the laptop, which finds "
+    "the sheet and their fingertip. The pages: sign-in (Google, or guest), connect the phone (scan the QR code with its camera), home "
+    "(choose Learn, Read or Quiz), the activity itself, and their own page (their progress). Learn has six short lessons: A to E, F "
+    "to J, K to O, P to T, U to Z, then look-alikes. Each letter is described by its dots, and the learner finds it and rests a finger "
+    "on it for about three seconds; then a mixed practice; and, if it went well, they spell a real word. Read: rest a finger on a "
+    "word on the words sheet and it is read aloud. Quiz: you name a letter on the look-alikes sheet, and they point at it and say "
+    "this one (or its name), or rest a finger on it. At any time they can say home, my page, next lesson, lesson three, hint, "
+    "repeat, slower, faster, or sign out."
+)
+RULES = (
+    "With each message you get app_now: the page they are on and what it is for, whether the phone and camera can see the sheet, "
+    "which letter their finger is on, their progress, and what you are waiting for them to do. Use it: answer about the moment they "
+    "are in, and gently steer them toward what you are waiting for. Never claim to see what app_now does not say. If the camera "
+    "cannot see the sheet or their finger, say so, and how to fix it: the whole sheet in view and flat, good light, the phone about "
+    "thirty centimetres above. Teaching: describe letters by their dots. Do not give away where a letter is on the sheet (its row "
+    "and column) unless they have already had two hints, or ask for it outright. You do not know how the sheet is laid out, so "
+    "never say where a letter is compared with another (to its left, the next one along): guide them by the dots instead. Spoken words only: no markdown, lists, emoji, web "
+    "addresses or braille symbols; say letters and dot numbers in words. Do not repeat your last line word for word. "
+)
 ASK_SYSTEM = (
-    "You are Braillo, the spoken tutor inside Braillie, a braille learning app for people who may be blind or have "
-    "low vision. Answer like a real tutor who knows the topic. Prefer plain speech for text-to-speech: no markdown, "
-    "bullet lists, emoji, URLs, or braille symbols (they cannot be spoken: name the letters and dots instead). Keep answers under 60 words unless they clearly ask for more detail. Help with "
-    "braille, reading, and the app when relevant, but answer any honest question. You may be given what is happening "
-    "in the app right now (the activity, the letter being asked for and its dots, what you said last): use it so your "
-    "answer fits the moment, and never just repeat your last line word for word. " + BRAILLE_FACTS
+    PERSONA + " " + APP_MAP + " " + RULES + "They asked you a question (after saying your name): answer it like a real tutor who "
+    "knows the topic, in under 60 words unless they clearly want more. Answer any honest question, not only about braille. "
+    + BRAILLE_FACTS
 )
 # What free speech (no exact command phrase) may be turned into; the tutor runs the matching command.
 TALK_ACTIONS = ("none", "repeat", "hint", "found it", "next", "next page", "start", "stop", "menu", "learn", "read", "quiz",
-                "explore", "practice", "help", "slower", "faster")
+                "explore", "practice", "help", "slower", "faster", "next lesson", "previous lesson", "lesson", "my page", "sign out")
 TALK_SYSTEM = (
-    "You are Braillo, the voice of Braillie, a braille tutor for people who may be blind or have low vision. You get what "
-    "the microphone just heard (speech to text, so it may be garbled), what is happening in the app, and the last few "
-    "exchanges. Decide what to do:\n"
-    "- addressed: false if this was not said to you (other people talking, the TV, noise, half a word). Then action none, say empty.\n"
-    "- action: the app command they want, if they clearly want one (for example 'what was that letter again' is repeat, "
-    "'I'm stuck' or 'where is it' is hint, 'I'm on it now' is found it, 'skip this one' is next, 'let's do something "
-    "else' is menu, 'I want to practise reading' is read). Otherwise none.\n"
-    "- say: what to say back, for text to speech: at most two short sentences, under 40 words, plain words, no lists or "
-    "markdown, and no braille symbols (say the letters and dot numbers instead). Leave it empty when the action speaks for itself (repeat, hint, next and so on already talk). Answer "
-    "questions about braille, the letters and the app directly. If they did not understand your last line, explain it "
-    "differently instead of repeating it. Only use dot numbers and letters from the facts you are given or that you are "
-    "certain of (a is dot 1, b is dots 1 2, c is dots 1 4, and so on)." + " " + BRAILLE_FACTS
+    PERSONA + " " + APP_MAP + " " + RULES + "You get what the microphone just heard (speech to text, so it may be garbled) and the "
+    "last few exchanges. Decide what to do:\n"
+    "- addressed: false if this was not said to you (other people talking, the TV, noise, half a word). Then action none, say "
+    "empty, lesson 0.\n"
+    "- action: the app command they want, if they clearly want one. For example: 'what was that letter again' is repeat; 'I'm "
+    "stuck' or 'where is it' is hint; 'this one' or 'I'm on it now' is found it; 'skip this one' is next; 'take me home' or 'let's "
+    "do something else' is menu; 'I want to practise reading' is read; 'can we move on to the next lesson' is next lesson; 'go "
+    "back a lesson' is previous lesson; 'let's do K to O' or 'lesson three' is lesson (with its number); 'how am I doing' or 'show "
+    "my progress' is my page; 'I'm done for today, log me out' is sign out. Otherwise none.\n"
+    "- lesson: the lesson number (1 to 6) when the action is lesson; otherwise 0.\n"
+    "- say: what to say back: at most two short sentences, under 40 words. Leave it empty when the action speaks for itself "
+    "(repeat, hint, next, a lesson or a page already talk). Answer questions about braille, the letters, the app and the moment "
+    "directly. If they did not understand your last line, explain it differently. " + BRAILLE_FACTS
 )
+SPEAKING_ACTIONS = ("next lesson", "previous lesson", "lesson", "my page", "menu", "learn", "read", "quiz", "start", "practice",
+                    "explore", "next", "next page", "sign out")  # actions that say their own piece once they run
 TALK_SCHEMA = {
     "name": "braillo_reply",
     "strict": True,
@@ -276,9 +303,10 @@ TALK_SCHEMA = {
         "properties": {
             "addressed": {"type": "boolean"},
             "action": {"type": "string", "enum": list(TALK_ACTIONS)},
+            "lesson": {"type": "integer"},
             "say": {"type": "string"},
         },
-        "required": ["addressed", "action", "say"],
+        "required": ["addressed", "action", "lesson", "say"],
         "additionalProperties": False,
     },
 }
@@ -382,7 +410,13 @@ class AskTutor:
         self.failures = 0
         action = reply.get("action") if reply.get("action") in TALK_ACTIONS else "none"
         if reply.get("addressed") is False:
-            return {"action": "none", "say": ""}
+            return {"action": "none", "say": "", "lesson": 0}
+        lesson = reply.get("lesson") if isinstance(reply.get("lesson"), int) else 0
+        if action == "lesson" and not 1 <= lesson <= 6:
+            action = "none"  # (a lesson with no number it could name: nothing to go to)
         say = _spoken(reply.get("say")) or ""
+        if action in SPEAKING_ACTIONS and say:  # the lesson or page says its own piece next: only a short "sure, let's go" before it
+            say = re.split(r"(?<=[.!?])\s+", say)[0]
+            say = say if len(say.split()) <= 8 else ""
         self._remember(text, say or f"({action})")
-        return {"action": action, "say": say}
+        return {"action": action, "say": say, "lesson": lesson}

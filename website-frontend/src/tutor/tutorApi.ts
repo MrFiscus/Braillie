@@ -7,7 +7,8 @@ export interface PhoneInfo {
   address: string
   code: string
   qr: string // path of the QR code image, relative to TUTOR_API
-  tunnel?: boolean // reached through a public tunnel (--phone-tunnel)
+  tunnel?: boolean // reached through a public tunnel (--phone-tunnel, or the backup link once it is in use)
+  backup?: boolean // a backup link (a tunnel) is ready, for a Wi-Fi that blocks the phone: see switchToBackupLink
   trusted?: boolean // the phone gets a real certificate (--phone-trusted, --phone-domain or --phone-tunnel): no "connection is not private" page to click through
   instructions: string
   diagnosis?: string | null // why no video has arrived yet, in plain words
@@ -15,13 +16,15 @@ export interface PhoneInfo {
   mic?: boolean
 }
 
-export type LearningPhase = 'idle' | 'await_sheet' | 'warmup' | 'teach' | 'practice' | 'review' | 'recap' | 'explore' | 'done' // warmup: letters that went wrong before, taught again
+export type LearningPhase = 'idle' | 'await_sheet' | 'warmup' | 'teach' | 'practice' | 'review' | 'word' | 'recap' | 'explore' | 'done' // warmup: letters that went wrong before, taught again; word: spelling a real word at the end of a lesson
 
 /** Where the learner is in the guided lessons (only when the tutor runs with --mode learn). */
 export interface LearningStatus {
   phase: LearningPhase
   lesson: { id: string; title: string; index: number; of: number; sheet: string } | null
   target: string | null // the letter being asked for
+  word?: string | null // while spelling a word at the end of a lesson: the word
+  correct?: number // right answers this session (counts up: Braillo hops for joy at each)
   target_dots: number[]
   remaining: number // letters still to do in this part of the lesson, including the current one
   letters: number // letters in the lesson
@@ -80,6 +83,12 @@ export interface TutorState {
   speech?: { text: string; started: number; seconds: number } | null // the line being spoken: when it started and how long it lasts
   heard?: { n: number; text: string; matched: boolean; reason: string | null } | null // the last thing the microphone made out (n counts up); null if it is not listening
   muted?: boolean // the learner turned the microphone off with the mute key
+  // something said that the website does: a page ("my page", "sign out", "go back", "home"), scrolling, or pressing a control by its name
+  nav?: {
+    n: number
+    to: 'login' | 'account' | 'signout' | 'click' | 'back' | 'home' | 'scroll-down' | 'scroll-up' | 'top' | null
+    target?: string | null
+  } | null
 }
 
 const post = (path: string, body: unknown) =>
@@ -138,6 +147,15 @@ export const sayPrompt = async (name: string, who?: string, cut = false) =>
 export const shareTheme = (theme: string | undefined) => {
   if (theme) void post('/api/settings', { theme }).catch(() => {})
 }
+
+/** Show the backup link in the QR code (a tunnel that works on any network) instead of the local one. */
+export const switchToBackupLink = async () => ok(await post('/api/phone/backup', {}), 'backup')
+
+/** Tell the tutor which page is open and the names of the controls on it, so Braillo knows where the learner is and any of them can be
+ * used by voice (see VoiceControl). Nothing happens if the tutor is not running. */
+export const sharePage = (page: string, controls: string[], arrived = false) =>
+  void post('/api/page', { page, controls, ...(arrived ? { arrived: true } : {}) }).catch(() => {})
+
 
 /** The mute key: turn the tutor's microphone off (nothing is sent or acted on) or back on. */
 export const setMic = async (on: boolean) => ok(await post('/api/mic', { on }), 'mic')

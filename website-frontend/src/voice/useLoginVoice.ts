@@ -3,6 +3,7 @@ import type { Reach } from '../tutor/useTutorState.ts'
 import { setDialogue, type TutorState } from '../tutor/tutorApi.ts'
 import { browserCanTalk, browserChannel, tutorCanTalk, tutorChannel, VoiceBlocked } from './channels.ts'
 import { runLoginDialogue, type Actions, type Status } from './loginDialogue.ts'
+import { useVoiceTab } from './useVoiceTab.ts'
 
 const PREF = 'braillie.voice' // "off" once someone has turned the voice off: it is not started again for them
 
@@ -49,6 +50,7 @@ export function useLoginVoice({ reach, state, ready, returning, actions }: Args)
   const abort = useRef<AbortController | null>(null)
   const latest = useRef({ returning, actions })
   const kind: VoiceKind = tutorCanTalk(state) ? 'tutor' : browserCanTalk() ? 'browser' : 'none'
+  const voiceTab = useVoiceTab() // (only the tab in use talks: two conversations would cut each other's lines off midway)
   const kindNow = useRef(kind)
   useEffect(() => {
     latest.current = { returning, actions } // the conversation always uses the newest of these, without restarting
@@ -110,10 +112,15 @@ export function useLoginVoice({ reach, state, ready, returning, actions }: Args)
   // With the tutor on this computer, talk straight away (a short wait first, so that a page that is loaded twice in development, or that
   // is left again at once, does not make the tutor speak twice).
   useEffect(() => {
-    if (!ready || reach !== 'yes' || kind !== 'tutor' || !wanted()) return
+    if (!ready || reach !== 'yes' || kind !== 'tutor' || !wanted() || !voiceTab) return
     const t = window.setTimeout(() => void run(), 400)
     return () => window.clearTimeout(t)
-  }, [ready, reach, kind, run])
+  }, [ready, reach, kind, run, voiceTab])
+
+  // another tab came to the front: this one stops talking (that one takes over)
+  useEffect(() => {
+    if (!voiceTab) abort.current?.abort()
+  }, [voiceTab])
 
   useEffect(
     () => () => {

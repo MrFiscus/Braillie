@@ -818,39 +818,23 @@ code {
   height: 1.6rem; /* still: the tall bars are the only motion, and reduced-motion removes them */
 }
 
-/* ---- what Braillie is saying, like the words of a song: the sentence being spoken, large, each word filling in as it is said, and
-   the next one waiting below. Words still to come stay readable (ink-soft is 10:1 or more); the word now is in the accent, underlined
-   (so it is not shown by colour alone). ---- */
+/* ---- what Braillie is saying: the sentence being spoken, large and in full ink, fading in as the voice reaches it ---- */
 .lyrics {
   display: grid;
   gap: 0.4rem;
-}
-.lyrics__count {
-  font-weight: 800;
-  font-size: 1rem;
-  color: var(--accent);
 }
 .lyrics__line {
   max-width: 34ch;
   font-weight: 800;
   font-size: clamp(1.7rem, 1.4vw + 1.2rem, 2.5rem);
   line-height: 1.25;
-  color: var(--ink-soft);
-}
-.lyrics__line .is-said {
   color: var(--ink);
+  animation: caption-in 220ms ease both;
 }
-.lyrics__line .is-now {
-  color: var(--accent);
-  text-decoration: underline;
-  text-decoration-thickness: 0.12em;
-  text-underline-offset: 0.18em;
-}
-.lyrics__next {
-  max-width: 50ch;
-  font-weight: 600;
-  font-size: 1.2rem;
-  color: var(--ink-soft);
+@keyframes caption-in {
+  from {
+    opacity: 0;
+  }
 }
 .voicebar .lyrics {
   grid-template-columns: auto minmax(0, 1fr);
@@ -867,9 +851,6 @@ code {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
-}
-.voicebar .lyrics__next {
-  display: none;
 }
 
 /* ---- sign in: the voice card on the left, and the ways in as matching cards on the right ---- */
@@ -935,9 +916,6 @@ code {
 }
 .voicecard .lyrics__line {
   font-size: clamp(1.9rem, 1.8vw + 1.2rem, 3.1rem);
-}
-.voicecard .lyrics__next {
-  font-size: clamp(1.2rem, 0.6vw + 1rem, 1.5rem);
 }
 .voicecard__foot {
   display: flex;
@@ -1298,6 +1276,8 @@ code {
 .mascot__shadow {
   fill: var(--ink);
   opacity: 0.18;
+  transform-box: fill-box;
+  transform-origin: center;
 }
 .mascot__heard path {
   fill: none;
@@ -1305,22 +1285,77 @@ code {
   stroke-width: 6;
   stroke-linecap: round;
 }
+.mascot__sparks path {
+  fill: var(--m-skin);
+  stroke: var(--m-line);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+}
+/* the layers that move: all of him (breathing, leaning), inside it what hops and bobs, and the face, which looks about */
+.mascot__alive,
+.mascot__whole {
+  transform-box: fill-box;
+  transform-origin: 50% 100%; /* (from his feet: he breathes and leans from the ground up) */
+}
+.mascot__alive {
+  animation: mascot-breathe 3.6s ease-in-out infinite;
+  transition: rotate 400ms ease, translate 400ms ease;
+}
+.mascot__antenna {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: mascot-sway 3.2s ease-in-out infinite;
+}
+.mascot__face {
+  transform: translate(var(--look-x, 0), var(--look-y, 0));
+  transition: transform 280ms cubic-bezier(0.3, 1.4, 0.5, 1);
+}
 .mascot__eyes,
 .mascot__mouth,
 .mascot__brows,
-.mascot__glow {
+.mascot__glow,
+.mascot__sparks path {
   transform-box: fill-box;
   transform-origin: center;
 }
 .mascot__eyes {
-  animation: mascot-blink 5s ease-in-out infinite;
+  transition: transform 70ms ease-in;
+}
+.mascot__brows {
+  transition: transform 250ms ease;
+}
+.mascot__arm--left,
+.mascot__arm--down,
+.mascot__arm--up {
+  transform-box: view-box; /* (they swing from the shoulder) */
+}
+.mascot__arm--left {
+  transform-origin: 52px 128px;
+}
+.mascot__arm--down,
+.mascot__arm--up {
+  transform-origin: 168px 128px;
+}
+.mascot {
+  cursor: pointer; /* (poke him: he giggles) */
 }
 /* what shows in each state */
 .mascot__mouth,
 .mascot__arm--up,
-.mascot__heard {
+.mascot__heard,
+.mascot__happy,
+.mascot__grin,
+.mascot__sparks {
   display: none;
 }
+.mascot__happy {
+  fill: none;
+  stroke-width: 6;
+}
+.mascot.is-blinking .mascot__eyes {
+  transform: scaleY(0.08);
+}
+/* talking: the mouth opens on each word, he sways a little, gestures, and his brows lift now and then */
 .mascot[data-state='speaking'] .mascot__smile {
   display: none;
 }
@@ -1328,9 +1363,25 @@ code {
   display: inline;
   animation: mascot-talk 320ms ease-out; /* once per word: the mouth is redrawn as each new word starts */
 }
+.mascot[data-state='speaking'] .mascot__alive {
+  animation: mascot-talk-sway 2.8s ease-in-out infinite;
+}
 .mascot[data-state='speaking'] .mascot__whole {
   animation: mascot-bob 1.4s ease-in-out infinite;
 }
+.mascot[data-state='speaking'] .mascot__arm--left {
+  animation: mascot-gesture 2.4s ease-in-out infinite;
+}
+.mascot[data-state='speaking'] .mascot__brows {
+  animation: mascot-brows 3.4s ease-in-out infinite;
+}
+.mascot[data-state='speaking'] .mascot__antenna {
+  animation-duration: 1.4s;
+}
+.mascot[data-state='speaking'] .mascot__glow {
+  animation-duration: 1.1s;
+}
+/* listening: he leans towards the sound, his hand to his ear and his brows up */
 .mascot[data-state='listening'] .mascot__arm--down {
   display: none;
 }
@@ -1344,12 +1395,192 @@ code {
 .mascot[data-state='listening'] .mascot__brows {
   transform: translateY(-5px);
 }
-.mascot[data-state='listening'] .mascot__eyes {
-  transform: translateX(5px); /* looking towards the sound */
-  animation: none;
+.mascot[data-state='listening'] .mascot__alive {
+  rotate: 4deg;
+  translate: 3px 0;
 }
 .mascot[data-state='off'] {
   opacity: 0.85;
+}
+/* hello: a wave, when he first appears */
+.mascot.is-greeting .mascot__arm--down {
+  display: none;
+}
+.mascot.is-greeting .mascot__arm--up {
+  display: inline;
+  animation: mascot-wave 0.9s ease-in-out 2;
+}
+/* a right answer: a hop for joy, happy eyes, a big grin, sparkles; poked: a giggle */
+.mascot:is(.is-cheering, .is-giggling) .mascot__eyes,
+.mascot:is(.is-cheering, .is-giggling) .mascot__smile,
+.mascot:is(.is-cheering, .is-giggling) .mascot__mouth {
+  display: none;
+}
+.mascot:is(.is-cheering, .is-giggling) .mascot__happy,
+.mascot:is(.is-cheering, .is-giggling) .mascot__grin {
+  display: inline;
+}
+.mascot.is-cheering .mascot__whole {
+  animation: mascot-hop 900ms cubic-bezier(0.3, 0.9, 0.4, 1);
+}
+.mascot.is-cheering .mascot__shadow {
+  animation: mascot-shadow-hop 900ms cubic-bezier(0.3, 0.9, 0.4, 1);
+}
+.mascot.is-cheering .mascot__arm--left,
+.mascot.is-cheering .mascot__arm--down {
+  animation: mascot-arms-up 900ms ease-out;
+}
+.mascot.is-cheering .mascot__sparks {
+  display: inline;
+}
+.mascot.is-cheering .mascot__sparks path {
+  animation: mascot-spark 900ms ease-out both;
+}
+.mascot.is-cheering .mascot__sparks path:nth-child(2) {
+  animation-delay: 90ms;
+}
+.mascot.is-cheering .mascot__sparks path:nth-child(3) {
+  animation-delay: 180ms;
+}
+.mascot.is-giggling .mascot__whole {
+  animation: mascot-giggle 650ms ease-in-out;
+}
+@keyframes mascot-breathe {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  50% {
+    transform: scale(0.99, 1.018);
+  }
+}
+@keyframes mascot-talk-sway {
+  0%,
+  100% {
+    transform: rotate(-1.6deg) scale(1, 1);
+  }
+  50% {
+    transform: rotate(1.6deg) scale(0.99, 1.015);
+  }
+}
+@keyframes mascot-sway {
+  0%,
+  100% {
+    transform: rotate(-5deg);
+  }
+  50% {
+    transform: rotate(5deg);
+  }
+}
+@keyframes mascot-gesture {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  30% {
+    transform: rotate(14deg);
+  }
+  55% {
+    transform: rotate(4deg);
+  }
+  75% {
+    transform: rotate(10deg);
+  }
+}
+@keyframes mascot-brows {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+  }
+  70%,
+  80% {
+    transform: translateY(-4px);
+  }
+}
+@keyframes mascot-wave {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-22deg);
+  }
+  75% {
+    transform: rotate(12deg);
+  }
+}
+@keyframes mascot-hop {
+  0% {
+    transform: translateY(0) scale(1, 1);
+  }
+  15% {
+    transform: translateY(0) scale(1.08, 0.9); /* crouch */
+  }
+  45% {
+    transform: translateY(-26px) scale(0.94, 1.08); /* up */
+  }
+  70% {
+    transform: translateY(0) scale(1.06, 0.93); /* land */
+  }
+  85% {
+    transform: translateY(-4px) scale(0.98, 1.02);
+  }
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+}
+@keyframes mascot-shadow-hop {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.18;
+  }
+  45% {
+    transform: scale(0.7);
+    opacity: 0.08;
+  }
+}
+@keyframes mascot-arms-up {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  45% {
+    transform: rotate(-35deg);
+  }
+}
+@keyframes mascot-spark {
+  0% {
+    transform: scale(0) rotate(0deg);
+    opacity: 0;
+  }
+  35% {
+    transform: scale(1.2) rotate(45deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.4) rotate(90deg);
+    opacity: 0;
+  }
+}
+@keyframes mascot-giggle {
+  0%,
+  100% {
+    transform: rotate(0deg) translateY(0);
+  }
+  20% {
+    transform: rotate(-6deg) translateY(-6px);
+  }
+  40% {
+    transform: rotate(5deg) translateY(0);
+  }
+  60% {
+    transform: rotate(-4deg) translateY(-4px);
+  }
+  80% {
+    transform: rotate(3deg) translateY(0);
+  }
 }
 @keyframes mascot-talk {
   0% {
@@ -1360,25 +1591,6 @@ code {
   }
   100% {
     transform: scaleY(0.55);
-  }
-}
-@keyframes mascot-blink {
-  0%,
-  92%,
-  100% {
-    transform: scaleY(1);
-  }
-  95% {
-    transform: scaleY(0.1);
-  }
-}
-@keyframes mascot-bob {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-4px);
   }
 }
 @keyframes mascot-glow {
@@ -1511,16 +1723,18 @@ code {
   height: auto;
 }
 
-/* ---- your page: who you are, three big numbers, your alphabet, and the two keys ---- */
+/* ---- your page: who you are (with Braillo beside you), three big numbers, your alphabet, and the two keys. Soft colour fills instead
+   of outlines, like the landing page; the numbers count up and the letters arrive one after another when the page opens ---- */
 .account {
   display: grid;
-  gap: clamp(1.75rem, 4vh, 2.75rem);
+  gap: clamp(2rem, 5vh, 3.25rem);
   align-content: start;
 }
 .account__head {
   display: flex;
   align-items: center;
   gap: clamp(1rem, 2.5vw, 2rem);
+  animation: arrive 600ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 .account__avatar {
   display: grid;
@@ -1538,9 +1752,43 @@ code {
   font-size: clamp(2.6rem, 3.5vw + 1.2rem, 4.5rem);
   line-height: 1.05;
 }
+/* Braillo, talking: his words beside him as captions (the big line only), the mute key at the end */
+.account__voice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: clamp(1rem, 2.5vw, 2rem);
+  animation: arrive 600ms cubic-bezier(0.2, 0.7, 0.2, 1) 80ms both;
+}
+.account__voice .mascot {
+  width: clamp(6rem, 10vw, 9rem);
+  height: auto;
+}
+.account__words {
+  min-height: 5rem;
+  display: grid;
+  align-items: center;
+}
+.account__hint {
+  font-weight: 700;
+  font-size: clamp(1.5rem, 1vw + 1.15rem, 2.1rem);
+  color: var(--ink-soft);
+}
+.account__words .lyrics__line {
+  font-size: clamp(1.6rem, 1.2vw + 1.2rem, 2.4rem);
+}
+@media (max-width: 40rem) {
+  .account__voice {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .account__voice .micbtn {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
 .account__kind,
 .account__none {
-  font-size: clamp(1.3rem, 0.6vw + 1.1rem, 1.6rem);
+  font-size: clamp(1.35rem, 0.6vw + 1.1rem, 1.65rem);
   color: var(--ink-soft);
 }
 .account__stats {
@@ -1548,7 +1796,7 @@ code {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
   gap: 1rem;
 }
 .account__stats li {
@@ -1556,10 +1804,19 @@ code {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   column-gap: 1.25rem;
-  row-gap: 0.2rem;
-  padding: 1.25rem 1.5rem;
+  row-gap: 0.3rem;
+  padding: 1.5rem 1.75rem;
   border-radius: var(--radius-lg);
-  background: var(--card);
+  background: color-mix(in srgb, var(--accent) 10%, var(--paper));
+  border: var(--bw) solid transparent;
+  animation: arrive 600ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  transition: translate 250ms ease;
+}
+.account__stats li:nth-child(2) {
+  animation-delay: 100ms;
+}
+.account__stats li:nth-child(3) {
+  animation-delay: 200ms;
 }
 .account__icon {
   grid-row: 1 / span 2;
@@ -1567,9 +1824,10 @@ code {
   place-items: center;
   width: clamp(4.5rem, 5.5vw, 5.75rem);
   aspect-ratio: 1;
-  border-radius: 50%;
+  border-radius: var(--radius);
   background: var(--accent);
   color: var(--on-accent);
+  transition: transform 300ms cubic-bezier(0.3, 1.6, 0.5, 1);
 }
 .account__icon svg {
   width: 55%;
@@ -1582,8 +1840,9 @@ code {
 }
 .account__value {
   font-weight: 800;
-  font-size: clamp(3rem, 3vw + 1.5rem, 4.25rem);
+  font-size: clamp(3.2rem, 3vw + 1.6rem, 4.5rem);
   line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 .account__value small {
   font-size: 0.5em;
@@ -1591,68 +1850,118 @@ code {
 }
 .account__label {
   font-weight: 700;
-  font-size: clamp(1.2rem, 0.5vw + 1rem, 1.45rem);
+  font-size: clamp(1.35rem, 0.6vw + 1.1rem, 1.65rem);
   color: var(--ink-soft);
 }
 .account__alpha {
   display: grid;
-  gap: 1rem;
+  gap: 1.25rem;
 }
 .account__alpha h2 {
-  font-size: clamp(1.8rem, 1.2vw + 1.3rem, 2.4rem);
+  font-size: clamp(1.9rem, 1.2vw + 1.4rem, 2.6rem);
 }
+/* each letter: big, on a soft fill, with a thick bar that fills as you get to know it; a letter you know fills in whole */
 .alpha {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr));
-  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fill, minmax(5.25rem, 1fr));
+  gap: 0.75rem;
 }
 .alpha li {
   display: grid;
   justify-items: center;
-  gap: 0.35rem;
-  padding: 0.6rem 0 0.7rem;
-  border: var(--bw) solid var(--ink);
+  gap: 0.6rem;
+  padding: 0.9rem 0.8rem 1rem;
   border-radius: var(--radius);
-  background: var(--paper);
+  background: color-mix(in srgb, var(--accent) 10%, var(--paper));
+  border: var(--bw) solid transparent;
+  animation: tile-in 450ms cubic-bezier(0.3, 1.5, 0.5, 1) both;
+  animation-delay: calc(300ms + var(--n, 0) * 30ms);
+  transition: translate 200ms ease;
 }
-.alpha li[data-none='true'] {
-  border-style: dashed;
+.alpha li[data-level='none'] {
+  background: var(--card);
   color: var(--ink-soft);
+}
+.alpha li[data-level='known'] {
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .alpha__letter {
   font-weight: 800;
-  font-size: 2rem;
+  font-size: clamp(2.1rem, 1vw + 1.7rem, 2.6rem);
   line-height: 1;
 }
-.alpha__pips {
-  display: flex;
-  gap: 4px;
+.alpha__bar {
+  width: 100%;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 15%, transparent);
+  overflow: hidden;
 }
-.alpha__pips i {
-  width: 0.7rem;
-  height: 0.7rem;
-  border-radius: 50%;
-  border: 2px solid currentColor;
-}
-.alpha__pips i[data-on='true'] {
+.alpha__bar i {
+  display: block;
+  height: 100%;
+  width: calc(var(--known, 0) * 100%);
+  border-radius: inherit;
   background: var(--accent);
-  border-color: var(--accent);
+  animation: fill 900ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(500ms + var(--n, 0) * 30ms);
+}
+.alpha li[data-level='known'] .alpha__bar {
+  background: color-mix(in srgb, var(--on-accent) 30%, transparent);
+}
+.alpha li[data-level='known'] .alpha__bar i {
+  background: var(--on-accent);
+}
+@keyframes tile-in {
+  from {
+    opacity: 0;
+    scale: 0.6;
+  }
+}
+@keyframes fill {
+  from {
+    width: 0;
+  }
+}
+@media (hover: hover) {
+  .account__stats li:hover {
+    translate: 0 -4px;
+  }
+  .account__stats li:hover .account__icon {
+    transform: scale(1.1) rotate(-6deg);
+  }
+  .alpha li:hover {
+    translate: 0 -4px;
+  }
+}
+:root:is([data-theme='contrast'], [data-theme='contrast-light']) :is(.account__stats li, .alpha li) {
+  border-color: var(--ink); /* (no tints in the strongest themes: an outline instead) */
+}
+:root:is([data-theme='contrast'], [data-theme='contrast-light']) .alpha li[data-level='none'] {
+  border-style: dashed;
 }
 .account__keys {
   display: flex;
   flex-wrap: wrap;
   gap: 1rem;
+  animation: arrive 600ms cubic-bezier(0.2, 0.7, 0.2, 1) 400ms both;
 }
 .account__keys .btn {
-  min-height: 4.5rem;
-  min-width: 12rem;
-  font-size: clamp(1.3rem, 0.6vw + 1.1rem, 1.6rem);
+  min-height: 4.75rem;
+  min-width: 13rem;
+  font-size: clamp(1.4rem, 0.6vw + 1.15rem, 1.7rem);
 }
-.account__keys .btn {
-  gap: 0.75rem;
+.account__keys .btn--line {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: transparent;
+}
+.account__keys .btn--line:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--paper));
 }
 .btn__icon {
   width: 1.6em;
@@ -2419,6 +2728,28 @@ html:has(.landing) {
 .sheets__fan:hover .sheets__page--lookalikes {
   transform: translateX(-50%) rotate(16deg) translateX(48%);
 }
+/* the page you point at lifts forward, above the others */
+.sheets__page {
+  transition:
+    transform 300ms ease,
+    translate 300ms ease,
+    box-shadow 300ms ease;
+}
+.sheets__page:hover {
+  z-index: 2;
+  translate: 0 -8%;
+  box-shadow: 0 18px 40px rgb(0 0 0 / 0.32);
+}
+/* arriving: the three pages come in stacked, then fan out */
+.sheets__fan.reveal .sheets__page {
+  transition: transform 900ms cubic-bezier(0.2, 0.7, 0.2, 1) 250ms;
+}
+.sheets__fan.reveal:not(.is-in) .sheets__page {
+  transform: translateX(-50%);
+}
+.sheets__steps {
+  margin: 0.75rem 0 0.5rem;
+}
 @media (min-width: 64rem) {
   .sheets {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
@@ -2453,17 +2784,6 @@ html:has(.landing) {
   gap: 1rem;
   width: 100%;
 }
-.how__n {
-  display: grid;
-  place-items: center;
-  width: 3.75rem;
-  height: 3.75rem;
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-weight: 800;
-  font-size: 1.9rem;
-}
 .how__scene {
   width: 100%;
   max-width: 34rem;
@@ -2492,9 +2812,16 @@ html:has(.landing) {
   }
   .how__step {
     grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
+    align-items: stretch; /* (every picture as tall as the tallest, so the three captions sit on one line) */
+  }
+  .how figure {
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .how__scene {
+    align-self: center;
   }
   .how__next {
+    align-self: center;
     transform: none;
   }
 }
@@ -2740,52 +3067,108 @@ html:has(.landing) {
   display: grid;
   gap: 0.4rem;
 }
-.meet__kicker {
-  font-weight: 800;
-  font-size: clamp(1.4rem, 0.8vw + 1.1rem, 1.8rem);
-  color: var(--accent);
-}
 .meet__copy h2 {
-  font-size: clamp(3.5rem, 7vw + 1rem, 9rem);
-  line-height: 0.95;
+  font-size: clamp(3rem, 4vw + 1.2rem, 6rem);
+  line-height: 1;
 }
 .meet__sub {
   font-size: clamp(1.5rem, 1.2vw + 1.1rem, 2.2rem);
   font-weight: 700;
   color: var(--ink-soft);
 }
-.meet__traits {
+/* a short list of plain lines, each led by its picture in the accent colour (what Braillo does; how to make a sheet) */
+.traits {
   list-style: none;
-  margin: 1.25rem 0 0;
+  margin: 2.75rem 0 0;
   padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
+  display: grid;
+  gap: 2.25rem;
+  max-width: 36rem;
 }
-.meet__traits li {
-  display: inline-flex;
+.traits li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.55rem 1.1rem 0.55rem 0.8rem;
-  border-radius: 999px;
-  border: var(--bw) solid var(--ink-soft);
-  font-weight: 800;
-  font-size: 1.3rem;
-  transition: background-color 250ms ease, color 250ms ease, border-color 250ms ease;
+  gap: 1.6rem;
+  font-size: clamp(1.4rem, 0.6vw + 1.1rem, 1.7rem);
+  line-height: 1.4;
+  color: var(--ink-soft);
 }
-.meet__traits svg {
-  width: 1.7rem;
-  height: 1.7rem;
+.traits b {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-size: clamp(1.8rem, 1vw + 1.35rem, 2.4rem);
+  line-height: 1.15;
+  color: var(--ink);
+}
+.trait__icon svg {
+  display: block;
+  width: clamp(3.5rem, 4vw, 4.5rem);
+  height: clamp(3.5rem, 4vw, 4.5rem);
   fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
+  stroke: var(--accent);
+  stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.meet__traits li[data-on='true'] {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
+/* pointing at a line: it steps forward, its title takes the accent, and its picture acts (the bubble wobbles, the ear listens, the
+   bulb lights up); Braillo acts it out beside it */
+.trait {
+  transition: translate 250ms ease;
+}
+.trait b {
+  transition: color 250ms ease;
+}
+.trait__icon svg,
+.trait__icon svg * {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@media (hover: hover) {
+  .trait:hover {
+    translate: 0.4rem 0;
+  }
+  .trait:hover b {
+    color: var(--accent);
+  }
+  .trait--talks:hover svg {
+    animation: wobble 700ms ease-in-out infinite;
+  }
+  .trait--listens:hover svg {
+    animation: beat 1.1s ease-in-out infinite;
+  }
+  .trait--helps:hover svg {
+    animation: glow 1.2s ease-in-out infinite;
+  }
+}
+@keyframes wobble {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-8deg);
+  }
+  75% {
+    transform: rotate(8deg);
+  }
+}
+@keyframes glow {
+  0%,
+  100% {
+    filter: none;
+    transform: scale(1);
+  }
+  50% {
+    filter: drop-shadow(0 0 6px var(--accent));
+    transform: scale(1.1);
+  }
+}
+.landing.is-still .trait,
+.landing.is-still .trait * {
+  animation: none !important;
+  transition: none !important;
+  translate: none !important;
 }
 @media (min-width: 64rem) {
   .meet {
@@ -2814,43 +3197,89 @@ html:has(.landing) {
   animation: none;
 }
 
-/* ---- made for blind and low-vision learners: four pictures, a title and a few words each ---- */
+/* ---- made for blind and low-vision learners: the heading on one side, like the sheets; four cards, two by two, on the other ---- */
+.made {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(2.5rem, 5vw, 5rem);
+}
+.made__copy {
+  display: grid;
+  gap: 1.1rem;
+  justify-items: start;
+}
+.made__copy h2 {
+  font-size: clamp(2.4rem, 2.6vw + 1.4rem, 3.9rem);
+  line-height: 1.05;
+  max-width: 14ch;
+  text-wrap: balance;
+}
+.made__nowrap {
+  white-space: nowrap;
+}
+.made__copy p {
+  font-size: clamp(1.3rem, 0.7vw + 1.05rem, 1.65rem);
+  line-height: 1.5;
+  color: var(--ink-soft);
+  max-width: 34ch;
+}
 .madefor {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: clamp(3rem, 6vh, 4.5rem) clamp(1.5rem, 3vw, 3rem);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  gap: clamp(1rem, 1.6vw, 1.5rem);
 }
 .madefor li {
   display: grid;
-  justify-items: center;
   align-content: start;
-  gap: 0.9rem;
-  text-align: center;
+  justify-items: start;
+  gap: 0.6rem;
+  padding: clamp(1.5rem, 2.2vw, 2.1rem);
+  background: color-mix(in srgb, var(--accent) 9%, var(--paper));
+  border: var(--bw) solid transparent;
+  border-radius: var(--radius-lg);
+}
+:root:is([data-theme='contrast'], [data-theme='contrast-light']) .madefor li {
+  border-color: var(--ink); /* (the strongest themes have no tint: the cards keep a line instead) */
 }
 .madefor__icon {
   display: grid;
   place-items: center;
-  width: clamp(6rem, 8vw, 9rem);
-  height: clamp(6rem, 8vw, 9rem);
-  border-radius: 50%;
+  width: clamp(4.5rem, 5vw, 5.75rem);
+  height: clamp(4.5rem, 5vw, 5.75rem);
+  border-radius: var(--radius);
   background: var(--accent);
-  margin-bottom: 0.8rem;
+  margin-bottom: 0.6rem;
 }
 .madefor__icon svg {
-  width: 60%;
-  height: 60%;
+  width: 62%;
+  height: 62%;
   fill: none;
   stroke: var(--on-accent);
-  stroke-width: 1.7;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+@media (min-width: 64rem) {
+  .made {
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.25fr);
+  }
+  .madefor {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+:is(html[data-size='3'], html[data-size='4']) .made,
+:is(html[data-size='3'], html[data-size='4']) .madefor {
+  grid-template-columns: minmax(0, 1fr);
+}
 /* pointing at one plays its picture; everything keeps still when the device asks for less motion */
 .madefor__item {
-  transition: transform 250ms ease;
+  transition:
+    transform 250ms ease,
+    border-color 250ms ease;
 }
 .madefor__icon {
   position: relative;
@@ -2860,7 +3289,7 @@ html:has(.landing) {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 50%;
+  border-radius: var(--radius);
   border: 3px solid var(--accent);
   opacity: 0;
 }
@@ -2874,10 +3303,11 @@ html:has(.landing) {
 }
 @media (hover: hover) {
   .madefor__item:hover {
-    transform: translateY(-6px);
+    transform: translateY(-4px);
+    border-color: var(--accent);
   }
   .madefor__item:hover .madefor__icon {
-    transform: scale(1.1);
+    transform: scale(1.08);
   }
   .madefor__item:hover h3 {
     color: var(--accent);
@@ -2982,9 +3412,9 @@ html:has(.landing) {
 }
 .madefor h3 {
   font-size: clamp(1.6rem, 1vw + 1.15rem, 2.3rem);
+  line-height: 1.15;
 }
 .madefor p {
-  max-width: 24ch;
   font-size: clamp(1.25rem, 0.5vw + 1rem, 1.5rem);
   line-height: 1.5;
   color: var(--ink-soft);
@@ -3181,6 +3611,127 @@ html:has(.landing) {
 :is(html[data-size='3'], html[data-size='4']) .hero {
   grid-template-columns: minmax(0, 1fr);
 }
+/* ---- the landing page coming to life: parts rise into place as you scroll to them, and answer when you point at them ----
+   Kept gentle on purpose: short distances, no flashing, no parallax, nothing that moves on its own while you read. A part is only ever
+   hidden once the page has set it up to arrive (so it reads in full without scripts), shows at once if the keyboard lands in it, and
+   everything keeps still for a device that asks for less motion (see prefers-reduced-motion below). */
+.landing .reveal {
+  opacity: 0;
+  translate: 0 1.75rem;
+  transition:
+    opacity 650ms ease var(--reveal-delay, 0ms),
+    translate 650ms cubic-bezier(0.2, 0.7, 0.2, 1) var(--reveal-delay, 0ms);
+}
+.landing .reveal.is-in,
+.landing .reveal:focus-within {
+  opacity: 1;
+  translate: 0 0;
+}
+/* the welcome arrives on its own when the page opens: the words first, then the picture */
+.landing:not(.is-still) :is(.hero__copy > *, .world) {
+  animation: arrive 700ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.landing:not(.is-still) .hero__copy > :nth-child(2) {
+  animation-delay: 100ms;
+}
+.landing:not(.is-still) .hero__copy > :nth-child(3) {
+  animation-delay: 200ms;
+}
+.landing:not(.is-still) .world {
+  animation-delay: 250ms;
+}
+@keyframes arrive {
+  from {
+    opacity: 0;
+    translate: 0 1.75rem;
+  }
+}
+/* the welcome's two ways on, as wide as their words: the way in, solid; "How it works" (it only scrolls down the page) drawn in the
+   accent colour, so the way in stands out */
+.hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: none;
+}
+.cta--line {
+  background: transparent;
+  color: var(--accent);
+}
+.cta--line:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--paper));
+}
+.hero__actions .cta {
+  justify-content: center;
+  padding-inline: 2.25rem;
+}
+@media (max-width: 30rem) {
+  .hero__actions .cta {
+    width: 100%;
+  }
+}
+/* pointing at something (or reaching it with the keyboard) lifts it a little */
+.cta {
+  transition:
+    background-color 200ms ease,
+    color 200ms ease,
+    translate 200ms ease,
+    box-shadow 200ms ease;
+}
+.cta:is(:hover, :focus-visible) {
+  translate: 0 -3px;
+  box-shadow: var(--lift);
+}
+.cta:is(:hover, :focus-visible) .arrow {
+  transform: translateX(4px);
+}
+.brand__dot {
+  display: inline-block;
+}
+.brand:hover .brand__dot {
+  animation: hop 500ms ease;
+}
+@keyframes hop {
+  40% {
+    translate: 0 -0.35em;
+  }
+}
+@media (hover: hover) {
+  .how__scene {
+    transition: translate 300ms ease;
+  }
+  .how figure:hover .how__scene {
+    translate: 0 -6px;
+  }
+  .how figure:hover figcaption {
+    color: var(--accent);
+  }
+  .meet__stage .mascot {
+    transition: translate 300ms ease;
+  }
+  .meet__stage:hover .mascot {
+    translate: 0 -8px;
+  }
+  .sitefoot a {
+    transition:
+      color 150ms ease,
+      translate 150ms ease;
+  }
+  .sitefoot__col a:hover {
+    translate: 4px 0;
+  }
+}
+.landing.is-still :is(.cta, .brand__dot, .how__scene, .mascot, .sitefoot a) {
+  animation: none;
+  transition: none;
+  translate: none;
+}
+@media print {
+  .landing .reveal {
+    opacity: 1;
+    translate: none;
+  }
+}
+
 @media (forced-colors: active) {
   .world {
     display: none;

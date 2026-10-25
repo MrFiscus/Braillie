@@ -13,7 +13,7 @@ import learn
 import sheets
 import tutor
 import tutor_server
-from accessibility import Awareness, Hearing, Settings, help_text
+from accessibility import Awareness, Hearing, Settings, help_text, more_help_text
 from test_hub import SHEETS, cell_pos, fast_dwell, hub, wait_for
 from test_learn_session import learn_session
 from test_server import http
@@ -137,7 +137,11 @@ class HelpTests(unittest.TestCase):
         self.assertIn("next to skip a question", help_text("quiz", "letters", "asking"))
         self.assertIn("rest a finger on a word", help_text("read", "read", "reading"))
         self.assertIn("Rest a finger on any cell", help_text(None, "explore", "exploring"))
-        for h in (help_text("menu", "menu", "menu"), help_text("learn", "learn", "learning")):
+        for where in (("menu", "menu", "menu"), ("learn", "learn", "learning"), ("quiz", "letters", "asking"), ("read", "read", "reading")):
+            short = help_text(*where)
+            self.assertLess(len(short.split()), 32, f"help is short: {short}")  # (about ten seconds, not a minute)
+            self.assertIn("more options", short)
+        for h in (more_help_text("menu", "menu", "menu"), more_help_text("learn", "learn", "learning")):
             self.assertIn("slower or faster", h)
             self.assertIn("take your time", h)
             self.assertIn("braillo", h)

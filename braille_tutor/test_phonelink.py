@@ -1,7 +1,8 @@
 """Tests for phonelink.py (phone as camera) and its place in tutor_server. No real phone: uploads are made by the tests, over real
 HTTP and real HTTPS with the certificate the code generates. The phone page's JavaScript is NOT run here (no browser)."""
-import json
 import os
+os.environ["BRAILLIE_NO_PHONE_BACKUP"] = "1"  # start_phone must never open a real public tunnel from a test
+import json
 import random
 import ssl
 import tempfile
@@ -371,9 +372,10 @@ def wav_bytes(seconds=0.3, rate=8000) -> bytes:
 class FakePhone(threading.Thread):
     """Plays the part of the phone page: fetches every clip the link offers and reports it played (or failed)."""
 
-    def __init__(self, link, error="", delay=0.05):
+    def __init__(self, link, error="", delay=0.05, lag=0.0):
         super().__init__(daemon=True)
         self.link, self.error, self.delay, self.got, self.stop = link, error, delay, [], False
+        self.lag = lag  # fetching and decoding: how long after taking a clip it starts to be heard
         self.start()
 
     def run(self):
@@ -382,6 +384,8 @@ class FakePhone(threading.Thread):
             if offer:
                 clip = self.link.take_clip(offer["id"])
                 self.got.append((offer["id"], clip["type"], clip["data"]))
+                time.sleep(self.lag)
+                self.link.clip_started(offer["id"])
                 time.sleep(self.delay)  # "playing"
                 self.link.clip_done(offer["id"], self.error)
             time.sleep(0.01)
@@ -421,7 +425,9 @@ class SoundTests(unittest.TestCase):
         self.assertEqual(phonelink.fix_wav_header(fixed), fixed, "an already-correct file is unchanged")
         self.assertEqual(phonelink.fix_wav_header(b"not a wav"), b"not a wav")
 
-    def test_what_is_sent_to_the_phone_has_the_repaired_header(self):
+    def test_a_clip_is_passed_on_whole_even_while_it_arrives_in_pieces(self):
+        """Speech streams to the phone as it is made (its header cannot know the length yet: the phone page reads the samples, not
+        the sizes), and all of it gets there, in order."""
         class V:
             MOCK_MODE = False
             def _play_audio_stream(self, chunks): pass
@@ -430,11 +436,35 @@ class SoundTests(unittest.TestCase):
         phonelink.install_phone_speaker(v, link)
         phone = FakePhone(link)
         try:
-            v._play_audio_stream([self.lying_wav(0.2)])
+            wav = self.lying_wav(0.2)
+            def arriving():
+                for i in range(0, len(wav), 500):
+                    time.sleep(0.005)
+                    yield wav[i:i + 500]
+            v._play_audio_stream(arriving())
+            got = bytes(phone.got[0][2])
+            self.assertEqual(got, wav)
             import io
             import wave
-            with wave.open(io.BytesIO(phone.got[0][2])) as w:
+            with wave.open(io.BytesIO(phonelink.fix_wav_header(got))) as w:
                 self.assertEqual(w.getnframes(), int(0.2 * 8000))
+        finally:
+            phone.stop = True
+
+    def test_the_captions_are_timed_from_when_the_phone_starts_playing_not_when_the_clip_was_offered(self):
+        class V:
+            MOCK_MODE = False
+            _playing = None
+            def _play_audio_stream(self, chunks): pass
+            def _play_mp3_stream(self, chunks): pass
+        v, link = V(), self.ready_link()
+        phonelink.install_phone_speaker(v, link)
+        phone = FakePhone(link, lag=0.3)
+        try:
+            v._playing = {"text": "Hello.", "started": time.time(), "seconds": 0.2}  # (voice_io notes this just before it plays)
+            offered = v._playing["started"]
+            v._play_audio_stream([wav_bytes(0.2)])
+            self.assertGreaterEqual(v._playing["started"] - offered, 0.25, "moved on to when the phone began")
         finally:
             phone.stop = True
 
@@ -1419,3 +1449,97 @@ class StartPhoneTrustedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackupLinkTests(unittest.TestCase):
+    """The backup link: a tunnel made ready next to the local link, shown in the QR code when the Wi-Fi blocks the phone."""
+
+    def link(self):
+        self.clock = FakeClock()
+        link = PhoneLink("192.168.1.23", 8443, code="123456", clock=self.clock)
+        link.waiting_since = self.clock()
+        return link
+
+    def test_nothing_changes_without_a_backup(self):
+        link = self.link()
+        self.clock.t += 600
+        self.assertFalse(link.backup_due())
+        self.assertFalse(link.use_backup())
+        self.assertEqual(link.base, "https://192.168.1.23:8443")
+
+    def test_it_is_used_when_nothing_has_reached_the_laptop_for_a_while(self):
+        link = self.link()
+        link.backup_url = "https://quiet-river.trycloudflare.com"
+        self.clock.t += phonelink.BACKUP_AFTER - 1
+        self.assertFalse(link.backup_due(), "not yet")
+        self.clock.t += 2
+        self.assertTrue(link.backup_due())
+        self.assertTrue(link.use_backup())
+        self.assertEqual(link.url, "https://quiet-river.trycloudflare.com/phone?t=123456", "the QR code now has the backup link")
+        self.assertTrue(link.tunnelled)
+        self.assertFalse(link.backup_due(), "once only")
+
+    def test_not_when_a_phone_got_through_or_before_the_code_is_on_screen(self):
+        link = self.link()
+        link.backup_url = "https://quiet-river.trycloudflare.com"
+        link.contact("192.168.1.40")  # a phone reached the laptop: the network is fine, the backup would not help
+        self.clock.t += 600
+        self.assertFalse(link.backup_due())
+        other = self.link()
+        other.backup_url = link.backup_url
+        other.waiting_since = None  # the website is still signing in: the code is not up yet
+        self.clock.t += 600
+        self.assertFalse(other.backup_due())
+        self.assertTrue(other.use_backup(), "but the learner can still ask for it")
+
+    def test_the_backup_link_wins_over_a_trusted_name(self):
+        link = self.link()
+        link.trusted_name = "192-168-1-23.local.example"
+        link.backup_url = "https://quiet-river.trycloudflare.com"
+        link.use_backup()
+        self.assertEqual(link.base, "https://quiet-river.trycloudflare.com")
+
+    def test_a_backup_server_runs_next_to_the_local_one_without_moving_it(self):
+        link = PhoneLink("127.0.0.1", 0, code="123456", tls=False)
+        main = PhoneServer(link, host="127.0.0.1").start()
+        try:
+            port = link.port
+            backup = PhoneServer(link, host="127.0.0.1", tls=False, port=0).start()
+            main.backup = backup
+            self.assertEqual(link.port, port, "the local link keeps its own port")
+            self.assertNotEqual(backup.port, port)
+            for p in (port, backup.port):
+                self.assertEqual(request(f"http://127.0.0.1:{p}/phone/check?t=123456")[0], 200)
+        finally:
+            main.stop()  # (stops the backup too)
+        with self.assertRaises(Exception):
+            request(f"http://127.0.0.1:{backup.port}/phone/check?t=123456")
+
+    def test_the_backup_is_made_ready_by_a_tunnel_and_stays_off_without_one(self):
+        link = PhoneLink("127.0.0.1", 0, code="123456", tls=False)
+        main = PhoneServer(link, host="127.0.0.1").start()
+        try:
+            class FakeTunnel:
+                url = "https://quiet-river.trycloudflare.com"
+                def stop(self):
+                    pass
+            real = phonelink.start_tunnel
+            phonelink.start_tunnel = lambda port: FakeTunnel()
+            try:
+                phonelink._start_backup(link, main)
+            finally:
+                phonelink.start_tunnel = real
+            self.assertEqual(link.backup_url, FakeTunnel.url)
+            self.assertFalse(link.tunnelled, "ready, but the QR code still has the local link")
+            failing = PhoneLink("127.0.0.1", 0, code="123456", tls=False)
+
+            def no_tunnel(port):
+                raise phonelink.TunnelError("no internet")
+            phonelink.start_tunnel = no_tunnel
+            try:
+                phonelink._start_backup(failing, main)
+            finally:
+                phonelink.start_tunnel = real
+            self.assertIsNone(failing.backup_url)
+        finally:
+            main.stop()

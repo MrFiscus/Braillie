@@ -1,6 +1,12 @@
-"""Fingertip tracking: where is the learner's pointing finger on the page? opencv + numpy only, no model, no training.
+"""Fingertip tracking: where is the learner's pointing finger on the page?
 
-How it works, in three steps:
+Two ways to find the fingertip in a frame:
+  MediaPipe (the default when it is installed, see HandFinder): Google's hand-landmark model finds the hand and its 21 points; the
+                tip of the index finger is the answer. Works on real hands across skin tones and lighting, and is not fooled by a
+                skin-coloured desk. Its model file is fetched once into third_party/mediapipe/ (see HAND_MODEL).
+  skin colour (find_fingertip, the fallback when MediaPipe is not there): opencv + numpy only, no model, as below.
+
+The skin-colour way, in three steps:
   1. skin mask     skin colour (YCrCb) that is not the white/grey of the paper (saturation), cleaned up and cut to the largest blob
   2. tip           the hand comes in from the edge of the picture, so the fingertip is the point of the hand's outline that is
                    farthest from where the arm enters (ignoring points on the border itself, where the arm is cut off); the
@@ -21,6 +27,8 @@ from typing import Callable, Optional
 
 import cv2
 import numpy as np
+
+from pathlib import Path
 
 from page import PAGE_H_MM, PAGE_W_MM, to_page
 
@@ -108,6 +116,76 @@ def find_fingertip(frame: np.ndarray, skin_ranges: Optional[tuple] = None) -> Op
     # the green ring and the answer dwell; pointing fingers (reach ~2+) still land near 1.0.
     confidence = float(np.clip((reach - 0.7) / 1.6, 0.0, 1.0)) * (1.0 if touches_border else 0.65)
     return Tip(float(tip[0] / scale), float(tip[1] / scale), confidence, (float(cx / scale), float(cy / scale)), reach)
+
+
+HAND_MODEL = Path(__file__).parent / "third_party/mediapipe/hand_landmarker.task"
+HAND_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+INDEX_TIP, WRIST, PALM_POINTS = 8, 0, (0, 5, 9, 13, 17)  # MediaPipe's hand points: the index fingertip, the wrist, the palm's corners
+
+
+FALLBACK_CONFIDENCE = 0.6  # the skin-colour finder's sighting counts for this much of its own confidence when MediaPipe sees no hand
+
+
+class HandFinder:
+    """find_fingertip, by MediaPipe's hand-landmark model: called with a BGR frame, gives the index fingertip as a Tip, or None.
+    Of two hands in view, the one whose index finger sticks out the most (the pointing one) wins. The model runs in its video mode:
+    once it has found the hand it follows it from frame to frame, which is steadier, and quicker, than finding it afresh each time.
+    When it sees no hand at all (only fingers in view, say), the skin-colour finder (`fallback`) has a go, at a lower confidence; the
+    tracker still throws out anything off the sheet."""
+
+    def __init__(self, landmarker, fallback: Optional[Callable] = None):
+        self.landmarker, self.fallback = landmarker, fallback
+        self._last_ms = 0
+
+    @classmethod
+    def create(cls, model: Path = HAND_MODEL) -> "HandFinder":
+        from mediapipe.tasks.python import BaseOptions, vision  # (only imported here: the skin-colour finder needs none of it)
+
+        if not model.exists():
+            import urllib.request
+
+            model.parent.mkdir(parents=True, exist_ok=True)
+            urllib.request.urlretrieve(HAND_MODEL_URL, model)  # about 8 MB, once
+        options = vision.HandLandmarkerOptions(base_options=BaseOptions(model_asset_path=str(model)), num_hands=2,
+                                               running_mode=vision.RunningMode.VIDEO,
+                                               min_hand_detection_confidence=0.35, min_hand_presence_confidence=0.35,
+                                               min_tracking_confidence=0.35)
+        return cls(vision.HandLandmarker.create_from_options(options), fallback=find_fingertip)
+
+    def __call__(self, frame: np.ndarray) -> Optional[Tip]:
+        import mediapipe as mp
+
+        h, w = frame.shape[:2]
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if hasattr(self.landmarker, "detect_for_video"):
+            self._last_ms = max(self._last_ms + 1, int(time.monotonic() * 1000))  # (its clock must only ever go forward)
+            result = self.landmarker.detect_for_video(image, self._last_ms)
+        else:
+            result = self.landmarker.detect(image)
+        best = None
+        for i, points in enumerate(result.hand_landmarks or []):
+            px = np.array([(p.x * w, p.y * h) for p in points])
+            palm = px[list(PALM_POINTS)].mean(axis=0)
+            size = float(np.hypot(*(px[9] - px[WRIST]))) or 1.0  # wrist to the middle finger's knuckle: how big the hand looks
+            tip = px[INDEX_TIP]
+            reach = float(np.hypot(*(tip - palm))) / (size / 2)
+            score = result.handedness[i][0].score if result.handedness and i < len(result.handedness) else 1.0
+            if best is None or reach > best.reach:
+                best = Tip(float(tip[0]), float(tip[1]), float(np.clip(score, 0.0, 1.0)), (float(palm[0]), float(palm[1])), reach)
+        if best is None and self.fallback is not None:
+            seen = self.fallback(frame)
+            if seen is not None:
+                best = Tip(seen.x, seen.y, seen.confidence * FALLBACK_CONFIDENCE, seen.palm, seen.reach)
+        return best
+
+
+def best_finder() -> Callable:
+    """MediaPipe's hand model when it is installed (and its model file can be had), else the skin-colour finder."""
+    try:
+        return HandFinder.create()
+    except Exception as e:  # not installed, or no network for the first download: the older finder still works
+        print(f"fingertip: MediaPipe hand tracking is not available ({e}); using skin colour instead")
+        return find_fingertip
 
 
 class FingerTracker:
@@ -198,7 +276,8 @@ class FingerTracker:
 
 
 def main() -> None:
-    """Try the tracker on a real hand: python fingertip.py [--camera 0|path]. Shows the video, the skin mask and the tip."""
+    """Try the tracker on a real hand: python fingertip.py [--camera 0|path]. Shows the video, the skin mask and the tip (MediaPipe's,
+    when it is installed: the skin mask is then only for comparison)."""
     import argparse
 
     from detect import GREEN, RED, draw_hud, open_camera, page_source_from_args, page_status
@@ -212,7 +291,8 @@ def main() -> None:
     a = ap.parse_args()
     cap = open_camera(a.camera)
     src = page_source_from_args(a) if (a.calib or a.auto_page or a.paper or a.markers_only) else None
-    tracker = FingerTracker()
+    tracker = FingerTracker(find=best_finder())
+    print("finding the fingertip with", "MediaPipe" if isinstance(tracker.find, HandFinder) else "skin colour")
     while True:
         ok, frame = cap.read()
         if not ok:

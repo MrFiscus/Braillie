@@ -150,21 +150,43 @@ class Settings:
         return RELAXED_HINTS if self.pace == "relaxed" else 1.0
 
 
+MORE = "Say more options for everything else."
+
+
 def help_text(hub_mode: Optional[str], mode: str, state: str) -> str:
-    """What can be said right now, in a sentence or two (the tutor speaks it)."""
-    ends = ("You can also say braillo and then ask me a question, quiet to stop me talking, slower or faster to change how "
-            "quickly I talk, and take your time if you would like more time.")
+    """What can be said right now, in a sentence or so: the few things that matter here (the tutor speaks it; it must be short, so
+    someone who asked "help" is not left listening for a minute). The rest is more_help_text."""
     if hub_mode == "menu":
-        return ("Choose an option. Learn teaches the letters. Read reads words aloud. Quiz asks you to find a letter. "
+        return f"Say learn, read, or quiz. {MORE}"
+    if hub_mode == "learn" or mode == "learn":
+        return f"Rest your finger on the letter, or point and say this one. Or say hint for help, repeat, or next to skip. {MORE}"
+    if hub_mode == "quiz" or mode == "letters":
+        return f"Point at the letter and say this one. Or you can say found it, hint, or next to skip a question. {MORE}"
+    if hub_mode == "read" or mode == "read":
+        return f"Just rest a finger on a word, and I'll read it aloud. {MORE}"
+    if mode == "explore":
+        return f"Rest a finger on any cell and I'll tell you what it is. {MORE}"
+    return f"Say start, hint, repeat, or next. {MORE}"
+
+
+def more_help_text(hub_mode: Optional[str], mode: str, state: str) -> str:
+    """Everything that can be said right now ("more options"), when someone wants the whole list."""
+    ends = ("Wherever you are, say home, my page, go back, a lesson like lesson three, or sign out. You can also say braillo and then "
+            "ask me a question, quiet to stop me talking, slower or faster to change how quickly I talk, and take your time if you "
+            "would like more time.")
+    if hub_mode == "menu":
+        return ("Learn teaches the letters. Read reads words aloud. Quiz asks you to find a letter. "
                 f"Say learn, read, or quiz. {ends}")
     if hub_mode == "learn" or mode == "learn":
-        return ("In a lesson you can say hint for help, repeat to hear it again, found it to answer straight away, next to skip a letter, "
-                f"explore to feel the letters freely, practice for a review, or stop or finish. Say menu to choose something else. {ends}")
+        return ("In a lesson you can say hint for help, repeat to hear it again, found it or this one to answer straight away, next to "
+                "skip a letter, next lesson or previous lesson, explore to feel the letters freely, or practice for a review. "
+                f"{ends}")
     if hub_mode == "quiz" or mode == "letters":
-        return f"In the quiz you can say found it to answer, hint, repeat, next to skip a question, or stop or finish. If I cannot see your finger, click the picture where it is. Say menu to choose something else. {ends}"
+        return ("In the quiz, point at the letter and say this one, or its name, or just rest your finger on it. Or you can say found it, "
+                f"hint, repeat, or next to skip a question. {ends}")
     if hub_mode == "read" or mode == "read":
         return (f"When reading, rest a finger on a word and I will read it. You can also say read or found it, or repeat to hear "
-                f"the last word again. Say stop or finish when you are done, or menu to choose something else. {ends}")
+                f"the last word again. Say stop or finish when you are done. {ends}")
     if mode == "explore":
         return f"Rest a finger on any cell and I will tell you what it is. You can say repeat, hint, next page, or stop or finish. {ends}"
     return f"You can say start, repeat, hint, found it, next, or stop or finish. {ends}"

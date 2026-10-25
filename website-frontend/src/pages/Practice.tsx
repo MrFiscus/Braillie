@@ -10,6 +10,7 @@ import { useTutorState } from '../tutor/useTutorState.ts'
 import { useProgressSync } from '../tutor/useProgressSync.ts'
 import { useTutorSession } from '../tutor/useTutorSession.ts'
 import { useSpeechPosition } from '../voice/useSpeechPosition.ts'
+import { useSpokenLine } from '../voice/useSpokenLine.ts'
 import { useUser } from '../auth/useUser.ts'
 
 const TITLES: Record<string, string> = { learn: 'Learn', read: 'Read', quiz: 'Quiz' }
@@ -74,7 +75,7 @@ const Target = ({ letter, dots, showDots }: { letter: string; dots: number[]; sh
 /** Learn: the lesson, the letter being learned, how far through, and the few keys that matter now. */
 const LearnStage = ({ learning, state }: { learning: LearningStatus; state: TutorState }) => {
   const { phase, lesson, target, target_dots: dots } = learning
-  const asking = (phase === 'warmup' || phase === 'teach' || phase === 'practice' || phase === 'review') && !!target
+  const asking = (phase === 'warmup' || phase === 'teach' || phase === 'practice' || phase === 'review' || phase === 'word') && !!target
   const done = Math.max(0, learning.letters - learning.remaining)
   const showDots = phase === 'teach' || phase === 'warmup' || learning.hints > 0 || learning.tries > 0 // in practice the pattern is a hint, not a giveaway
   const score = lesson && state.progress?.lessons[lesson.id]
@@ -82,12 +83,20 @@ const LearnStage = ({ learning, state }: { learning: LearningStatus; state: Tuto
   return (
     <>
       {lesson && (
-        <p className="play__kicker">{phase === 'warmup' ? 'Going over letters from before' : `Lesson ${lesson.index} of ${lesson.of} · ${lesson.title}`}</p>
+        <p className="play__kicker">
+          {phase === 'warmup'
+            ? 'Going over letters from before'
+            : phase === 'word' && learning.word
+              ? `Spell a word · ${learning.word}`
+              : `Lesson ${lesson.index} of ${lesson.of} · ${lesson.title}`}
+        </p>
       )}
       {asking && target ? (
         <>
           <Target letter={target} dots={dots} showDots={showDots} />
-          {learning.letters > 0 && phase !== 'warmup' && <Dots done={done} of={learning.letters} label={`${done} of ${learning.letters} letters done`} />}
+          {learning.letters > 0 && phase !== 'warmup' && (
+            <Dots done={done} of={learning.letters} label={phase === 'word' ? `${done} of ${learning.letters} letters of the word` : `${done} of ${learning.letters} letters done`} />
+          )}
           <div className="keys">
             <Key icon="found" label="Found it" command="found it" main />
             <Key icon="hint" label="Hint" command="hint" />
@@ -204,11 +213,13 @@ const Practice = () => {
     document.title = `${title} – Braillie` // (the activity is only known once the tutor has answered)
   }, [title])
 
-  const speaking = !!state?.speaking && !!state?.speech
-  const spoken = useSpeechPosition(speaking ? state?.speech : null, state?.settings?.speech_speed)
+  const { speaking, speech } = useSpokenLine(state) // (the caption is held a moment after each line, so it does not flicker)
+  const spoken = useSpeechPosition(speech, state?.settings?.speech_speed)
   const listening = !speaking && !!state?.heard
   const muted = !!state?.muted
-  const lastSaid = state?.said.length ? state.said[state.said.length - 1].text : ''
+  // what Braillo shows when he is not talking: one short line (not the last thing he said: that can be a whole paragraph, and is
+  // out of date the moment the next line is on its way)
+  const hint = { learn: 'Rest your finger on the letter.', quiz: 'Point at the letter and say “this one”.', read: 'Rest a finger on a word.' }
 
   if (hub && hub.mode === 'menu') return <Navigate to="/modes" replace /> // nothing chosen yet (or they went back): choose
   if (!loading && !user) return <Navigate to="/login" replace /> // the way in is the sign-in page, whatever the address
@@ -228,14 +239,18 @@ const Practice = () => {
 
       <section className="home2__braillo voicecard" aria-label="Braillo, your tutor">
         <div className="voicecard__stage">
-          <Mascot state={speaking ? 'speaking' : listening ? 'listening' : 'idle'} words={spoken.sentence * 1000 + spoken.said} />
+          <Mascot
+            state={speaking ? 'speaking' : listening ? 'listening' : 'idle'}
+            words={spoken.sentence * 1000 + spoken.said}
+            cheer={(learning?.correct ?? 0) + (state?.tutor.correct ?? 0)}
+          />
           <div className="voicecard__words">
             <div className="voicecard__body">
-              {speaking && state?.speech ? (
-                <Lyrics speech={state.speech} speed={state.settings?.speech_speed} />
+              {speech ? (
+                <Lyrics speech={speech} speed={state?.settings?.speech_speed} />
               ) : (
                 <p className="voicecard__hint" aria-hidden="true">
-                  {lastSaid || 'Ready when you are'}
+                  {(activity && hint[activity]) || 'Ready when you are'}
                 </p>
               )}
             </div>

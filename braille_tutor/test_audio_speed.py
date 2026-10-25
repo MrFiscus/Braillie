@@ -1,6 +1,7 @@
 """Tests for audio_speed.py: slower and faster speech keeps its pitch and its shape, and only speech is touched."""
 import io
 import unittest
+from unittest import mock
 import wave
 from pathlib import Path
 
@@ -225,11 +226,15 @@ class TtsClipTailTests(unittest.TestCase):
         if root not in sys.path:
             sys.path.insert(0, root)
 
-    def test_for_tts_adds_a_pause_after_the_last_word(self):
+    def test_for_tts_adds_a_pause_after_the_last_word_only_for_an_aura_1_voice(self):
         import voice_io
-        self.assertEqual(voice_io._for_tts("The word is cat."), "The word is cat....")
-        self.assertEqual(voice_io._for_tts("already..."), "already...")
-        self.assertEqual(voice_io._for_tts(""), "")
+        with mock.patch.object(voice_io, "DEEPGRAM_TTS_MODEL", "aura-asteria-en"):
+            self.assertEqual(voice_io._for_tts("The word is cat."), "The word is cat....")
+            self.assertEqual(voice_io._for_tts("already..."), "already...")
+            self.assertEqual(voice_io._for_tts(""), "")
+        with mock.patch.object(voice_io, "DEEPGRAM_TTS_MODEL", "aura-2-thalia-en"):
+            self.assertEqual(voice_io._for_tts("The word is cat."), "The word is cat.")
+            self.assertEqual(voice_io._for_tts("Hi, I'm Braillo. braillo's here."), "Hi, I'm Braylow. Braylow's here.")  # (said right)
 
     def test_pad_wav_silence_lengthens_the_clip_by_the_asked_amount(self):
         import voice_io

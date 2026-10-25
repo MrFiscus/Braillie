@@ -18,12 +18,14 @@ const LISTEN_MS = 12000
 // question is still being asked (that also cuts the question short), or after. Answers are counted from the moment a line starts.
 export function tutorChannel(): Channel {
   let since: number | null = null // what the microphone had heard when the last line started; anything after is an answer
-  let overSpeech = false // the last answer was a word or two caught while the tutor was still talking
+  let overSpeech = false // the last answer was caught while the tutor was still talking (it may be the tutor's own voice, misheard)
+  let caughtWhileTalking = false // what `say` stopped for was heard while the line was still playing
   const heardNow = async () => (await fetchState().catch(() => null))?.heard?.n ?? 0
 
   return {
     async say(prompt, who) {
       since = await heardNow()
+      caughtWhileTalking = false
       await sayPrompt(prompt, who, true) // a new line replaces anything still being said (they answered over it)
       const began = Date.now()
       let started = false
@@ -34,7 +36,10 @@ export function tutorChannel(): Channel {
         } catch {
           break // cannot ask: do not hold the conversation up
         }
-        if ((state.heard?.n ?? 0) > since) break // they answered over it: go and hear the answer
+        if ((state.heard?.n ?? 0) > since) {
+          caughtWhileTalking = !!state.speaking // (an answer, or the tutor's own voice coming back through the microphone)
+          break // they answered over it: go and hear the answer
+        }
         if (state.speaking) started = true
         else if (started || Date.now() - began > 2500) break // finished; or it never started talking (say nothing more about it)
         await sleep(POLL_MS)
@@ -48,7 +53,8 @@ export function tutorChannel(): Channel {
       while (!signal.aborted && Date.now() < ends) {
         const heard = (await fetchState().catch(() => null))?.heard
         if (heard && heard.n > seen && heard.text) {
-          overSpeech = heard.reason === 'heard over speech'
+          overSpeech = heard.reason === 'heard over speech' || caughtWhileTalking
+          caughtWhileTalking = false
           return heard.text
         }
         await sleep(POLL_MS)

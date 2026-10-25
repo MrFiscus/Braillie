@@ -5,7 +5,9 @@ import Lyrics from '../components/Lyrics.tsx'
 import Mascot from '../components/Mascot.tsx'
 import MicButton from '../components/MicButton.tsx'
 import { useSpeechPosition } from '../voice/useSpeechPosition.ts'
-import { TUTOR_API, sayPrompt, setMic, shareTheme } from '../tutor/tutorApi.ts'
+import { useSpokenLine } from '../voice/useSpokenLine.ts'
+import { TUTOR_API, sayPrompt, setMic, shareTheme, switchToBackupLink } from '../tutor/tutorApi.ts'
+import { useVoiceTab } from '../voice/useVoiceTab.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useTutorSession } from '../tutor/useTutorSession.ts'
 import { useUser } from '../auth/useUser.ts'
@@ -30,11 +32,12 @@ const ConnectPhone = () => {
   // On arrival, Braillie says how to connect the phone (in its own voice, with the captions), once: someone who cannot see the QR
   // code hears what to do, and how to type the code instead.
   const told = useRef(false)
-  const waiting = reach === 'yes' && !!phone && !phone.connected && !!user
+  const voiceTab = useVoiceTab() // (only the tab in use talks: two would cut each other off)
+  const waiting = reach === 'yes' && !!phone && !phone.connected && !!user && voiceTab
   useEffect(() => {
     if (!waiting || told.current) return
     told.current = true
-    void sayPrompt('connect_phone', undefined, true).catch(() => {})
+    void sayPrompt('connect_phone').catch(() => {}) // (after whatever is still being said, such as "Hi, guest!": not over it)
   }, [waiting])
 
   // (the tutor may have started after this page did: tell it the colours again when the phone joins, so the phone's page matches)
@@ -59,8 +62,8 @@ const ConnectPhone = () => {
   // what Braillo says on screen when it is not talking: one short line
   const shortLine =
     reach === 'no' ? 'Start Braillie on the laptop' : !phone ? 'Nothing to connect' : phone.connected ? 'Phone connected!' : 'Scan the code with your phone'
-  const speaking = !!state?.speaking && !!state?.speech
-  const spoken = useSpeechPosition(speaking ? state?.speech : null, state?.settings?.speech_speed)
+  const { speaking, speech } = useSpokenLine(state) // (the caption is held a moment after each line, so it does not flicker)
+  const spoken = useSpeechPosition(speech, state?.settings?.speech_speed)
 
   const muted = !!state?.muted
   const again = () => void sayPrompt('connect_phone', undefined, true).catch(() => {})
@@ -79,8 +82,8 @@ const ConnectPhone = () => {
           <Mascot state={speaking ? 'speaking' : 'idle'} words={spoken.sentence * 1000 + spoken.said} />
           <div className="voicecard__words">
             <div className="voicecard__body">
-              {speaking && state?.speech ? (
-                <Lyrics speech={state.speech} speed={state.settings?.speech_speed} />
+              {speech ? (
+                <Lyrics speech={speech} speed={state?.settings?.speech_speed} />
               ) : (
                 <p className="voicecard__hint" aria-hidden="true">
                   {shortLine}
@@ -96,6 +99,20 @@ const ConnectPhone = () => {
               label={muted ? 'Turn the microphone on' : 'Mute the microphone'}
               onClick={() => void setMic(muted).catch(() => {})}
             />
+            {phone && !phone.connected && phone.backup && !phone.tunnel && (
+              <button
+                type="button"
+                className="roundkey"
+                aria-label="Not connecting? Use the backup link, which works on any network"
+                title="Not connecting? Use the backup link"
+                onClick={() => void switchToBackupLink().catch(() => {})}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z" />
+                </svg>
+              </button>
+            )}
             {phone && !phone.connected && (
               <button type="button" className="roundkey" aria-label="Hear the steps again" title="Hear the steps again" onClick={again}>
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -116,8 +133,10 @@ const ConnectPhone = () => {
         {phone && !phone.connected && (
           <>
             <div className="qr qr--big">
-              <img src={`${TUTOR_API}${phone.qr}`} alt="QR code. Scan it with your phone’s camera to connect it." width={420} height={420} />
+              {/* (the address in the query makes the browser fetch the picture again when the code changes to the backup link) */}
+              <img src={`${TUTOR_API}${phone.qr}?for=${encodeURIComponent(phone.address)}`} alt="QR code. Scan it with your phone’s camera to connect it." width={420} height={420} />
             </div>
+            {phone.tunnel && <p className="connect__manual">Backup link: works on any network.</p>}
             <p className="connect__manual">
               No camera? Open <b>{phone.address}</b>, code <span className="code">{phone.code}</span>
             </p>

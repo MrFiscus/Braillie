@@ -74,27 +74,11 @@ test('"Google" opens Google', async () => {
   assert.deepEqual(log.did, ['google'])
 })
 
-test('"guest", then a name, then "yes" continues as that guest', async () => {
-  const { log, run } = conversation(['guest', 'my name is sam', 'yes'])
+test('"guest" goes straight in, as Guest, with no name asked for', async () => {
+  const { log, run } = conversation(['guest'])
   assert.equal(await run, 'guest')
-  assert.deepEqual(log.said, ['welcome', 'ask_name', 'confirm_name(Sam)', 'go_guest(Sam)'])
-  assert.deepEqual(log.did, ['guest:Sam'])
-})
-
-test('a wrong name can be corrected, by "no" or by just saying it again', async () => {
-  const a = conversation(['guest', 'pam', 'no', 'sam', 'yes'])
-  assert.equal(await a.run, 'guest')
-  assert.deepEqual(a.log.said, ['welcome', 'ask_name', 'confirm_name(Pam)', 'again_name', 'confirm_name(Sam)', 'go_guest(Sam)'])
-  const b = conversation(['guest', 'pam', 'sam', 'yeah'])
-  assert.equal(await b.run, 'guest')
-  assert.deepEqual(b.log.did, ['guest:Sam'])
-})
-
-test('"skip" continues as a guest with no name, and nothing is confirmed that was not heard', async () => {
-  const { log, run } = conversation(['guest', 'skip'])
-  assert.equal(await run, 'guest')
-  assert.deepEqual(log.said, ['welcome', 'ask_name', 'go_guest_anon'])
-  assert.deepEqual(log.did, ['guest:'])
+  assert.deepEqual(log.said, ['welcome', 'go_guest_anon'])
+  assert.deepEqual(log.did, ['guest:Guest'])
 })
 
 test('not understood: asked again, then it stops asking and points to the buttons', async () => {
@@ -105,8 +89,8 @@ test('not understood: asked again, then it stops asking and points to the button
 })
 
 test('heard while Braillie was still talking: an answer is taken, anything else is let go without a "sorry"', async () => {
-  // [text, caught over Braillie's voice?]: "brail" and "lee" are Braillie's own words misheard; "guest" is the person answering over it
-  const heard = [['brail', true], ['guest', true], ['lee', true], ['sam', false], ['yes', false]]
+  // [text, caught over Braillie's voice?]: "brail" is Braillie's own word misheard; "guest" is the person answering over it
+  const heard = [['brail', true], ['guest', true]]
   const said = []
   const did = []
   let last = null
@@ -119,14 +103,14 @@ test('heard while Braillie was still talking: an answer is taken, anything else 
   const actions = { google: () => did.push('google'), guest: (n) => did.push(`guest:${n}`), carryOn: () => {}, switchAccount: () => {} }
   const outcome = await runLoginDialogue({ channel, actions, returning: null, signal: ac.signal, onStatus: () => {} })
   assert.equal(outcome, 'guest')
-  assert.deepEqual(said, ['welcome', 'ask_name', 'confirm_name(Lee)', 'confirm_name(Sam)', 'go_guest(Sam)'])
-  assert.deepEqual(did, ['guest:Sam'])
+  assert.deepEqual(said, ['welcome', 'go_guest_anon'])
+  assert.deepEqual(did, ['guest:Guest'])
 })
 
 test('a wrong turn does not use up the patience for the next question', async () => {
-  const { log, run } = conversation(['banana', 'guest', 'um', 'sam', 'yes'])
+  const { log, run } = conversation(['banana', 'guest'])
   assert.equal(await run, 'guest')
-  assert.deepEqual(log.said, ['welcome', 'retry_choice', 'ask_name', 'retry_name', 'confirm_name(Sam)', 'go_guest(Sam)'])
+  assert.deepEqual(log.said, ['welcome', 'retry_choice', 'go_guest_anon'])
 })
 
 test('"repeat" says the welcome again', async () => {
@@ -140,10 +124,10 @@ test('someone already known: continue, or switch and start over', async () => {
   assert.equal(await a.run, 'carried-on')
   assert.deepEqual(a.log.said, ['welcome_back(Ana)'])
   assert.deepEqual(a.log.did, ['carry-on'])
-  const b = conversation(['switch', 'guest', 'skip'], 'Ana')
+  const b = conversation(['switch', 'guest'], 'Ana')
   assert.equal(await b.run, 'guest')
-  assert.deepEqual(b.log.did, ['switch', 'guest:'])
-  assert.deepEqual(b.log.said, ['welcome_back(Ana)', 'welcome', 'ask_name', 'go_guest_anon'])
+  assert.deepEqual(b.log.did, ['switch', 'guest:Guest'])
+  assert.deepEqual(b.log.said, ['welcome_back(Ana)', 'welcome', 'go_guest_anon'])
 })
 
 test('stopping (the person pressed a button) ends it quietly', async () => {

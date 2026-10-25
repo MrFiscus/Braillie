@@ -91,6 +91,69 @@ class TestFindFingertip(unittest.TestCase):
         self.assert_tip(big, (640, 300), tol=16)
 
 
+class _Point:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
+
+class _Result:
+    def __init__(self, hands, scores):
+        self.hand_landmarks = hands
+        self.handedness = [[type("Category", (), {"score": sc})()] for sc in scores]
+
+
+class _FakeLandmarker:
+    """Stands in for MediaPipe's HandLandmarker: gives back the hands it was made with, in its own form (points as fractions)."""
+    def __init__(self, result):
+        self.result = result
+
+    def detect(self, _image):
+        return self.result
+
+
+def _hand(tip, wrist=(0.5, 0.9), curled=False):
+    """21 points of a hand (fractions of the picture) with the wrist at `wrist` and the index fingertip at `tip` (pulled back if curled)."""
+    pts = [_Point(*wrist)] * 21
+    pts = list(pts)
+    for i, xy in {5: (0.45, 0.7), 9: (0.5, 0.7), 13: (0.55, 0.7), 17: (0.6, 0.72)}.items():
+        pts[i] = _Point(*xy)
+    pts[fingertip.INDEX_TIP] = _Point(*(((tip[0] + 0.45) / 2, (tip[1] + 0.7) / 2) if curled else tip))
+    return pts
+
+
+class TestHandFinder(unittest.TestCase):
+    """MediaPipe's own model is not run here (it needs real hands); these check what is made of its answer."""
+
+    def test_the_index_fingertip_in_pixels_of_the_frame(self):
+        find = fingertip.HandFinder(_FakeLandmarker(_Result([_hand((0.4, 0.2))], [0.9])))
+        tip = find(np.zeros((480, 640, 3), np.uint8))
+        self.assertAlmostEqual(tip.x, 0.4 * 640)
+        self.assertAlmostEqual(tip.y, 0.2 * 480)
+        self.assertAlmostEqual(tip.confidence, 0.9)
+        self.assertGreater(tip.reach, 2.0)  # a pointing finger sticks well out of the palm
+
+    def test_no_hand_is_no_tip(self):
+        self.assertIsNone(fingertip.HandFinder(_FakeLandmarker(_Result([], [])))(np.zeros((480, 640, 3), np.uint8)))
+
+    def test_of_two_hands_the_pointing_one_wins(self):
+        result = _Result([_hand((0.3, 0.6), curled=True), _hand((0.7, 0.1))], [0.95, 0.8])
+        tip = fingertip.HandFinder(_FakeLandmarker(result))(np.zeros((480, 640, 3), np.uint8))
+        self.assertAlmostEqual(tip.x, 0.7 * 640)
+
+    def test_with_no_hand_seen_the_skin_finder_has_a_go_at_lower_confidence(self):
+        frame = hand_frame((320, 150))
+        find = fingertip.HandFinder(_FakeLandmarker(_Result([], [])), fallback=find_fingertip)
+        tip, skin = find(frame), find_fingertip(frame)
+        self.assertIsNotNone(tip)
+        self.assertAlmostEqual(tip.x, skin.x)
+        self.assertAlmostEqual(tip.confidence, skin.confidence * fingertip.FALLBACK_CONFIDENCE)
+
+    def test_the_tracker_takes_it_like_any_finder(self):
+        tracker = FingerTracker(find=fingertip.HandFinder(_FakeLandmarker(_Result([_hand((0.4, 0.2))], [0.9]))))
+        tracker.update(np.zeros((480, 640, 3), np.uint8), None)
+        self.assertIsNotNone(tracker.tip)
+
+
 class FakeClock:
     def __init__(self):
         self.t = 0.0

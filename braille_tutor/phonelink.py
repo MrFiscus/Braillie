@@ -74,6 +74,9 @@ MAX_BAD_CODES = 20  # this many wrong codes in a row locks phone connections out
 LOCKOUT_SECONDS = 60.0
 TUNNEL_URL = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com")
 TUNNEL_SECONDS = 30.0  # how long to wait for the tunnel to say its address
+BACKUP_AFTER = 40.0  # no device has reached the laptop for this long while the QR code is up: switch it to the backup link (see use_backup)
+BACKUP_LINE = ("Having trouble connecting? This Wi-Fi may be blocking the phone, so I've switched to a backup link that works on any "
+               "network. Scan the new code on the screen.")
 LOCAL_IP_DOMAIN = "local-ip.sh"  # a public name service: 192-168-1-22.local-ip.sh points at 192.168.1.22, with a real certificate
 LOCAL_IP_CERT_URL, LOCAL_IP_KEY_URL = f"https://{LOCAL_IP_DOMAIN}/server.pem", f"https://{LOCAL_IP_DOMAIN}/server.key"
 TRUSTED_DIR = CERT_DIR / "local-ip"
@@ -182,11 +185,22 @@ def install_phone_speaker(voice, link: "PhoneLink") -> Callable:
 
     cut_off = getattr(voice, "playback_interrupted", None)  # the learner talked over it: stop the clip on the phone too
 
+    def started() -> None:
+        """The phone began playing: the line voice_io noted as playing (for the captions) started just now, not when it was handed over."""
+        playing = getattr(voice, "_playing", None)
+        if isinstance(playing, dict):
+            playing["started"] = time.time()
+
     def routed(name: str, kind: str):
         def play(chunks) -> None:
-            data = fix_wav_header(b"".join(chunks)) if kind == "audio/wav" else b"".join(chunks)
-            if not link.play_audio(data, kind, cancelled=cut_off):
-                original[name]([data])  # the phone is not ready or could not play it: the laptop does
+            if kind == "audio/wav":  # passed on as it arrives (a line streaming from Deepgram plays within a moment)
+                played = link.play_audio_stream(chunks, kind, cancelled=cut_off, on_start=started)
+                if played is not True:
+                    original[name](played)  # the phone is not ready or could not play it: the laptop does
+                return
+            data = b"".join(chunks)
+            if not link.play_audio(data, kind, cancelled=cut_off, on_start=started):
+                original[name]([data])
         return play
 
     voice._play_audio_stream = routed("_play_audio_stream", "audio/wav")
@@ -327,6 +341,9 @@ class PhoneLink:
                  on_audio_ready: Optional[Callable] = None):
         self.ip, self.port, self.tls = ip or lan_ip(), port, tls
         self.public_base: Optional[str] = None  # set when a tunnel gives the phone a public https address (see Tunnel)
+        # The backup link: a tunnel made ready next to the local one, for networks that block phone <-> laptop traffic (see use_backup).
+        self.backup_url: Optional[str] = None
+        self.waiting_since: Optional[float] = None  # when the QR code went up (None: not yet, e.g. the website is still signing in)
         self.trusted_name: Optional[str] = None  # set when a name with a real certificate points at this computer (see local_ip_certificate)
         self.code = code or f"{secrets.randbelow(10**6):06d}"
         self.on_connect, self.on_disconnect, self.clock = on_connect, on_disconnect, clock
@@ -398,9 +415,27 @@ class PhoneLink:
     # -- addresses --
     @property
     def base(self) -> str:
+        if self.public_base:
+            return self.public_base
         if self.trusted_name:
             return f"https://{self.trusted_name}:{self.port}"
-        return self.public_base or f"{'https' if self.tls else 'http'}://{self.ip}:{self.port}"
+        return f"{'https' if self.tls else 'http'}://{self.ip}:{self.port}"
+
+    def use_backup(self) -> bool:
+        """Show the backup link (the tunnel) in the QR code instead of the local one, if it is ready and no phone is connected. A phone
+        already on the local link keeps working: both stay open. True if the backup is now the one shown."""
+        if self.backup_url is None or self.connected:
+            return False
+        if self.public_base != self.backup_url:
+            self.public_base = self.backup_url
+            self.started = self.clock()  # (the diagnosis starts again: this is a new address to try)
+            self.note(f"switched the QR code to the backup link {self.backup_url}")
+        return True
+
+    def backup_due(self) -> bool:
+        """The QR code has been up for BACKUP_AFTER and no device has reached the laptop at all: the network is most likely blocking it."""
+        return (self.backup_url is not None and not self.tunnelled and not self.connected and not self.contacts and not self.frames
+                and self.waiting_since is not None and self.clock() - self.waiting_since >= BACKUP_AFTER)
 
     @property
     def tunnelled(self) -> bool:
@@ -526,6 +561,13 @@ class PhoneLink:
                 clip["fetched"], clip["fetched_at"] = True, self.clock()
             return clip
 
+    def clip_started(self, cid: int) -> None:
+        """The phone has started playing this clip (it took a moment to fetch and decode): whatever follows along, starts now."""
+        with self._clip_lock:
+            clip = self._clips.get(cid)
+        if clip and callable(clip.get("on_start")):
+            clip["on_start"]()
+
     def clip_done(self, cid: int, error: str = "") -> None:
         with self._clip_lock:
             clip = self._clips.get(cid)
@@ -533,18 +575,21 @@ class PhoneLink:
             clip["error"] = error
             clip["done"].set()
 
-    def play_audio(self, data: bytes, kind: str = "audio/wav", cancelled: Optional[Callable] = None) -> bool:
+    def play_audio(self, data: bytes, kind: str = "audio/wav", cancelled: Optional[Callable] = None,
+                   on_start: Optional[Callable] = None) -> bool:
         """Send one finished clip to the phone and WAIT until it has played (speech blocks while it talks, so lines never overlap).
         False means it did NOT play there (the phone is not ready, never picked the clip up, or could not play it): the caller then
         plays it on the laptop instead. Once the phone has the clip it is trusted to play it, even through a blip in the video
         connection: replaying it on the laptop would say every line twice. `cancelled()` turning true (the learner cut it off)
-        stops it: the phone is told to hush that clip, and it counts as played."""
+        stops it: the phone is told to hush that clip, and it counts as played. `on_start()` is called when the phone says it has
+        actually started playing it (the captions on the laptop's page are timed from then, not from when the clip was offered)."""
         if not self.sound_ready():
             return False
         with self._clip_lock:
             self._clip_id += 1
             cid = self._clip_id
-            clip = self._clips[cid] = {"data": data, "type": kind, "fetched": False, "done": threading.Event(), "error": ""}
+            clip = self._clips[cid] = {"data": data, "type": kind, "fetched": False, "done": threading.Event(), "error": "",
+                                       "on_start": on_start}
         length, offered = audio_seconds(data, kind), self.clock()
         try:
             while not clip["done"].wait(0.1):
@@ -568,6 +613,61 @@ class PhoneLink:
             with self._clip_lock:
                 self._clips.pop(cid, None)
             with self._mic_lock:  # the phone's microphone just heard the end of this clip: do not let it be taken for a command
+                self._mic.clear()
+                self._mic_mute_until = self.clock() + MIC_TAIL_SECONDS
+
+    def play_audio_stream(self, chunks, kind: str = "audio/wav", cancelled: Optional[Callable] = None,
+                          on_start: Optional[Callable] = None):
+        """play_audio for a clip that is still arriving (a line streaming from Deepgram): it is passed on to the phone as it comes, so
+        the phone starts playing within a moment instead of after the whole line has been made. Returns True if it played on the
+        phone; otherwise the whole clip (as a list of chunks) for the laptop to play instead."""
+        if not self.sound_ready():
+            return chunks
+        with self._clip_lock:
+            self._clip_id += 1
+            cid = self._clip_id
+            clip = self._clips[cid] = {"data": bytearray(), "type": kind, "fetched": False, "done": threading.Event(), "error": "",
+                                       "on_start": on_start, "complete": threading.Event(), "stream": True}
+
+        def pump() -> None:  # the rest of the line goes on arriving while the phone plays the start of it
+            try:
+                for chunk in chunks:
+                    clip["data"].extend(chunk)
+                    if clip["done"].is_set():
+                        break
+            except Exception as e:
+                self.note(f"the speech stopped arriving part-way ({e})")
+            finally:
+                clip["complete"].set()
+
+        threading.Thread(target=pump, daemon=True, name="phone-clip").start()
+        offered = self.clock()
+
+        def whole() -> list:
+            clip["complete"].wait(30)
+            return [fix_wav_header(bytes(clip["data"]))]
+        try:
+            while not clip["done"].wait(0.1):
+                if cancelled is not None and cancelled():
+                    self.hush_clip = cid
+                    return True
+                if clip["fetched"]:
+                    if clip["complete"].is_set() and self.clock() > clip["fetched_at"] + audio_seconds(bytes(clip["data"]), kind) + self.audio_slack:
+                        self.note("the phone took a clip but never said it finished: assuming it played")
+                        return True
+                elif self.clock() > offered + self.audio_slack or not self.connected:
+                    self.audio_ready = False
+                    self.note("the phone did not pick up a clip: speech goes back to the laptop until its sound is on again")
+                    return whole()
+            if clip["error"]:
+                self.audio_ready = False
+                self.note(f"the phone could not play sound ({clip['error']}): speech goes back to the laptop")
+                return whole()
+            return True
+        finally:
+            with self._clip_lock:
+                self._clips.pop(cid, None)
+            with self._mic_lock:
                 self._mic.clear()
                 self._mic_mute_until = self.clock() + MIC_TAIL_SECONDS
 
@@ -779,6 +879,32 @@ def make_handler(link: PhoneLink):
         def log_message(self, *args):
             pass
 
+        def _send_growing(self, clip: dict) -> None:
+            """A clip that is still arriving, sent piece by piece as it grows (chunked), until all of it has come."""
+            self.send_response(200)
+            self.send_header("Content-Type", clip["type"])
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            sent, data = 0, clip["data"]
+            try:
+                while True:
+                    have = len(data)
+                    if have > sent:
+                        piece = bytes(data[sent:have])
+                        self.wfile.write(f"{len(piece):X}\r\n".encode() + piece + b"\r\n")
+                        self.wfile.flush()
+                        sent = have
+                    elif clip["complete"].is_set() and len(data) == sent:
+                        break
+                    else:
+                        clip["complete"].wait(0.03)
+                self.wfile.write(b"0\r\n\r\n")
+            except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
+                pass  # the phone stopped listening (cut off, or gone)
+
         def _send(self, code: int, body: bytes = b"", ctype: str = "text/plain; charset=utf-8") -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
@@ -812,6 +938,8 @@ def make_handler(link: PhoneLink):
                 clip = link.take_clip(int(q["id"])) if q.get("id", "").isdigit() else None
                 if clip is None:
                     return self._send(404, b"no such clip")
+                if clip.get("stream"):
+                    return self._send_growing(clip)
                 self._send(200, clip["data"], clip["type"])
             elif path == "/phone/check":  # the page asks whether a typed code is right, before turning the camera on
                 ok = link.check_code(self._query().get("t"))
@@ -847,12 +975,14 @@ def make_handler(link: PhoneLink):
                 if not link.mic_push(self.rfile.read(length)):
                     return self._json(400, {"error": "audio must be 16 kHz mono 16-bit"})
                 return self._json(200, {"ok": True})
-            if path in ("/phone/audio-ready", "/phone/audio-done"):
+            if path in ("/phone/audio-ready", "/phone/audio-done", "/phone/audio-start"):
                 q = self._query()
                 if not link.check_code(q.get("t")):
                     return self._json(403, {"error": "wrong code"})
                 if path == "/phone/audio-ready":
                     link.set_audio_ready()
+                elif path == "/phone/audio-start" and q.get("id", "").isdigit():
+                    link.clip_started(int(q["id"]))
                 elif q.get("id", "").isdigit():
                     link.clip_done(int(q["id"]), q.get("error", "")[:80])
                 return self._json(200, {"ok": True})
@@ -904,9 +1034,13 @@ class _LinkServer(ThreadingHTTPServer):
 class PhoneServer:
     """The HTTPS server the phone talks to. Bound to the local network on its own port; the tutor's own API is not on it."""
 
-    def __init__(self, link: PhoneLink, host: str = "0.0.0.0", cert: Optional[tuple] = None):
+    def __init__(self, link: PhoneLink, host: str = "0.0.0.0", cert: Optional[tuple] = None, tls: Optional[bool] = None,
+                 port: Optional[int] = None):
+        """`tls` and `port` override the link's own (for the backup link's server: plain, on this computer, any free port)."""
         self.link = link
-        wanted = link.port
+        primary = port is None
+        wanted = link.port if primary else port
+        use_tls = link.tls if tls is None else tls
         for port in ([wanted] + [wanted + i for i in range(1, 10)] if wanted else [0]):
             try:
                 self.httpd = _LinkServer((host, port), make_handler(link))
@@ -920,13 +1054,18 @@ class PhoneServer:
             print(f"[phone] port {wanted} is busy (another copy of the tutor still running?): using {self.httpd.server_address[1]} instead. "
                   "The QR code has the right address.", flush=True)
         self.httpd.link = link
-        if link.tls:
+        if use_tls:
             cert = cert or ensure_cert(link.ip)
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
             ctx.load_cert_chain(*cert)
             self.httpd.ctx = ctx
-        link.port = self.httpd.server_address[1]  # in case port 0 was asked for
+        if primary:
+            link.port = self.httpd.server_address[1]  # in case port 0 was asked for
+
+    @property
+    def port(self) -> int:
+        return self.httpd.server_address[1]
 
     def start(self) -> "PhoneServer":
         threading.Thread(target=self.httpd.serve_forever, daemon=True, name="phone-server").start()
@@ -936,11 +1075,45 @@ class PhoneServer:
         tunnel = getattr(self, "tunnel", None)
         if tunnel is not None:
             tunnel.stop()
+        backup = getattr(self, "backup", None)
+        if backup is not None:
+            backup.stop()
         self.httpd.shutdown()
         self.httpd.server_close()
 
 
 # ---- command line ---------------------------------------------------------------------------------
+
+def _start_backup(link: PhoneLink, server: PhoneServer) -> None:
+    """Make the backup link ready (in its own thread: a tunnel takes a few seconds): a plain server on this computer and a tunnel to it.
+    Without cloudflared or an internet connection there is simply no backup, and the local link works as before."""
+    try:
+        backup = PhoneServer(link, host="127.0.0.1", tls=False, port=0).start()
+    except OSError as e:
+        print(f"[phone] no backup link: {e}", flush=True)
+        return
+    try:
+        backup.tunnel = start_tunnel(backup.port)
+    except TunnelError as e:
+        backup.stop()
+        print(f"[phone] no backup link ({e})", flush=True)
+        return
+    server.backup = backup
+    link.backup_url = backup.tunnel.url
+    print(f"[phone] backup link ready, for a Wi-Fi that blocks the phone: {link.backup_url}", flush=True)
+
+
+def _backup_loop(link: PhoneLink, say: Callable) -> None:
+    """Switch the QR code to the backup link by itself, once, when the network seems to be blocking the phone (see backup_due)."""
+    while True:
+        time.sleep(2)
+        if link.tunnelled:
+            return
+        if link.backup_due() and link.use_backup():
+            print(f"[phone] nothing reached the laptop: the QR code now has the backup link {link.url}", flush=True)
+            say(BACKUP_LINE)
+            return
+
 
 def _hint_loop(link: PhoneLink) -> None:
     """While no phone is connected, print the diagnosis (again whenever it changes) so the laptop's terminal says what is wrong."""
@@ -971,6 +1144,8 @@ def add_phone_args(ap) -> None:
     ap.add_argument("--phone-domain", default=None, help="with --phone-camera: your own domain name, pointing at this computer, with --phone-cert and --phone-key")
     ap.add_argument("--phone-cert", default=None, help="the certificate (.pem) for --phone-domain")
     ap.add_argument("--phone-key", default=None, help="the key (.pem) for --phone-domain")
+    ap.add_argument("--no-phone-backup", action="store_true",
+                    help="with --phone-camera: do not make the backup link ready (a tunnel, used by itself if the Wi-Fi blocks the phone)")
     ap.add_argument("--phone-tunnel", action="store_true",
                     help="with --phone-camera: reach the phone through a public https tunnel (needs the cloudflared program and internet), so the phone "
                          "shows no \"connection is not private\" warning and can be on any network")
@@ -989,6 +1164,7 @@ def start_phone(a, announce: Optional[Callable] = None, voice=None, on_ready: Op
     sound_on_phone = voice is not None and getattr(a, "sound", "phone") == "phone" and not getattr(voice, "MOCK_MODE", False)
 
     ready_flag = [False]  # on_ready has been called for this connection
+    dropped = [False]  # the phone was connected, then went (a Wi-Fi blip, the screen locking): say so when it is back
 
     def ready() -> None:
         if on_ready is not None and not ready_flag[0]:
@@ -997,9 +1173,14 @@ def start_phone(a, announce: Optional[Callable] = None, voice=None, on_ready: Op
 
     def lost() -> None:
         ready_flag[0] = False
-        say("The phone camera disconnected.")
+        dropped[0] = True
+        say("I've lost the phone's camera. Keep its screen on with the page open, and I'll carry on when it's back.")
 
     def connected() -> None:
+        if dropped[0]:  # back after a drop: whatever was going on carries on (nothing is reset), so just say so
+            dropped[0] = False
+            ready_flag[0] = True
+            return say("The camera's back. Let's carry on.")
         if on_ready is not None:
             if sound_on_phone:  # give the phone a moment to turn its sound on, so the greeting comes out of it
                 deadline = time.time() + 6
@@ -1053,6 +1234,11 @@ def start_phone(a, announce: Optional[Callable] = None, voice=None, on_ready: Op
     if server is None:
         server = PhoneServer(link).start()
     threading.Thread(target=_hint_loop, args=(link,), daemon=True, name="phone-hints").start()
+    link.waiting_since = link.clock()  # (the website sets it again when its page with the code opens)
+    backup_off = getattr(a, "no_phone_backup", False) or os.environ.get("BRAILLIE_NO_PHONE_BACKUP") == "1"  # (the tests set it: no real tunnels)
+    if not link.tunnelled and not backup_off and find_cloudflared():
+        threading.Thread(target=_start_backup, args=(link, server), daemon=True, name="phone-backup").start()
+        threading.Thread(target=_backup_loop, args=(link, say), daemon=True, name="phone-backup-watch").start()
     print(f"\nPhone camera: scan this with your phone's camera, or open {link.url}\n", flush=True)
     print(qr_terminal(link.url), flush=True)
     print(f"\n(no camera to scan with? on the phone open {link.base} and enter the code {link.code})", flush=True)

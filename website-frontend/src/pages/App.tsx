@@ -11,11 +11,15 @@ import Practice from './Practice.tsx'
 import Landing from './Landing.tsx'
 import Account from './Account.tsx'
 import { Accessibility, Privacy, Terms } from './Legal.tsx'
+import VoiceControl from '../voice/VoiceControl.tsx'
 
+// Everything can be done by voice too, on every page (VoiceControl: it shows nothing).
 // The way through the app: the landing page (what Braillie is) -> sign in -> link the phone -> home: Learn, Read or Quiz -> do it.
 // (The earlier start page and Get to Know pages are no longer part of it; their files are still in this folder.)
 function App() {
   return (
+    <>
+    <VoiceControl />
     <Routes>
       <Route index element={<Landing />} />
       <Route path="privacy" element={<Privacy />} />
@@ -43,6 +47,7 @@ function App() {
       </Route>
       
     </Routes>
+    </>
   );
 }
 

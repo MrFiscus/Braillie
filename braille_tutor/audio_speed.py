@@ -99,10 +99,10 @@ def install_speech_speed(voice, get_speed: Callable[[], float]) -> Callable:
     original = voice._play_audio_stream
 
     def play(chunks) -> None:
-        data = b"".join(chunks)
-        if not getattr(_local, "raw", False):
-            data = stretch_wav(data, get_speed())
-        original([data])
+        speed = get_speed()
+        if getattr(_local, "raw", False) or abs(clamp(speed) - 1.0) < 0.01:
+            return original(chunks)  # as it is, still streaming: a line plays as it arrives (see voice_io._streamed)
+        original([stretch_wav(b"".join(chunks), speed)])  # stretching needs the whole line
 
     voice._play_audio_stream = play
 

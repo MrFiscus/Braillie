@@ -147,7 +147,7 @@ class FreeSpeechTests(unittest.TestCase):
         self.s.ask = Talker({"action": "help", "say": ""})
         self.hear("what am I supposed to say", 1)
         self.s.watch_once(1.0)
-        self.assertIn("you can say found it", self.voice.said[-1])  # the quiz's help line
+        self.assertIn("you can say found it", self.voice.said[-1])  # the quiz help line
 
     def test_a_reply_is_spoken_and_the_moment_is_passed_along(self):
         self.s.ask = Talker({"action": "none", "say": "A braille cell has six dots."})

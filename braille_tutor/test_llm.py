@@ -418,15 +418,31 @@ class JsonScripted(Scripted):
 class RespondTests(unittest.TestCase):
     def test_free_speech_becomes_a_command(self):
         ask = llm.AskTutor(JsonScripted({"addressed": True, "action": "repeat", "say": ""}))
-        self.assertEqual(ask.respond("what was that letter again", {"state": "learning"}), {"action": "repeat", "say": ""})
+        self.assertEqual(ask.respond("what was that letter again", {"state": "learning"}), {"action": "repeat", "say": "", "lesson": 0})
 
     def test_speech_not_meant_for_the_tutor_is_ignored(self):
         ask = llm.AskTutor(JsonScripted({"addressed": False, "action": "hint", "say": "Here is a hint."}))
-        self.assertEqual(ask.respond("did you feed the cat"), {"action": "none", "say": ""})
+        self.assertEqual(ask.respond("did you feed the cat"), {"action": "none", "say": "", "lesson": 0})
 
     def test_an_unknown_action_is_none_and_the_reply_is_spoken_plainly(self):
         ask = llm.AskTutor(JsonScripted({"addressed": True, "action": "dance", "say": "**Dot one** is top left."}))
-        self.assertEqual(ask.respond("which dot is one"), {"action": "none", "say": "Dot one is top left."})
+        self.assertEqual(ask.respond("which dot is one"), {"action": "none", "say": "Dot one is top left.", "lesson": 0})
+
+    def test_a_lesson_is_asked_for_by_its_number(self):
+        ask = llm.AskTutor(JsonScripted({"addressed": True, "action": "lesson", "lesson": 3, "say": ""}))
+        self.assertEqual(ask.respond("let's do K to O"), {"action": "lesson", "say": "", "lesson": 3})
+        ask = llm.AskTutor(JsonScripted({"addressed": True, "action": "lesson", "lesson": 9, "say": ""}))
+        self.assertEqual(ask.respond("lesson nine")["action"], "none", "no such lesson: nowhere to go")
+
+    def test_before_an_action_that_talks_only_a_short_go_ahead_is_said(self):
+        ask = llm.AskTutor(JsonScripted({"addressed": True, "action": "next lesson", "lesson": 0,
+                                         "say": "Sure, let's move on! Lesson two covers F to J, so you'll find new dots."}))
+        self.assertEqual(ask.respond("next one please")["say"], "Sure, let's move on!")
+
+    def test_braillo_is_told_the_app_and_what_to_expect(self):
+        for system in (llm.TALK_SYSTEM, llm.ASK_SYSTEM):
+            for part in ("connect the phone", "waiting for", "Do not give away where a letter is", "my page"):
+                self.assertIn(part, system)
 
     def test_failure_gives_none_so_the_tutor_falls_back(self):
         ask = llm.AskTutor(JsonScripted(error=RuntimeError("down")))

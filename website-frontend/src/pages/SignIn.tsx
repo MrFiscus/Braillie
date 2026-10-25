@@ -4,12 +4,14 @@ import BigButton from '../components/BigButton.tsx'
 import Lyrics from '../components/Lyrics.tsx'
 import MicButton from '../components/MicButton.tsx'
 import { useSpeechPosition } from '../voice/useSpeechPosition.ts'
+import { useSpokenLine } from '../voice/useSpokenLine.ts'
 import Mascot, { type MascotState } from '../components/Mascot.tsx'
 import { signInWithGoogle } from '../components/GoogleLogin.tsx'
 import { googleSignInAvailable } from '../auth/config.ts'
 import { useUser } from '../auth/useUser.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useLoginVoice } from '../voice/useLoginVoice.ts'
+import { GUEST_NAME } from '../voice/loginDialogue.ts'
 
 const SAYING = { speaking: 'Braillo is speaking', listening: 'Listening', idle: 'Voice is off' } as const
 
@@ -22,7 +24,6 @@ const SignIn = () => {
   const navigate = useNavigate()
   const { user, loading, continueAsGuest, signOut } = useUser()
   const { state, reach } = useTutorState(500) // (often enough to show each spoken sentence as it starts)
-  const [name, setName] = useState('')
   const [error, setError] = useState('')
   const heading = useRef<HTMLHeadingElement>(null)
 
@@ -52,10 +53,7 @@ const SignIn = () => {
     returning: user?.name ?? null,
     actions: {
       google,
-      guest: (n) => {
-        setName(n)
-        guest(n)
-      },
+      guest: (n) => guest(n),
       carryOn: () => navigate('/connect-phone'),
       switchAccount: () => signOut(),
     },
@@ -64,7 +62,7 @@ const SignIn = () => {
   const submit = (e: FormEvent) => {
     e.preventDefault()
     voice.stop() // they have taken over: the voice must not talk over them
-    guest(name)
+    guest(GUEST_NAME)
   }
   const known = !loading && !!user
   const wasKnown = useRef(false)
@@ -76,7 +74,8 @@ const SignIn = () => {
   const saying = voice.running && voice.status.phase === 'speaking' ? voice.status.saying : undefined
   // Braillo, the mascot, shows what the voice is doing: talking (its mouth moves with each word), listening (a hand to its ear), or waiting
   const speaking = voice.running && voice.status.phase === 'speaking'
-  const spoken = useSpeechPosition(speaking ? state?.speech : null, state?.settings?.speech_speed)
+  const { speech: heldSpeech } = useSpokenLine(state) // (the caption is held a moment after each line, so it does not flicker)
+  const spoken = useSpeechPosition(speaking ? heldSpeech : null, state?.settings?.speech_speed)
   const braillo: MascotState = speaking ? 'speaking' : voice.running && voice.status.phase === 'listening' ? 'listening' : 'idle'
 
   return (
@@ -102,8 +101,8 @@ const SignIn = () => {
                     Speaking to Braillie needs the Braillie tutor running on this computer, or the Chrome, Edge or Safari browser. You can use the
                     buttons instead.
                   </p>
-                ) : voice.running && voice.status.phase === 'speaking' && state?.speech ? (
-                  <Lyrics speech={state.speech} speed={state.settings?.speech_speed} />
+                ) : voice.running && heldSpeech ? (
+                  <Lyrics speech={heldSpeech} speed={state?.settings?.speech_speed} />
                 ) : voice.running && saying ? (
                   <p className="voice__saying">
                     <span className="caption__who">Braillo is saying:</span> {saying}
@@ -215,12 +214,6 @@ const SignIn = () => {
               <p id="guest-d" className="sr-only">
                 Start straight away. Your progress is not saved.
               </p>
-              <div className="field start__field">
-                <label htmlFor="first-name">
-                  Your name <span className="option__optional">(optional)</span>
-                </label>
-                <input id="first-name" name="first-name" type="text" autoComplete="given-name" value={name} onFocus={voice.stop} onChange={(e) => setName(e.target.value)} />
-              </div>
               <BigButton className="start__go" type="submit" variant="secondary" aria-describedby="guest-d">
                 <OptionIcon name="person" />
                 Continue as guest

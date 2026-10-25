@@ -11,6 +11,9 @@ import { DOTS } from '../braille/alphabet.ts'
 
 const WORD = 'braillie'
 const STEP_MS = 1700 // one letter of the word every this long
+// What rises into place as you scroll to it, and how far apart a row of them (the steps, the cards) arrive
+const REVEAL = '.sect-head, .how__step, .meet__stage, .meet__copy, .sheets__copy, .sheets__fan, .made__copy, .madefor__item, .landing__end > *'
+const STAGGER_MS = 110
 
 const arrow = (
   <svg className="arrow" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -93,6 +96,40 @@ const Landing = () => {
     return () => q.removeEventListener('change', change)
   }, [])
 
+  // Each part fades up the first time it scrolls into view. Nothing is hidden until this runs, so the page reads in full without it
+  // (and for anyone who has asked for less motion); once a part has arrived it drops the effect and is an ordinary part of the page.
+  useEffect(() => {
+    if (still || typeof IntersectionObserver !== 'function') return
+    const parts = [...document.querySelectorAll<HTMLElement>(`.landing :is(${REVEAL})`)]
+    const seen = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue
+          const el = e.target as HTMLElement
+          seen.unobserve(el)
+          el.classList.add('is-in')
+          const done = (t: TransitionEvent) => {
+            if (t.target !== el || t.propertyName !== 'opacity') return // (a part inside it finishing its own move)
+            el.classList.remove('reveal', 'is-in')
+            el.removeEventListener('transitionend', done)
+          }
+          el.addEventListener('transitionend', done)
+        }
+      },
+      { rootMargin: '0px 0px -8% 0px' },
+    )
+    for (const el of parts) {
+      const row = [...(el.parentElement?.children ?? [])].filter((c) => c.matches(REVEAL))
+      el.style.setProperty('--reveal-delay', `${Math.min(row.indexOf(el), 3) * STAGGER_MS}ms`)
+      el.classList.add('reveal')
+      seen.observe(el)
+    }
+    return () => {
+      seen.disconnect()
+      for (const el of parts) el.classList.remove('reveal', 'is-in')
+    }
+  }, [still])
+
   useEffect(() => {
     if (still) return
     const t = window.setInterval(() => setI((n) => (n + 1) % WORD.length), STEP_MS)
@@ -133,10 +170,10 @@ const Landing = () => {
             </p>
             <div className="hero__actions">
               <Link className="cta" to="/login">
-                Start learning {arrow}
+                Start learning
               </Link>
-              <a className="cta cta--outline" href="#how">
-                How it works {arrow}
+              <a className="cta cta--line" href="#how">
+                How it works
               </a>
             </div>
           </div>
@@ -166,10 +203,6 @@ const Landing = () => {
         </section>
 
         <section className="landing__section" id="made-for" aria-labelledby="made-h">
-          <div className="sect-head">
-            <h2 id="made-h">Made for blind and low-vision learners</h2>
-            <p>Everything works by voice, by keyboard or with a screen reader.</p>
-          </div>
           <MadeFor />
         </section>
 

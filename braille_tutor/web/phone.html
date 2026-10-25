@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Braillie phone camera</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><path d=%22M32 13V9%22 stroke=%22%23121212%22 stroke-width=%224%22 stroke-linecap=%22round%22/><circle cx=%2232%22 cy=%227%22 r=%224.5%22 fill=%22%23ffd60a%22 stroke=%22%23121212%22 stroke-width=%223%22/><rect x=%229%22 y=%2214%22 width=%2246%22 height=%2247%22 rx=%2222%22 fill=%22%23ffd60a%22 stroke=%22%23121212%22 stroke-width=%224%22/><circle cx=%2224%22 cy=%2233%22 r=%225.5%22 fill=%22%23121212%22/><circle cx=%2240%22 cy=%2233%22 r=%225.5%22 fill=%22%23121212%22/><circle cx=%2225.8%22 cy=%2231%22 r=%221.8%22 fill=%22%23fff%22/><circle cx=%2241.8%22 cy=%2231%22 r=%221.8%22 fill=%22%23fff%22/><path d=%22M25 44c4 5 10 5 14 0%22 fill=%22none%22 stroke=%22%23121212%22 stroke-width=%223.5%22 stroke-linecap=%22round%22/></svg>">
 <style>
   /* The same look as the Braillie website: Braillo, big type, one bright accent, round keys. The colours are the laptop page's own
      (the tutor sends its theme with every reply, and sets data-theme below); until then, the phone's own light or dark. */
@@ -138,6 +139,9 @@ const handledClips = new Set();
 const SILENCE = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// On the backup link (the tunnel, over the internet) the frames go smaller: about a third of the size, still plenty to read the dots,
+// so a slow connection keeps up.
+const overInternet = location.hostname.endsWith(".trycloudflare.com");
 
 // Tell the laptop what this browser says, so a phone that "does not work" can be diagnosed from the laptop's terminal.
 function report(event, detail) {
@@ -181,10 +185,16 @@ function say(text, tone) {
 
 const voice = $("voice");
 
+// iPhone's sound mode: "playback" plays even with the silent switch on, but does not allow a microphone ("AudioSession category is not
+// compatible with audio capture"); "play-and-record" allows both, and plays from the loudspeaker as a web call does.
+function setAudioSession(type) {
+  try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (e) { /* not this browser */ }
+}
+
 // Must be called straight from a tap (before any await): starts the silent clip that unlocks sound for the whole page.
 function unlockAudio() {
   try {
-    if (navigator.audioSession) navigator.audioSession.type = "playback";   // iPhone: play even with the ring/silent switch on
+    setAudioSession("playback");   // iPhone: play even with the ring/silent switch on (until the microphone starts, see start())
     prepareMic();
     voice.src = SILENCE;
     return voice.play().then(() => { soundOn = true; }).catch((e) => { soundOn = false; report("sound-error", `${e && e.name}: ${e && e.message}`); });
@@ -196,6 +206,116 @@ function unlockAudio() {
 
 function clipUrl(path, id, extra) {
   return `${path}?t=${encodeURIComponent(code)}&id=${id}${extra || ""}`;
+}
+
+// Where a WAV's samples start, and their format, read from its start (its sizes are not used: a line still being made claims hours).
+function wavFormat(bytes) {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+  const tag = (at) => String.fromCharCode(bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]);
+  if (bytes.length < 12 || tag(0) !== "RIFF" || tag(8) !== "WAVE") return null;
+  let at = 12, fmt = null;
+  while (at + 8 <= bytes.length) {
+    const kind = tag(at), size = v.getUint32(at + 4, true);
+    if (kind === "fmt ") {
+      if (at + 24 > bytes.length) return null;
+      fmt = { channels: v.getUint16(at + 10, true), rate: v.getUint32(at + 12, true), bits: v.getUint16(at + 22, true) };
+    } else if (kind === "data") {
+      return fmt && fmt.bits === 16 ? { ...fmt, start: at + 8 } : null;
+    }
+    at += 8 + size + (size & 1);
+  }
+  return null;
+}
+
+// A whole WAV with its sizes put right (for the <audio> element, which trusts them).
+function repairedWav(buffer) {
+  const bytes = new Uint8Array(buffer), fmt = wavFormat(bytes);
+  if (!fmt) return buffer;
+  const v = new DataView(buffer);
+  v.setUint32(4, bytes.length - 8, true);
+  v.setUint32(fmt.start - 4, bytes.length - fmt.start, true);
+  return buffer;
+}
+
+const PLAY_AHEAD = 0.25;   // seconds of a streamed line gathered before it starts, so a slow moment on the Wi-Fi does not stutter
+
+// Play speech that is still arriving: each piece is scheduled straight after the one before, so it sounds like one line, and it starts
+// within a moment instead of after the whole line has been made. Resolves when all of it has played (or it was stopped).
+function playStreamed(res, clip, onStart, setStop) {
+  return new Promise(async (resolve, reject) => {
+    const ctx = micCtx;
+    try { await ctx.resume(); } catch (e) { /* it was unlocked by the tap */ }
+    const reader = res.body.getReader();
+    let pending = new Uint8Array(0), fmt = null, next = 0, live = 0, ended = false, stopped = false, started = false;
+    // The voice's own rate (24 kHz) is turned into the phone's (usually 48 kHz) here, smoothly across pieces: left to the browser, each
+    // piece is converted on its own, and the joins click (heard as crackling in the quiet between sentences).
+    let prev = 0, t = 0;
+    const sources = new Set();
+    const settle = () => { if (ended && !live) resolve(); };
+    setStop(() => {
+      stopped = true;
+      sources.forEach((s) => { try { s.stop(); } catch (e) { /* done already */ } });
+      try { reader.cancel(); } catch (e) { /* none */ }
+      resolve();
+    });
+    const schedule = (final) => {
+      const frame = fmt.channels * 2;
+      const minimum = final ? frame : Math.round(fmt.rate * (started ? 0.1 : PLAY_AHEAD)) * frame;
+      const usable = pending.length - (pending.length % frame);
+      if (usable < minimum || !usable) return;
+      const frames = usable / frame, view = new DataView(pending.buffer, pending.byteOffset, usable);
+      const input = new Float32Array(frames);   // (mono: the voice is one channel; more are mixed down)
+      for (let i = 0; i < frames; i++) {
+        let sum = 0;
+        for (let c = 0; c < fmt.channels; c++) sum += view.getInt16((i * fmt.channels + c) * 2, true);
+        input[i] = sum / fmt.channels / 32768;
+      }
+      pending = pending.slice(usable);
+      // linear interpolation, carrying the last sample and the position over from the piece before, so the joins are seamless
+      const step = fmt.rate / ctx.sampleRate, samples = [];
+      while (t < frames) {
+        const i = Math.floor(t), f = t - i;
+        const a = i === 0 ? prev : input[i - 1], b = input[i];
+        samples.push(a + (b - a) * f);
+        t += step;
+      }
+      t -= frames;
+      prev = input[frames - 1];
+      if (!samples.length) return;
+      const buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+      buffer.getChannelData(0).set(samples);
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+      if (next < ctx.currentTime + 0.02) next = ctx.currentTime + 0.05;   // (the first piece, or the Wi-Fi fell behind)
+      src.start(next);
+      if (!started) { started = true; setTimeout(onStart, Math.max(0, (next - ctx.currentTime) * 1000)); }
+      next += buffer.duration;
+      sources.add(src); live += 1;
+      src.onended = () => { sources.delete(src); live -= 1; settle(); };
+    };
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (stopped) return;
+        if (done) break;
+        const joined = new Uint8Array(pending.length + value.length);
+        joined.set(pending); joined.set(value, pending.length);
+        pending = joined;
+        if (!fmt) {
+          fmt = wavFormat(pending);
+          if (!fmt) continue;
+          pending = pending.slice(fmt.start);
+        }
+        schedule(false);
+      }
+      if (fmt) schedule(true);
+      ended = true;
+      settle();
+    } catch (e) {
+      if (!stopped) reject(e);
+    }
+  });
 }
 
 // The laptop made some speech and sent it here: fetch it, play it, tell the laptop when it has finished (it waits, so lines never overlap).
@@ -214,15 +334,25 @@ async function playClip(clip) {
     if (stopClip === stop) stopClip = null;
     fetch(clipUrl("/phone/audio-done", clip.id, error ? "&error=" + encodeURIComponent(error) : ""), { method: "POST" }).catch(() => {});
   };
+  const started = () => fetch(clipUrl("/phone/audio-start", clip.id), { method: "POST" }).catch(() => {});   // the captions follow from now
   let url = "";
-  const stop = () => { try { voice.pause(); } catch (e) { /* none */ } if (url) URL.revokeObjectURL(url); finish(""); };
+  let stop = () => { try { voice.pause(); } catch (e) { /* none */ } if (url) URL.revokeObjectURL(url); finish(""); };
   stopClip = stop;
   playingClip = clip.id;
   try {
     const res = await fetch(clipUrl("/phone/audio", clip.id), { cache: "no-store" });
     if (!res.ok) throw new Error("fetch " + res.status);
     if (hushedClip >= clip.id) return finish("");   // cut off while it was on its way
-    url = URL.createObjectURL(await res.blob());
+    if (clip.type === "audio/wav" && micCtx && res.body && res.body.getReader) {
+      await playStreamed(res, clip, started, (fn) => { stop = () => { fn(); finish(""); }; stopClip = stop; });
+      return finish("");
+    }
+    const body = clip.type === "audio/wav" ? new Blob([repairedWav(await res.arrayBuffer())], { type: clip.type }) : await res.blob();
+    url = URL.createObjectURL(body);
+    voice.onplaying = () => {   // it is audible now: the laptop times the captions from this moment (fetching it took a moment)
+      voice.onplaying = null;
+      started();
+    };
     voice.onended = () => { URL.revokeObjectURL(url); finish(""); };
     voice.onerror = () => { URL.revokeObjectURL(url); finish("decode"); };
     voice.src = url;
@@ -354,10 +484,12 @@ async function start() {
   }
   try {
     try {           // camera and microphone in one prompt...
+      setAudioSession("play-and-record");
       stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(),
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (first) {   // ...and if the microphone is the problem, the camera alone still works (the laptop's microphone is used)
       report("mic-error", `${first && first.name}: ${first && first.message}`);
+      setAudioSession("playback");
       stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(), audio: false });
     }
   } catch (e) {
@@ -375,7 +507,7 @@ async function start() {
   try { if (navigator.wakeLock) wake = await navigator.wakeLock.request("screen"); } catch (e) { /* screen may sleep: nothing to do */ }
   running = true;
   const audioTracks = stream.getAudioTracks();
-  if (audioTracks.length) { try { await startMic(audioTracks); } catch (e) { report("mic-error", String(e)); } }
+  if (audioTracks.length) { try { await startMic(audioTracks); } catch (e) { report("mic-error", String(e)); setAudioSession("playback"); } }
   if (soundOn) fetch("/phone/audio-ready?t=" + encodeURIComponent(code), { method: "POST" }).catch(() => {});  // from now on the laptop sends its voice here
   report("camera-started", `${video.videoWidth}x${video.videoHeight}` + (soundOn ? " sound=on" : " sound=off") + (micOn ? " mic=on" : " mic=off"));
   say(soundOn
@@ -455,10 +587,10 @@ async function loop() {
         if (ok) { await sleep(200); }   // give the fresh stream a moment before drawing from it
         continue;
       }
-      const s = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+      const s = Math.min(1, (overInternet ? 960 : 1280) / Math.max(video.videoWidth, video.videoHeight));
       canvas.width = Math.round(video.videoWidth * s); canvas.height = Math.round(video.videoHeight * s);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.8));
+      const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", overInternet ? 0.6 : 0.8));
       try {
         const res = await fetch("/phone/frame?t=" + encodeURIComponent(code),
                                 { method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" } });

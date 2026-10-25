@@ -21,7 +21,7 @@ const Shell = () => {
   const first = useRef(true)
   const step = STEPS[pathname] ?? null
   const done = step === null ? 1 : step / STEP_COUNT
-  const { state } = useTutorState(500) // for the navigation and the voice bar
+  const { state } = useTutorState(500) // for the voice bar
 
   useEffect(() => {
     // Moving to another page (the address changes without a reload) must read like a new page: it gets its own title in the tab and the
