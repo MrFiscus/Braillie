@@ -81,6 +81,16 @@ SPECS = {s.name: s for s in (
 )}
 SHEET_NAMES = tuple(SPECS)
 
+# Each printed sheet tells which one it is by touch: a row of raised dots in the top right corner of its reading side, one for the
+# first sheet, two for the second, and so on (no braille needed to tell them apart: just count). It also shows which way up it is.
+SHEET_BUMPS = {"alphabet": 1, "words": 2, "lookalikes": 3, "numbers": 4}
+_COUNT_WORDS = {1: "one bump", 2: "two bumps", 3: "three bumps", 4: "four bumps"}
+
+
+def feel_for(name: str) -> str:
+    """How to tell a sheet by touch, for the tutor to say: "one bump in its top right corner"."""
+    return f"{_COUNT_WORDS[SHEET_BUMPS[name]]} in its top right corner" if name in SHEET_BUMPS else ""
+
 
 class Sheet:
     """A built sheet: `cells` (page mm, same structure as scan_page) and `names` mapping (row, col) -> Symbol."""

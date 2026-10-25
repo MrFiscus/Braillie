@@ -43,7 +43,7 @@ from fingertip import FingerTracker, best_finder
 from learn import DOTS as LETTER_DOTS, DWELL_SECONDS, LESSONS, Dwell, Journey
 from page import to_image, to_page
 from progress import Progress, progress_path
-from sheets import Symbol, get_sheet, letter_symbol
+from sheets import Symbol, feel_for, get_sheet, letter_symbol
 from vote import CellLocker
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -518,20 +518,12 @@ def load_env_files(paths: Optional[list] = None) -> list:
     return loaded
 
 
-def _speech_uses_elevenlabs(voice) -> bool:
-    """Does voice_io's speak() actually CALL ElevenLabs? Read from the names its code uses, not its text, so a docstring or comment
-    that merely mentions ElevenLabs ("retained but not called") does not count, and it stays true if the routing changes."""
-    code = getattr(getattr(voice, "speak", None), "__code__", None)
-    return code is not None and "_elevenlabs_speak" in code.co_names
-
-
 def voice_check(voice) -> dict:
     """Will speech actually be HEARD? {"mode": "mock"|"live", "ok": bool, "problems": [...], "warnings": [...]}.
 
     voice_io swallows speech errors into its log, so without this a missing key or package just means silence. `problems` make
-    all speech silent; `warnings` only affect the end-of-session debrief voice (ElevenLabs)."""
+    all speech silent; `warnings` are for things that leave speech on but not quite right (none at the moment)."""
     import importlib.util
-    import shutil
 
     if getattr(voice, "MOCK_MODE", False):
         return {"mode": "mock", "ok": False, "warnings": [],
@@ -542,11 +534,6 @@ def voice_check(voice) -> dict:
     for module, why in (("pyaudio", "plays the speech and listens to the microphone"), ("deepgram", "the Deepgram speech client (pip install deepgram-sdk==7.9.0)")):
         if importlib.util.find_spec(module) is None:
             problems.append(f"the Python package {module!r} is not installed: {why}")
-    if _speech_uses_elevenlabs(voice):  # older voice_io sent the debrief to ElevenLabs; the current one uses Deepgram for everything
-        if not getattr(voice, "ELEVENLABS_API_KEY", ""):
-            warnings.append("ELEVENLABS_API_KEY is not set: the end-of-session debrief will not be spoken")
-        elif importlib.util.find_spec("pydub") is None or shutil.which("ffmpeg") is None:
-            warnings.append("the debrief voice needs pydub and the ffmpeg program: the debrief will not be spoken")
     return {"mode": "live", "ok": not problems, "problems": problems, "warnings": warnings}
 
 
@@ -666,6 +653,11 @@ class _JourneyHost:
 
     def sheet_name(self) -> str:
         return self.s.current_sheet()
+
+    def symbol_key(self, cell: dict):
+        """What the sheet has printed in this cell (on the numbers sheet, the cell with dot 1 is the number 1, not A)."""
+        sym = self.s._symbol(cell)
+        return sym.key if sym else None
 
     def request_sheet(self, name: str) -> None:
         if self.s.new_page is not None:
@@ -1546,10 +1538,13 @@ class TutorSession:
             self._start_dwell_loop()
             if mode == "read":
                 self.state = "reading"
-                return self.say("Read mode. Put the words sheet in front of the camera. Rest a finger on a word and I will read it aloud. "
+                return self.say(f"Read mode. Put the words sheet, the one with {feel_for('words')}, in front of the camera. Rest a finger on "
+                                "a word and I will read it aloud. "
                                 "You can also say read or found it. Say menu to choose something else.")
             self.questions, self.state = 8, "idle"
-            self.say("Quiz time. Put the look-alikes sheet in front of the camera. I will name a letter: find it and rest your finger on it. If I cannot see your finger, click the picture where it is. Say menu to stop.")
+            self.say(f"Quiz time. Put the look-alikes sheet, the one with {feel_for('lookalikes')}, in front of the camera. I will name a "
+                     "letter: find it and rest your finger on it. If I cannot see your finger, click the picture where it is. Say menu to "
+                     "stop.")
             self.on_start()
 
     def _start_dwell_loop(self) -> None:

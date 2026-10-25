@@ -98,39 +98,55 @@ Only one browser tab talks to Braillo at a time: the one you're using.
 
 ## Print a sheet and try it today
 
-The four practice sheets are already generated and checked into the repo. Click a thumbnail below to open and download the
-full-resolution, print-ready PNG (A4, 300 DPI, print at **100% / no scaling**).
+The four practice sheets are already generated and checked in as one print-ready PDF:
+**[`braillie-sheets.pdf`](braille_tutor/sheet/braillie-sheets.pdf)** (A4, a page per sheet, printed on **both sides** at **100% / no scaling**).
+The website's *Print your sheets* button downloads the same file.
 
 <table>
 <tr>
 <td align="center" width="25%">
-<a href="braille_tutor/sheet/nomarkers/poke_alphabet.png"><img src="docs/img/sheet-alphabet.png" width="200" alt="Alphabet A to Z: a close-up of the raised-dot pattern for each letter"></a><br>
-<b>Alphabet A–Z</b><br><sub>used by <b>Learn</b> · <a href="braille_tutor/sheet/nomarkers/poke_alphabet.png">download</a></sub>
+<a href="braille_tutor/sheet/1_alphabet_reading.png"><img src="docs/img/sheet-alphabet.png" width="200" alt="The alphabet sheet: Braillie header with Braillo, and the dots for each letter"></a><br>
+<b>Alphabet A–Z</b><br><sub>used by <b>Learn</b> · • 1 bump</sub>
 </td>
 <td align="center" width="25%">
-<a href="braille_tutor/sheet/nomarkers/poke_words.png"><img src="docs/img/sheet-words.png" width="200" alt="Words sheet: a close-up of a few printed words in braille"></a><br>
-<b>Words</b><br><sub>used by <b>Read</b> · <a href="braille_tutor/sheet/nomarkers/poke_words.png">download</a></sub>
+<a href="braille_tutor/sheet/2_words_reading.png"><img src="docs/img/sheet-words.png" width="200" alt="The words sheet: a few short words in braille"></a><br>
+<b>Words</b><br><sub>used by <b>Read</b> · •• 2 bumps</sub>
 </td>
 <td align="center" width="25%">
-<a href="braille_tutor/sheet/nomarkers/poke_lookalikes.png"><img src="docs/img/sheet-lookalikes.png" width="200" alt="Look-alike letters: a close-up of letters that are easy to mix up"></a><br>
-<b>Look-alikes</b><br><sub>used by <b>Quiz</b> · <a href="braille_tutor/sheet/nomarkers/poke_lookalikes.png">download</a></sub>
+<a href="braille_tutor/sheet/3_lookalikes_reading.png"><img src="docs/img/sheet-lookalikes.png" width="200" alt="The look-alikes sheet: letters that are easy to mix up, side by side"></a><br>
+<b>Look-alikes</b><br><sub>used by <b>Quiz</b> · ••• 3 bumps</sub>
 </td>
 <td align="center" width="25%">
-<a href="braille_tutor/sheet/nomarkers/poke_numbers.png"><img src="docs/img/sheet-numbers.png" width="200" alt="Numbers and signs: a close-up of digits 0 to 9 and the number sign"></a><br>
-<b>Numbers &amp; signs</b><br><sub>extra practice · <a href="braille_tutor/sheet/nomarkers/poke_numbers.png">download</a></sub>
+<a href="braille_tutor/sheet/4_numbers_reading.png"><img src="docs/img/sheet-numbers.png" width="200" alt="The numbers and signs sheet: the number sign with 0 to 9, then capitals and punctuation"></a><br>
+<b>Numbers &amp; signs</b><br><sub>lessons 7 and 8 · •••• 4 bumps</sub>
 </td>
 </tr>
 </table>
 
-**To make a physical page:** print one at 100% scale, tape it face-down onto a corkboard, foam sheet or thick cardboard, and poke
-each black dot through from the back with anything blunt (a used ballpoint pen, a knitting needle, an unfolded paperclip). Flip it
-over: the raised bumps on the front are what you feel and what the camera reads. If you can't do this yourself, ask someone to print
-and poke a sheet for you. Hold the whole page flat under the camera on a plain, contrasting surface.
+Each sheet has two sides that line up dot for dot:
 
-These are the *no-markers* sheets: `./run_all.sh` already runs with `--paper`, so Braillie finds the page from its own four edges.
-(A version with corner registration markers also exists in [`braille_tutor/sheet/`](braille_tutor/sheet/) for more robust tracking in
-tricky lighting; see [`braille_tutor/README.md`](braille_tutor/README.md#reading-our-printed--poked-sheets-correctly---sheet), plus
-`--mode explore` for reading a real embossed braille book page.)
+- **Reading side:** black dots with their letters. This is the side you feel and the side the camera reads.
+- **Poking side:** a mirror image, with a circle around every dot to push through.
+
+**To make a physical page:**
+
+1. Print the PDF double-sided, flipping on the long edge.
+2. Lay a page **poking side up** on a corkboard, foam sheet or thick cardboard.
+3. Push through the centre of every circle with anything blunt: a used ballpoint pen, a knitting needle, or an unfolded paperclip.
+4. Turn the page over. The bumps on the reading side are your braille.
+
+If you can't do this yourself, ask someone to print and poke the sheets for you. Hold the whole page flat under the camera, on a
+plain surface that contrasts with the paper.
+
+**Telling sheets apart by touch:** a row of bumps at the top right of each sheet gives its number. The alphabet has 1 bump, words
+has 2, look-alikes has 3, and numbers has 4. Braillo describes each sheet the same way when it asks for one ("the one with two bumps
+in its top right corner").
+
+`./run_all.sh` runs with `--paper`, so Braillie finds the page from its own four edges. No corner markers are needed. To rebuild the
+sheets, run `python braille_tutor/make_sheet.py`. The older single-sided templates (with or without registration markers) can still
+be made by name, e.g. `python make_sheet.py alphabet`; see
+[`braille_tutor/README.md`](braille_tutor/README.md#reading-our-printed--poked-sheets-correctly---sheet). For reading a real
+embossed braille book page, there is `--mode explore`.
 
 ## How it works
 

@@ -1,6 +1,10 @@
-"""Printable poke-through braille sheets (A4). Run: python make_sheet.py [alphabet words numbers lookalikes]
+"""Printable braille sheets (A4).
 
-Every sheet comes in two versions that share one layout, so the tutor treats them the same:
+  python make_sheet.py        the three Braillie sheets (alphabet, words, look-alikes), each printed on both sides: a reading
+                              side with the dots in black, and a poking side with a circle round each dot to push a pen through.
+                              sheet/braillie-sheets.pdf to print, and a PNG of each side. (See make_pack.)
+
+  python make_sheet.py NAME…  the older one-sided poke templates, in two versions that share one layout:
   sheet/poke_<name>.png              WITH corner markers (you stick four printed markers on the front)
   sheet/nomarkers/poke_<name>.png    WITHOUT markers (the camera finds the paper's own four edges: run the tutor with --paper)
 plus face_<name>.png simulations of the finished face, for checking. sheet/print/ collects the four to print for a demo.
@@ -21,7 +25,7 @@ from detect import Cell
 from make_markers import SHEET_MARKER_MM as MARKER_MM
 import page
 from page import ARUCO_DICT, MARKER_POS_MM, PAGE_H_MM, PAGE_W_MM
-from sheets import DOT_MM, DOT_R_MM, SHEET_NAMES, SPECS, get_sheet
+from sheets import DOT_MM, DOT_R_MM, SHEET_BUMPS, SHEET_NAMES, SPECS, get_sheet
 
 OUT = Path("sheet")
 DPI = 300
@@ -122,6 +126,192 @@ def render_flat_test(name: str = "alphabet", markers: bool = True) -> np.ndarray
     return img
 
 
+# ---- the printed sheets: Braillie branded, printed on both sides ----------------------------------------------------------------
+# Each sheet is one piece of paper. The READING side has every dot printed solid black where the bump will be (and the letter under
+# each cell), with the Braillie wordmark, Braillo and the sheet's name; the POKING side, on the back, is its mirror image, with a
+# circle round each dot to push a pen through. Printed double-sided (flipped on the long edge), every circle sits right behind its
+# black dot, so each bump comes up on the dot it belongs to. The dots are where they have always been (sheet_cells), so the tutor
+# reads these sheets exactly as before, finding the page by its own four edges (--paper).
+
+PACK = ("alphabet", "words", "lookalikes", "numbers")  # Learn, Read, Quiz, and numbers and signs for going further
+PACK_TITLES = {"alphabet": ("The alphabet", "for Learn"), "words": ("Words", "for Read"), "lookalikes": ("Look-alikes", "for Quiz"),
+               "numbers": ("Numbers and signs", "for advanced practice")}
+ID_Y_MM, ID_RIGHT_MM, ID_PITCH_MM = 38.0, 192.0, 7.0  # the sheet's raised ID dots (see sheets.SHEET_BUMPS): top right, in a row
+BRAND = Path(__file__).parent / "sheet" / "brand"  # Braillo, drawn from the website's own picture of him
+FONT_WOFF2 = Path(__file__).parent.parent / "website-frontend" / "public" / "fonts" / "atkinson-hyperlegible-next.woff2"
+ACCENT = (11, 58, 176)  # the website's blue
+SOFT = (110, 110, 118)  # rules and small print
+RING_R_MM = 2.4  # the poking circle: a target a little bigger than the dot
+PDF_OUT = OUT / "braillie-sheets.pdf"
+
+
+def _font(size_mm: float, weight: int = 400):
+    """The website's typeface (Atkinson Hyperlegible Next) at this size and weight. It is converted from the website's own font
+    file once, into a cache next to this script (that needs the brotli package)."""
+    from PIL import ImageFont
+
+    ttf = Path(__file__).parent / "sheet" / ".cache" / "atkinson-hyperlegible-next.ttf"
+    if not ttf.exists():
+        from fontTools.ttLib import TTFont
+
+        ttf.parent.mkdir(parents=True, exist_ok=True)
+        f = TTFont(str(FONT_WOFF2))
+        f.flavor = None
+        f.save(str(ttf))
+    font = ImageFont.truetype(str(ttf), int(round(size_mm * MM)))
+    try:
+        font.set_variation_by_axes([weight])
+    except (OSError, AttributeError):  # (not a variable font here: one weight it is)
+        pass
+    return font
+
+
+def _page():
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (int(round(A4_MM[0] * MM)), int(round(A4_MM[1] * MM))), "white")
+    return img, ImageDraw.Draw(img)
+
+
+def _mm(x: float, y: float) -> tuple[int, int]:
+    return int(round(x * MM)), int(round(y * MM))
+
+
+def _header(img, draw, name: str, side: str) -> None:
+    """Braillo, the wordmark, the sheet's name, and which side this is. On the poking side it is laid out the other way round (Braillo
+    and the words at the right), because the sheet's ID dots come through at the top left there."""
+    from PIL import Image
+
+    title, use = PACK_TITLES[name]
+    braillo = Image.open(BRAND / "braillo.png").convert("RGBA")
+    h = int(round(40 * MM))
+    braillo = braillo.resize((int(braillo.width * h / braillo.height), h), Image.LANCZOS)
+    left = side == "reading"
+    bw = braillo.width / MM
+    img.paste(braillo, _mm(14 if left else 196 - bw, 12), braillo)
+    x = 14 + bw + 4 if left else 196 - bw - 4  # where the words start (reading side) or end (poking side)
+    anchor = "la" if left else "ra"
+    word = _font(8.5, 800)
+    wordmark_w = draw.textlength("Braillie.", font=word) / MM
+    wx = x if left else x - wordmark_w
+    draw.text(_mm(wx, 13), "Braillie", font=word, fill="black")
+    draw.text((_mm(wx, 13)[0] + int(draw.textlength("Braillie", font=word)), _mm(wx, 13)[1]), ".", font=word, fill=ACCENT)
+    draw.text(_mm(x, 25), title, font=_font(11, 800), fill="black", anchor=anchor)
+    number = PACK.index(name) + 1
+    draw.text(_mm(x, 40), f"Sheet {number} of {len(PACK)}  ·  {use}", font=_font(4.6, 600), fill=SOFT, anchor=anchor)
+    # which side, as a label at the top corner away from Braillo: solid for the reading side, outlined for the poking side
+    label = "Reading side" if side == "reading" else "Poking side"
+    f = _font(4.4, 800)
+    w = draw.textlength(label, font=f) / MM + 10
+    x0 = 196 - w if left else 14
+    box = [_mm(x0, 14), _mm(x0 + w, 25)]
+    if left:
+        draw.rounded_rectangle(box, radius=int(5.5 * MM), fill=ACCENT)
+        draw.text(_mm(x0 + w / 2, 19.5), label, font=f, fill="white", anchor="mm")
+    else:
+        draw.rounded_rectangle(box, radius=int(5.5 * MM), outline=ACCENT, width=int(0.6 * MM))
+        draw.text(_mm(x0 + w / 2, 19.5), label, font=f, fill=ACCENT, anchor="mm")
+    draw.line([_mm(14, 58), _mm(196, 58)], fill=SOFT, width=max(1, int(0.3 * MM)))
+
+
+def id_points(name: str) -> list[tuple[float, float]]:
+    """Paper-mm centres of the sheet's ID dots, as seen on the reading side: a row along the top right (one per sheet number)."""
+    return [(ID_RIGHT_MM - k * ID_PITCH_MM, ID_Y_MM) for k in range(SHEET_BUMPS[name])]
+
+
+def _id_mark(draw, name: str, side: str) -> None:
+    """The raised dots that tell which sheet this is (and which way up), with a word to say so for whoever prints it."""
+    n = SHEET_BUMPS[name]
+    for x, y in id_points(name):
+        if side == "reading":
+            r = DOT_R_MM * MM
+            cx, cy = _mm(x, y)
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="black")
+        else:  # (behind it: mirrored, ringed like every other dot)
+            cx, cy = _mm(A4_MM[0] - x, y)
+            ring, point = RING_R_MM * MM, 0.45 * MM
+            draw.ellipse([cx - ring, cy - ring, cx + ring, cy + ring], outline="black", width=max(2, int(0.4 * MM)))
+            draw.ellipse([cx - point, cy - point, cx + point, cy + point], fill="black")
+    words = f"{n} bump{'s' if n > 1 else ''}: sheet {n}"
+    if side == "reading":
+        draw.text(_mm(ID_RIGHT_MM + 2.4, ID_Y_MM + 6), words, font=_font(3.4, 600), fill=SOFT, anchor="ra")
+    else:
+        draw.text(_mm(A4_MM[0] - ID_RIGHT_MM - 2.4, ID_Y_MM + 6), words, font=_font(3.4, 600), fill=SOFT, anchor="la")
+
+
+def _labels(draw, sheet, mirror: bool) -> None:
+    """The letter under each cell, readable on both sides (on the poking side it goes under the mirrored cell)."""
+    f = _font(5.2, 800)
+    for c in sheet.cells:
+        draw.text(_px(c["x"], c["y"] + 2 * DOT_MM + 2.5, mirror), sheet.symbol(c).short, font=f, fill="black", anchor="mm")
+
+
+def render_reading_side(name: str):
+    """The side that is felt (and that the camera sees): every dot printed solid black where its bump comes up."""
+    sheet = get_sheet(name)
+    img, draw = _page()
+    _header(img, draw, name, "reading")
+    _id_mark(draw, name, "reading")
+    r = DOT_R_MM * MM
+    for c in sheet.cells:
+        for x, y in dot_points(c):
+            cx, cy = _px(x, y, False)
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="black")
+    _labels(draw, sheet, False)
+    draw.line([_mm(14, 272), _mm(196, 272)], fill=SOFT, width=max(1, int(0.3 * MM)))
+    draw.text(_mm(14, 277), "Feel the dots. Hear the letters.", font=_font(4.4, 800), fill="black")
+    draw.text(_mm(196, 277), f"Which sheet? Count the bumps at the top right: {SHEET_BUMPS[name]}.", font=_font(4, 400), fill=SOFT,
+              anchor="ra")
+    return img
+
+
+def render_poking_side(name: str):
+    """The back: the mirror image, with a circle round each dot (and a point in its middle) to push a pen through."""
+    sheet = get_sheet(name)
+    img, draw = _page()
+    _header(img, draw, name, "poking")
+    _id_mark(draw, name, "poking")
+    ring, point, width = RING_R_MM * MM, 0.45 * MM, max(2, int(0.4 * MM))
+    for c in sheet.cells:
+        for x, y in dot_points(c):
+            cx, cy = _px(x, y, True)
+            draw.ellipse([cx - ring, cy - ring, cx + ring, cy + ring], outline="black", width=width)
+            draw.ellipse([cx - point, cy - point, cx + point, cy + point], fill="black")
+    _labels(draw, sheet, True)
+    draw.line([_mm(14, 250), _mm(196, 250)], fill=SOFT, width=max(1, int(0.3 * MM)))
+    steps = ("Lay this side up on something soft: a folded towel, foam or cork.",
+             "Push a blunt pen through the middle of every circle, the ones in the top corner too.",
+             "Turn the sheet over: each bump comes up on a black dot.")
+    step = _font(4.4, 600)
+    for i, text in enumerate(steps):
+        y = 256 + i * 8
+        cx, cy = _mm(18, y + 2.6)
+        draw.ellipse([cx - 2.6 * MM, cy - 2.6 * MM, cx + 2.6 * MM, cy + 2.6 * MM], fill=ACCENT)
+        draw.text((cx, cy), str(i + 1), font=_font(3.8, 800), fill="white", anchor="mm")
+        draw.text(_mm(24, y), text, font=step, fill="black")
+    # print-size check: 10 cm, at the right
+    x0, y = 96, 284.5
+    draw.line([_mm(x0, y), _mm(x0 + 100, y)], fill="black", width=max(2, int(0.35 * MM)))
+    for t in (0, 100):
+        draw.line([_mm(x0 + t, y - 1.8), _mm(x0 + t, y + 1.8)], fill="black", width=max(2, int(0.35 * MM)))
+    draw.text(_mm(x0 + 50, y - 1.5), "Printed at 100%? This line is 10 cm.", font=_font(3.4, 400), fill=SOFT, anchor="mb")
+    return img
+
+
+def make_pack() -> list[Path]:
+    """The three sheets, both sides: one PNG per side (300 dpi) and one PDF to print double-sided, reading side then poking side."""
+    pages, paths = [], []
+    for i, name in enumerate(PACK, 1):
+        for side, render in (("reading", render_reading_side), ("poking", render_poking_side)):
+            img = render(name)
+            path = OUT / f"{i}_{name}_{side}.png"
+            img.save(path, dpi=(DPI, DPI))
+            pages.append(img)
+            paths.append(path)
+    pages[0].save(PDF_OUT, save_all=True, append_images=pages[1:], resolution=DPI)
+    return paths + [PDF_OUT]
+
+
 def save_png(path: Path, img: np.ndarray) -> None:
     """Write a PNG with a pHYs chunk so print dialogs know it is 300 dpi (plain cv2.imwrite has no DPI)."""
     png = bytes(cv2.imencode(".png", img)[1])
@@ -132,7 +322,13 @@ def save_png(path: Path, img: np.ndarray) -> None:
 
 
 def main() -> None:
-    names = sys.argv[1:] or list(SHEET_NAMES)
+    if not sys.argv[1:]:  # the four branded sheets, printed on both sides (the usual thing to make)
+        OUT.mkdir(exist_ok=True)
+        for path in make_pack():
+            print(path)
+        print("print the PDF double-sided at 100% (no scaling), flipping on the long edge")
+        return
+    names = sys.argv[1:]  # (named sheets: the older one-sided poke templates, with and without markers)
     for name in names:
         if name not in SPECS:
             raise SystemExit(f"unknown sheet {name!r}; choose from {', '.join(SHEET_NAMES)}")

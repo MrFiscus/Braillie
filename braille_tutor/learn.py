@@ -23,9 +23,13 @@ import numpy as np
 
 from detect import _ALPHABET, cell_at, nearest_cell
 from progress import LESSON_MASTERY, Progress
+from sheets import feel_for, symbol_for
 
 POSITION = {1: "top-left", 2: "middle-left", 3: "bottom-left", 4: "top-right", 5: "middle-right", 6: "bottom-right"}
 DOTS = {letter: frozenset(int(d) for d in digits) for letter, digits in _ALPHABET.items()}
+# Every symbol a lesson can teach: the letters, then the digits (a number sign, then the dots of a letter a-j) and the signs
+# (number sign, capital sign, punctuation). Lessons, hints and grading all go by these keys.
+SYMBOL_DOTS = {**DOTS, **{ch: symbol_for(ch).dots for ch in "1234567890#^.,?!'-;"}}
 NUMBER_WORD = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six"}
 
 DWELL_SECONDS = 3.0  # resting a finger this long on a cell is "this is my answer" (long enough to feel the dots before it commits)
@@ -72,6 +76,13 @@ LESSONS = (
     Lesson("l6", "Look-alikes", "lookalikes", tuple("akblcmdneofpgqhr"),
            "This one is about letters that look alike.",
            "Each pair differs by just one dot: the second letter has an extra dot at the bottom-left."),
+    Lesson("l7", "Numbers", "numbers", ("#", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
+           "Now for numbers.",
+           "Braille numbers reuse the first ten letters. The number sign, dots 3, 4, 5 and 6, says a number comes next: then A is 1, "
+           "B is 2, and so on up to J, which is 0."),
+    Lesson("l8", "Capitals and punctuation", "numbers", ("^", ".", ",", "?", "!", "'", "-", ";"),
+           "Last of all: capitals and punctuation.",
+           "These sit low in the cell. The capital sign, dot 6 on its own, goes just before a letter to make it a capital."),
 )
 LESSON_BY_ID = {l.id: l for l in LESSONS}
 
@@ -109,7 +120,13 @@ def sheet_words(sheet: str) -> str:
 
 
 def name(letter: str) -> str:
-    return f"the letter {letter.upper()}"
+    """How a symbol is said: "the letter A", "the number 1", "the number sign"."""
+    return f"the letter {letter.upper()}" if letter in DOTS else symbol_for(letter).spoken
+
+
+def short(key: str) -> str:
+    """A symbol said on its own, as in "That's A." or "That's the number sign.": a letter, a digit, or a sign's name."""
+    return key.upper() if key in DOTS else key if key.isdigit() else symbol_for(key).spoken
 
 
 def cap(text: str) -> str:
@@ -127,7 +144,7 @@ def positions(dots) -> str:
 
 def dot_words(letter: str) -> str:
     """"One dot, at the top-left." / "Three dots: top-left, middle-left and top-right." """
-    dots = sorted(DOTS[letter])
+    dots = sorted(SYMBOL_DOTS[letter])
     if len(dots) == 1:
         return f"One dot, at the {POSITION[dots[0]]}."
     return f"{NUMBER_WORD[len(dots)]} dots: {positions(dots)}."
@@ -142,6 +159,10 @@ def has_dots(letter: str) -> str:
 def relation(letter: str, known) -> Optional[str]:
     """How this letter grows out of one the learner already knows: "It's A with one more dot, at the middle-left." None if there is
     no such letter (a letter that shares no start with any known one)."""
+    if letter.isdigit():  # (a digit is a letter's dots after a number sign: that IS how it relates)
+        return f"It comes just after a number sign, and has the dots of the letter {'ABCDEFGHIJ'['1234567890'.index(letter)]}."
+    if letter not in DOTS:
+        return None  # (signs: their own shapes, best learned as they are)
     mine = DOTS[letter]
     best = None
     for k in known:
@@ -163,7 +184,7 @@ def relation(letter: str, known) -> Optional[str]:
 def contrast(touched: str, wanted: str) -> str:
     """What the finger is on, and what to feel for instead, told from the wanted letter's side so it is easy to follow by ear:
     "That's the letter E. The letter C has a dot at the top-right, and no dot at the middle-right." """
-    a, b = DOTS[touched], DOTS[wanted]
+    a, b = SYMBOL_DOTS[touched], SYMBOL_DOTS[wanted]
     have, lack = b - a, a - b  # the wanted letter has `have` that the touched one lacks, and lacks `lack` that the touched one has
     parts = []
     if have:
@@ -350,7 +371,7 @@ class Journey:
             return self.host.say("Let's do a lesson first, so there is something to practise. Say start.")
         if self.phase in ASKING + ("await_sheet",):
             self._abandon_round()
-        pool = [l for l in self.progress.practised()]
+        pool = [l for l in self.progress.practised() if l in DOTS]  # (the review is on the alphabet sheet: letters)
         self._start_review(self.progress.pick_practice(pool, REVIEW_LENGTH, self.rng))
 
     def on_stop(self) -> None:
@@ -430,18 +451,20 @@ class Journey:
     def _start_lesson(self, lesson: Lesson) -> None:
         self.lesson, self.round_no, self.lesson_results = lesson, 1, {}
         self.word, self._word_done = None, False
-        self.taught = [l for prev in self.lessons[: self.lessons.index(lesson)] for l in prev.letters if l in DOTS]
+        self.taught = [l for prev in self.lessons[: self.lessons.index(lesson)] for l in prev.letters if l in SYMBOL_DOTS]
         if self.host.sheet_name() != lesson.sheet:
             self.phase, self._await_since = "await_sheet", self.clock()
             self.host.request_sheet(lesson.sheet)
-            self._speak(f"{lesson.title} next. It uses the {sheet_words(lesson.sheet)} sheet: put it in front of the camera and hold it steady.")
+            self._speak(f"{lesson.title} next. It uses the {sheet_words(lesson.sheet)} sheet, the one with {feel_for(lesson.sheet)}: "
+                        "put it in front of the camera and hold it steady.")
             return
         self._lesson_intro()
 
     def _remind_sheet(self, nag: bool = False) -> None:
         self._await_since = self.clock()
         self.host.request_sheet(self.lesson.sheet)
-        text = f"I'm waiting for the {sheet_words(self.lesson.sheet)} sheet. Put it in front of the camera and hold it steady."
+        text = (f"I'm waiting for the {sheet_words(self.lesson.sheet)} sheet, the one with {feel_for(self.lesson.sheet)}. Put it in "
+                "front of the camera and hold it steady.")
         if nag:
             self._nag(text)
         else:
@@ -465,7 +488,7 @@ class Journey:
             if weak:
                 self.host.tone("ready")
                 self._hold(f"{lesson.intro} First, a quick warm-up with "
-                           f"{'one letter' if len(weak) == 1 else 'a few letters'} that tripped you up last time: {_and([l.upper() for l in weak])}.")
+                           f"{'one' if len(weak) == 1 else 'a few'} that tripped you up last time: {_and([short(l) for l in weak])}.")
                 self.phase, self.queue, self._asked_in_lesson = "warmup", list(weak), 0
                 return self._next_item()
         self.host.tone("ready")
@@ -493,13 +516,13 @@ class Journey:
             if repeat:
                 text = f"We're spelling {self.word.upper()}. Find {name(t)}."
             else:
-                text = f"Find {name(t)}." if first else f"Now {t.upper()}."
+                text = f"Find {name(t)}." if first else f"Now {short(t)}."
             self._speak(text)
             self.asked_at = self.last_activity = self.clock()
             return
         if self.phase == "warmup":  # taught again: the dots, and what it was mixed up with
             mixed = self.progress.confused_with(t)
-            careful = f" It's been getting mixed up with {mixed[0].upper()}, so careful. {contrast(mixed[0], t)}" if mixed and not repeat else ""
+            careful = f" It's been getting mixed up with {short(mixed[0])}, so careful. {contrast(mixed[0], t)}" if mixed and not repeat else ""
             text = f"{cap(name(t))}. {dot_words(t)}{careful} {find}"
         elif self.phase == "teach":
             rel = relation(t, self.taught) if self.lesson and not repeat else None
@@ -529,7 +552,7 @@ class Journey:
                 self.off_page_since = now
                 self._nag("I don't feel any braille there. Move your finger over the sheet.")
             return
-        touched = letter_of_dots(cell["dots"])
+        touched = self._symbol_at(cell)
         if touched is None and self.host.known_cells():
             # Prefer the sheet's letter at this box even if live dots were empty/garbled.
             printed = next((c for c in self.host.known_cells()
@@ -557,7 +580,7 @@ class Journey:
         if pos is None or not self.target:
             return
         cell = cell_at(self.host.known_cells(), *pos)
-        if cell is not None and letter_of_dots(cell["dots"]) == self.target:
+        if cell is not None and self._symbol_at(cell) == self.target:
             self._correct()
 
     def _mark_taught(self, letter: str) -> None:
@@ -580,7 +603,7 @@ class Journey:
             praise = self.coach.next_praise() if (self.coach is not None and self.rng.random() < 0.5) else None
             text = praise or self.rng.choice(PRAISE)
         if self.phase in ("teach", "warmup"):
-            text += f" That's {t.upper()}."  # (not its dots again: they were just said, and just felt)
+            text += f" That's {short(t)}."  # (not its dots again: they were just said, and just felt)
         if self.phase in ("practice", "review") and self.in_a_row in STREAK:  # (teaching is meant to be easy: a streak means more here)
             text += f" {STREAK[self.in_a_row]}"
         self._hold(text)  # it flows straight on into the next letter, or the end of the round, as one line
@@ -628,8 +651,17 @@ class Journey:
         if self.phase == "practice":
             self.lesson_results[letter] = self.lesson_results.get(letter, False) or (correct and clean)
 
+    def _symbol_at(self, cell: dict) -> Optional[str]:
+        """What is printed at this cell: the sheet says (on the numbers sheet a digit has the dots of a letter); else what its dots spell."""
+        key = getattr(self.host, "symbol_key", None)
+        found = key(cell) if callable(key) else None
+        return found if found is not None else letter_of_dots(cell["dots"])
+
     def _cell_of(self, letter: str) -> Optional[dict]:
-        want = DOTS[letter]
+        """Where a symbol is on the sheet in front of the camera, or None if it is not on it."""
+        if callable(getattr(self.host, "symbol_key", None)):
+            return next((c for c in self.host.known_cells() if self._symbol_at(c) == letter), None)
+        want = SYMBOL_DOTS[letter]
         return next((c for c in self.host.cells() if frozenset(c["dots"]) == want), None)
 
     def _abandon_round(self) -> None:
@@ -694,7 +726,7 @@ class Journey:
         if tricky and self.round_no == 1 and score < LESSON_MASTERY:
             self.round_no += 1
             self.phase, self.queue = "practice", list(tricky)
-            self._hold(f"You found {len(got)} of {len(letters)} first time. Let's go over the tricky ones again: {_and([l.upper() for l in tricky])}.")
+            self._hold(f"You found {len(got)} of {len(letters)} first time. Let's go over the tricky ones again: {_and([short(l) for l in tricky])}.")
             return self._next_item()
         if not self._word_done and score >= LESSON_MASTERY:  # it went well: one real word to spell before the wrap-up (not as
             self._word_done = True                                 # one more test for someone who found the lesson hard)
@@ -707,10 +739,10 @@ class Journey:
         nxt = self.progress.next_lesson(self.lessons)
         if mastered:
             text = f"Lesson complete! You found {len(got)} of {len(letters)} letters first time, with no help."
-            text += (f" The tricky {'one was' if len(tricky) == 1 else 'ones were'} {_and([l.upper() for l in tricky])}." if tricky
+            text += (f" The tricky {'one was' if len(tricky) == 1 else 'ones were'} {_and([short(l) for l in tricky])}." if tricky
                      else " Every one.")
         else:
-            text = f"That's the end of the lesson. You found {len(got)} of {len(letters)} first time; {_and([l.upper() for l in tricky])} need more practice. I'll bring them back at the start of the next lesson."
+            text = f"That's the end of the lesson. You found {len(got)} of {len(letters)} first time; {_and([short(l) for l in tricky])} need more practice. I'll bring them back at the start of the next lesson."
         confused = self.progress.top_confusions(1)
         if confused and confused[0][2] >= 2:
             text += f" You have been mixing up {name(confused[0][0])} and {name(confused[0][1])}: practice will focus on those."
@@ -745,11 +777,12 @@ class Journey:
             self.phase, self._await_since, self._pending_review = "await_sheet", self.clock(), letters
             self.lesson = next(l for l in self.lessons if l.sheet == "alphabet")
             self.host.request_sheet("alphabet")
-            self._speak("Practice uses the alphabet sheet. Put it in front of the camera and hold it steady.")
+            self._speak(f"Practice uses the alphabet sheet, the one with {feel_for('alphabet')}. Put it in front of the camera and hold "
+                        "it steady.")
             return
         self._pending_review = None
         self.phase, self.review_confusions = "review", {}
-        self.taught = [l for lesson in self.lessons for l in lesson.letters if l in DOTS]
+        self.taught = [l for lesson in self.lessons for l in lesson.letters if l in DOTS]  # (practice is on the alphabet sheet)
         self.queue = list(letters)
         self.host.tone("ready")
         self._hold(f"Practice time: {len(letters)} letters, the ones that need it most.")
@@ -789,7 +822,8 @@ class Journey:
         self.host.say(text + " Well done for practising. See you next time.")
 
     def _aid_requests(self, letters) -> list:
-        return [{"name": name(l), "dots": sorted(DOTS[l]), "positions": [POSITION[d] for d in sorted(DOTS[l])]} for l in letters if l in DOTS]
+        return [{"name": name(l), "dots": sorted(SYMBOL_DOTS[l]), "positions": [POSITION[d] for d in sorted(SYMBOL_DOTS[l])]}
+                for l in letters if l in SYMBOL_DOTS]
 
     # ---- display ------------------------------------------------------------------------------
     def status(self) -> dict:
@@ -800,7 +834,8 @@ class Journey:
         return {"phase": self.phase, "word": self.word.upper() if self.phase == "word" and self.word else None, "correct": self.correct_total,
                 "lesson": None if lesson is None else {"id": lesson.id, "title": lesson.title, "index": self.lessons.index(lesson) + 1,
                                                         "of": len(self.lessons), "sheet": lesson.sheet},
-                "target": self.target, "target_dots": sorted(DOTS[self.target]) if self.target else [],
+                "target": self.target, "target_dots": sorted(SYMBOL_DOTS[self.target]) if self.target else [],
+                "target_label": symbol_for(self.target).short if self.target else None,
                 "remaining": len(self.queue) + (1 if self.target else 0), "letters": total,
                 "in_a_row": self.in_a_row, "hints": self.hints, "tries": self.tries,
                 "round": self.round_no}

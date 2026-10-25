@@ -44,7 +44,7 @@ class Host:
     def __init__(self, sheet="alphabet"):
         self.said, self.tones, self.requests, self.explore_ticks, self.explore_resets, self.finished = [], [], [], 0, 0, False
         self.finger_pos, self.sheet = None, sheet
-        self.sheets = {"alphabet": ALPHABET, "lookalikes": LOOKALIKES}
+        self.sheets = {"alphabet": ALPHABET, "lookalikes": LOOKALIKES, "numbers": sheets.get_sheet("numbers")}
 
     # -- the host interface --
     def say(self, text):
@@ -77,9 +77,20 @@ class Host:
     def finish(self):
         self.finished = True
 
+    def symbol_key(self, cell):
+        """(Only when the test asks for it: what the sheet has printed there, as the real tutor knows.)"""
+        if not self.knows_symbols:
+            return None
+        return sheets.get_sheet(self.sheet).symbol(cell).key
+
+    knows_symbols = False
+
     # -- helpers for the tests --
     def pos(self, letter):
-        c = next(c for c in self.cells() if frozenset(c["dots"]) == DOTS[letter])
+        if self.knows_symbols:
+            c = next(c for c in self.cells() if self.symbol_key(c) == letter)
+        else:
+            c = next(c for c in self.cells() if frozenset(c["dots"]) == DOTS[letter])
         return c["x"], c["y"]
 
     def last(self, n=1):
@@ -171,10 +182,11 @@ class LessonDataTests(unittest.TestCase):
     def test_lessons_are_sound(self):
         seen = []
         for lesson in LESSONS:
-            self.assertTrue(all(l in DOTS for l in lesson.letters), lesson.id)
+            self.assertTrue(all(l in learn.SYMBOL_DOTS for l in lesson.letters), lesson.id)
             self.assertEqual(len(lesson.letters), len(set(lesson.letters)), lesson.id)
-            sheet_letters = {letter_of_dots(c["dots"]) for c in sheets.get_sheet(lesson.sheet).cells}
-            self.assertTrue(set(lesson.letters) <= sheet_letters, f"{lesson.id} needs letters its sheet does not have")
+            sheet = sheets.get_sheet(lesson.sheet)
+            printed = {sheet.symbol(c).key for c in sheet.cells}
+            self.assertTrue(set(lesson.letters) <= printed, f"{lesson.id} needs symbols its sheet does not have")
             if lesson.sheet == "alphabet":
                 seen += list(lesson.letters)
         self.assertEqual("".join(seen), "abcdefghijklmnopqrstuvwxyz", "the alphabet lessons cover a to z once, in order")
@@ -228,6 +240,49 @@ class DwellTests(unittest.TestCase):
         d.update((0, 0), 0.0)
         d.update(None, 0.3)  # one missed frame
         self.assertEqual(d.update((1, 0), 1.05), (1, 0))
+
+
+class AdvancedLessonTests(unittest.TestCase):
+    """After the letters: numbers, then capitals and punctuation, on the numbers sheet, in the same adaptive journey."""
+
+    def numbers_lesson(self):
+        p = Progress()
+        for lesson in LESSONS[:6]:
+            p.lesson_done(lesson.id, 1.0)
+        j, host, clock, _ = make(progress=p, sheet="numbers")
+        host.knows_symbols = True  # (as the real tutor does: what is printed where)
+        j.session_started = True
+        j.on_start()
+        return j, host, clock, p
+
+    def test_after_the_letters_come_numbers_taught_as_letters_after_the_number_sign(self):
+        j, host, clock, p = self.numbers_lesson()
+        self.assertEqual((j.lesson.id, j.target), ("l7", "#"))
+        self.assertIn("the number sign. Four dots", host.last())
+        answer(j, host, clock, "#")
+        leave(j, host, clock)
+        self.assertEqual(j.target, "1")
+        self.assertIn("the number 1", host.last())
+        self.assertIn("after a number sign, and has the dots of the letter A", host.last())
+
+    def test_a_digit_is_graded_by_what_is_printed_there_not_mistaken_for_its_letter(self):
+        j, host, clock, p = self.numbers_lesson()
+        answer(j, host, clock, "#")
+        leave(j, host, clock)
+        answer(j, host, clock, "1")  # (the cell with dot 1 only: on this sheet it is the number 1, not the letter A)
+        self.assertIn("That's 1.", host.last())
+        self.assertEqual(j.target, "2")
+
+    def test_punctuation_follows_the_numbers(self):
+        p = Progress()
+        for lesson in LESSONS[:7]:
+            p.lesson_done(lesson.id, 1.0)
+        j, host, clock, _ = make(progress=p, sheet="numbers")
+        host.knows_symbols = True
+        j.session_started = True
+        j.on_start()
+        self.assertEqual((j.lesson.id, j.target), ("l8", "^"))
+        self.assertIn("the capital sign", host.last())
 
 
 class FirstLessonTests(unittest.TestCase):
@@ -307,7 +362,7 @@ class FirstLessonTests(unittest.TestCase):
         j, host, clock, p = make(progress=p)
         j.on_start()
         self.assertEqual((j.phase, j.lesson.id), ("warmup", "l2"), host.last(3))
-        self.assertIn("a quick warm-up with a few letters that tripped you up last time: C and D", " ".join(host.said))
+        self.assertIn("a quick warm-up with a few that tripped you up last time: C and D", " ".join(host.said))
         self.assertEqual(j.target, "c", "the most troublesome first: missed beats found")
         answer(j, host, clock, "c")
         leave(j, host, clock)

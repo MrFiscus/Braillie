@@ -2704,7 +2704,7 @@ html:has(.landing) {
   position: absolute;
   top: 6%;
   left: 50%;
-  width: 44%;
+  width: 40%;
   height: auto;
   border-radius: 6px;
   background: #ffffff; /* (paper is white: the dots are drawn dark on it) */
@@ -2713,20 +2713,24 @@ html:has(.landing) {
   transition: transform 300ms ease;
 }
 .sheets__page--alphabet {
-  transform: translateX(-50%) rotate(-12deg) translateX(-38%);
+  transform: translateX(-50%) rotate(-15deg) translateX(-56%);
 }
 .sheets__page--words {
   z-index: 1;
-  transform: translateX(-50%);
+  transform: translateX(-50%) rotate(-5deg) translateX(-19%);
 }
 .sheets__page--lookalikes {
-  transform: translateX(-50%) rotate(12deg) translateX(38%);
+  z-index: 1;
+  transform: translateX(-50%) rotate(5deg) translateX(19%);
+}
+.sheets__page--numbers {
+  transform: translateX(-50%) rotate(15deg) translateX(56%);
 }
 .sheets__fan:hover .sheets__page--alphabet {
-  transform: translateX(-50%) rotate(-16deg) translateX(-48%);
+  transform: translateX(-50%) rotate(-19deg) translateX(-66%);
 }
-.sheets__fan:hover .sheets__page--lookalikes {
-  transform: translateX(-50%) rotate(16deg) translateX(48%);
+.sheets__fan:hover .sheets__page--numbers {
+  transform: translateX(-50%) rotate(19deg) translateX(66%);
 }
 /* the page you point at lifts forward, above the others */
 .sheets__page {
@@ -2740,7 +2744,7 @@ html:has(.landing) {
   translate: 0 -8%;
   box-shadow: 0 18px 40px rgb(0 0 0 / 0.32);
 }
-/* arriving: the three pages come in stacked, then fan out */
+/* arriving: the four pages come in stacked, then fan out */
 .sheets__fan.reveal .sheets__page {
   transition: transform 900ms cubic-bezier(0.2, 0.7, 0.2, 1) 250ms;
 }

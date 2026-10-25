@@ -4,6 +4,7 @@ The simulated photos come from tools/: embossed dots with side lighting, paper g
 """
 import glob
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,7 +25,22 @@ from pagefind import find_page_homography
 from page import SHEET_ORIGIN_MM, page_homography
 
 SHIFT = np.array([[1, 0, -SHEET_ORIGIN_MM[0]], [0, 1, -SHEET_ORIGIN_MM[1]], [0, 0, 1.0]])  # paper mm -> page mm
-POKE_FILES = {n: Path(__file__).parent / "sheet" / f"poke_{n}.png" for n in sheets.SHEET_NAMES}
+# The one-sided poke templates (black guide dots, with and without markers) the photo tests are made from: they are no longer kept
+# in the repo (the printed sheets are the two-sided ones), so they are made here, once, in a folder of their own.
+_TEMPLATES = Path(tempfile.mkdtemp(prefix="braillie-poke-"))
+
+
+def _template(name: str, markers: bool = True) -> Path:
+    import make_sheet
+
+    path = _TEMPLATES / ("" if markers else "nomarkers") / f"poke_{name}.png"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        make_sheet.save_png(path, make_sheet.render_poke_template(name, markers))
+    return path
+
+
+POKE_FILES = {n: _template(n) for n in sheets.SHEET_NAMES}
 
 
 def wrong_cells(observed, expected):
@@ -34,11 +50,9 @@ def wrong_cells(observed, expected):
 class PokeFileTests(unittest.TestCase):
     def test_every_poke_file_has_exactly_the_dots_the_layout_needs(self):
         """The template PNGs are the ground truth for what gets poked; check them against the layout, independently."""
-        for folder in ("", "nomarkers"):
+        for markers in (True, False):
             for name in sheets.SHEET_NAMES:
-                path = Path(__file__).parent / "sheet" / folder / f"poke_{name}.png"
-                if not path.exists():
-                    self.skipTest(f"{path} not generated")
+                path = _template(name, markers)
                 self.assertEqual(len(pf.guide_dots(str(path))), sum(len(c["dots"]) for c in sheets.get_sheet(name).cells), path)
 
     def test_flipped_guide_dots_land_on_the_layouts_dot_positions(self):

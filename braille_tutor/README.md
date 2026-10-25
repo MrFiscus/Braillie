@@ -23,7 +23,8 @@ git clone https://github.com/snoop2head/DotNeuralNet third_party/DotNeuralNet
 
 ```
 python make_markers.py                 # markers/marker_0..3.png + markers/sheet.png; print and stick on page corners
-python make_sheet.py                   # every printable sheet, WITH markers (sheet/) and WITHOUT (sheet/nomarkers/); sheet/print/ = the four to print
+python make_sheet.py                   # the four branded two-sided sheets: sheet/N_name_reading.png, N_name_poking.png, braillie-sheets.pdf
+python make_sheet.py alphabet          # the older single-sided poke template for one sheet, with markers
 # then set PAGE_W_MM / PAGE_H_MM in page.py to your measured marker-centre to marker-centre distances
 
 python detect.py photo.jpg --annotate  # writes photo_annotated.png, prints each row as braille

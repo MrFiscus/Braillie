@@ -105,11 +105,12 @@ class Progress:
     def is_learned(self, letter: str) -> bool:
         return letter in self.letters and self.letters[letter].box >= MASTERED_BOX
 
+    # (numbers and signs are kept here too, for their own spaced repetition, but "letters known" counts the 26 letters only)
     def learned(self) -> list:
-        return sorted(l for l in self.letters if self.is_learned(l))
+        return sorted(l for l in self.letters if l.isalpha() and self.is_learned(l))
 
     def practised(self) -> list:
-        return sorted(l for l, s in self.letters.items() if s.attempts)
+        return sorted(l for l, s in self.letters.items() if l.isalpha() and s.attempts)
 
     def lesson_mastered(self, lesson_id: str) -> bool:
         return self.lessons.get(lesson_id, {}).get("best", 0.0) >= LESSON_MASTERY

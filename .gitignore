@@ -1,2 +1,10 @@
 *.env
 .env
+
+# make_sheet.py: the font converted from the website woff2, and the older named templates
+braille_tutor/sheet/.cache/
+braille_tutor/sheet/poke_*.png
+braille_tutor/sheet/face_*.png
+braille_tutor/sheet/nomarkers/
+braille_tutor/sheet/print/
+__pycache__/

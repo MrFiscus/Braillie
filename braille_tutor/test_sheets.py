@@ -113,14 +113,56 @@ class SheetRenderTests(unittest.TestCase):
                     mx, my = make_sheet._px(x, y, True)
                     self.assertLess(img[my, mx], 60, (name, x, y))
 
-    def test_main_writes_both_versions_and_the_print_pack(self):
-        import os
+    def test_main_makes_the_three_two_sided_sheets_and_their_pdf(self):
+        import sys
+        import tempfile
+        old, argv, pdf = make_sheet.OUT, sys.argv, make_sheet.PDF_OUT
+        with tempfile.TemporaryDirectory() as d:
+            make_sheet.OUT, make_sheet.PDF_OUT = make_sheet.Path(d), make_sheet.Path(d) / "braillie-sheets.pdf"
+            sys.argv = ["make_sheet.py"]
+            try:
+                make_sheet.main()
+            finally:
+                make_sheet.OUT, sys.argv, make_sheet.PDF_OUT = old, argv, pdf
+            files = sorted(str(p.relative_to(d)) for p in make_sheet.Path(d).rglob("*") if p.is_file())
+        self.assertEqual(files, ["1_alphabet_poking.png", "1_alphabet_reading.png", "2_words_poking.png", "2_words_reading.png",
+                                 "3_lookalikes_poking.png", "3_lookalikes_reading.png", "4_numbers_poking.png", "4_numbers_reading.png",
+                                 "braillie-sheets.pdf"])
+
+    def test_each_sheet_can_be_told_by_touch_by_its_bumps_at_the_top_right(self):
+        import numpy as np
+        for n, name in enumerate(make_sheet.PACK, 1):
+            self.assertEqual(len(make_sheet.id_points(name)), n)
+            read = np.asarray(make_sheet.render_reading_side(name).convert("L"))
+            poke = np.asarray(make_sheet.render_poking_side(name).convert("L"))
+            for x, y in make_sheet.id_points(name):
+                fx, fy = make_sheet._mm(x, y)
+                bx, by = make_sheet._mm(make_sheet.A4_MM[0] - x, y)
+                self.assertLess(read[fy, fx], 60, (name, "an ID bump on the reading side"))
+                self.assertLess(poke[by, bx], 60, (name, "its point to poke, behind it"))
+                self.assertGreater(x, 150, "at the top right of the reading side")
+        self.assertEqual(sheets.feel_for("words"), "two bumps in its top right corner")
+
+    def test_the_two_sides_line_up_dot_for_dot(self):
+        import numpy as np
+        for name in make_sheet.PACK:
+            read = np.asarray(make_sheet.render_reading_side(name).convert("L"))
+            poke = np.asarray(make_sheet.render_poking_side(name).convert("L"))
+            for c in sheets.get_sheet(name).cells:
+                for x, y in make_sheet.dot_points(c):
+                    fx, fy = make_sheet._px(x, y, False)
+                    bx, by = make_sheet._px(x, y, True)
+                    self.assertLess(read[fy, fx], 60, (name, "a black dot on the reading side"))
+                    self.assertLess(poke[by, bx], 60, (name, "the point to poke, on the poking side"))
+                    self.assertLessEqual(abs(fx + bx - read.shape[1]), 1, "the poking side is the reading side's mirror image")
+
+    def test_named_sheets_still_make_the_older_templates(self):
         import sys
         import tempfile
         old, argv = make_sheet.OUT, sys.argv
         with tempfile.TemporaryDirectory() as d:
             make_sheet.OUT = make_sheet.Path(d)
-            sys.argv = ["make_sheet.py"]
+            sys.argv = ["make_sheet.py", *sheets.SHEET_NAMES]
             try:
                 make_sheet.main()
             finally:

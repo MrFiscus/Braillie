@@ -13,6 +13,7 @@ cycler==0.12.1
 filelock==4.0.1
 flatbuffers==25.12.19
 fonttools==4.65.0
+brotli==1.2.1  # (make_sheet.py reads the website's woff2 font)
 fsspec==2026.9.0
 h11==0.16.0
 httpcore==1.0.9
