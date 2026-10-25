@@ -6,20 +6,7 @@ Braillie watches a printed braille sheet through your phone's camera, follows yo
 touching. Then Braillo, its friendly braille-cell tutor, teaches you, reads to you, or quizzes you out loud. It's built for people
 who can't see the screen: from the front page to your progress, **everything can be done by voice.**
 
-<table>
-<tr>
-<td width="50%" valign="top"><img src="docs/img/screenshot-landing.png" alt="The Braillie front page: 'Feel the dots. Hear the letters.' beside a drawing of a fingertip reading the word braillie in braille, with Start learning and How it works buttons."><br><b>The front page</b>: Braillo offers to talk you through it.</td>
-<td width="50%" valign="top"><img src="docs/img/screenshot-signin.png" alt="Sign-in: Braillo and two big keys: Sign in with Google, or Continue as guest."><br><b>Sign in</b>: say "Google" or "guest".</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="docs/img/screenshot-connect.png" alt="Connect your phone: Braillo beside a large QR code."><br><b>Connect your phone</b>: scan the code; Braillo talks you through it.</td>
-<td width="50%" valign="top"><img src="docs/img/screenshot-modes.png" alt="Home: Braillo listening, with three big keys: Learn, Read and Quiz."><br><b>Home</b>: say learn, read or quiz.</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="docs/img/screenshot-lesson.png" alt="A lesson: the letter G with its braille cell, progress dots, and Found it, Hint, Next and Finish keys."><br><b>A lesson</b>: find the letter by touch, with hints when you need them.</td>
-<td width="50%" valign="top"><img src="docs/img/screenshot-account.png" alt="Your page: three numbers (letters known, days in a row, sessions) and the alphabet, each letter with a bar showing how well it is known."><br><b>Your page</b>: Braillo reads out how you're doing.</td>
-</tr>
-</table>
+<p align="center"><img src="docs/img/screenshot-landing.png" alt="The Braillie front page: 'Feel the dots. Hear the letters.' beside a drawing of a fingertip reading the word braillie in braille, with Start learning and How it works buttons." width="820"><br><b>The front page</b>: Braillo offers to talk you through it.</p>
 
 ## What it does
 
@@ -45,6 +32,18 @@ who can't see the screen: from the front page to your progress, **everything can
 - **Built for blind and low-vision users.** Screen-reader-friendly markup, every action on a key as well as by voice, WCAG AAA
   colour contrast, light, dark and two high-contrast themes, and four text sizes.
 - **Remembers your progress.** Google sign-in keeps it across sessions. Guests go straight in, and nothing of theirs is saved.
+
+## A look around
+
+<p align="center"><img src="docs/img/screenshot-signin.png" alt="Sign-in: Braillo and two big keys: Sign in with Google, or Continue as guest." width="820"><br><b>Sign in</b>: say "Google" or "guest".</p>
+
+<p align="center"><img src="docs/img/screenshot-connect.png" alt="Connect your phone: Braillo beside a large QR code." width="820"><br><b>Connect your phone</b>: scan the code; Braillo talks you through it.</p>
+
+<p align="center"><img src="docs/img/screenshot-modes.png" alt="Home: Braillo listening, with three big keys: Learn, Read and Quiz." width="820"><br><b>Home</b>: say learn, read or quiz.</p>
+
+<p align="center"><img src="docs/img/screenshot-lesson.png" alt="A lesson: the letter G with its braille cell, progress dots, and Found it, Hint, Next and Finish keys." width="820"><br><b>A lesson</b>: find the letter by touch, with hints when you need them.</p>
+
+<p align="center"><img src="docs/img/screenshot-account.png" alt="Your page: three numbers (letters known, days in a row, sessions) and the alphabet, each letter with a bar showing how well it is known." width="820"><br><b>Your page</b>: Braillo reads out how you're doing.</p>
 
 ## Try it in a few minutes
 
@@ -102,26 +101,13 @@ The four practice sheets are already generated and checked in as one print-ready
 **[`braillie-sheets.pdf`](braille_tutor/sheet/braillie-sheets.pdf)** (A4, a page per sheet, printed on **both sides** at **100% / no scaling**).
 The website's *Print your sheets* button downloads the same file.
 
-<table>
-<tr>
-<td align="center" width="25%">
-<a href="braille_tutor/sheet/1_alphabet_reading.png"><img src="docs/img/sheet-alphabet.png" width="200" alt="The alphabet sheet: Braillie header with Braillo, and the dots for each letter"></a><br>
-<b>Alphabet A–Z</b><br><sub>used by <b>Learn</b> · • 1 bump</sub>
-</td>
-<td align="center" width="25%">
-<a href="braille_tutor/sheet/2_words_reading.png"><img src="docs/img/sheet-words.png" width="200" alt="The words sheet: a few short words in braille"></a><br>
-<b>Words</b><br><sub>used by <b>Read</b> · •• 2 bumps</sub>
-</td>
-<td align="center" width="25%">
-<a href="braille_tutor/sheet/3_lookalikes_reading.png"><img src="docs/img/sheet-lookalikes.png" width="200" alt="The look-alikes sheet: letters that are easy to mix up, side by side"></a><br>
-<b>Look-alikes</b><br><sub>used by <b>Quiz</b> · ••• 3 bumps</sub>
-</td>
-<td align="center" width="25%">
-<a href="braille_tutor/sheet/4_numbers_reading.png"><img src="docs/img/sheet-numbers.png" width="200" alt="The numbers and signs sheet: the number sign with 0 to 9, then capitals and punctuation"></a><br>
-<b>Numbers &amp; signs</b><br><sub>lessons 7 and 8 · •••• 4 bumps</sub>
-</td>
-</tr>
-</table>
+<p align="center"><a href="braille_tutor/sheet/1_alphabet_reading.png"><img src="docs/img/sheet-alphabet.png" alt="The alphabet sheet: Braillie header with Braillo, and the dots for each letter" width="460"></a><br><b>Alphabet A–Z</b>: used by <b>Learn</b> · • 1 bump</p>
+
+<p align="center"><a href="braille_tutor/sheet/2_words_reading.png"><img src="docs/img/sheet-words.png" alt="The words sheet: a few short words in braille" width="460"></a><br><b>Words</b>: used by <b>Read</b> · •• 2 bumps</p>
+
+<p align="center"><a href="braille_tutor/sheet/3_lookalikes_reading.png"><img src="docs/img/sheet-lookalikes.png" alt="The look-alikes sheet: letters that are easy to mix up, side by side" width="460"></a><br><b>Look-alikes</b>: used by <b>Quiz</b> · ••• 3 bumps</p>
+
+<p align="center"><a href="braille_tutor/sheet/4_numbers_reading.png"><img src="docs/img/sheet-numbers.png" alt="The numbers and signs sheet: the number sign with 0 to 9, then capitals and punctuation" width="460"></a><br><b>Numbers &amp; signs</b>: lessons 7 and 8 · •••• 4 bumps</p>
 
 Each sheet has two sides that line up dot for dot:
 
