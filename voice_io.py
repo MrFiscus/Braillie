@@ -37,16 +37,11 @@ Speaking
         Cut off the line being spoken.  interrupt_count() tells callers whether
         a cut happened since they queued a line, so they can drop stale lines.
 
-        mode values
-        -----------
-        "normal"   — Deepgram TTS (low-latency, used for all in-session
-                     narration: letters, quiz prompts, right/wrong feedback)
-        "debrief"  — ElevenLabs TTS (richer voice, used only for the end-
-                     of-session debrief)
+        mode is "normal" or "debrief"; both are spoken by Deepgram.
 
     speak_debrief(accuracy: float, missed_cells: list[str]) -> None
         Generate a short debrief script whose tone shifts with performance,
-        then speak it via ElevenLabs (equivalent to calling speak(…, "debrief")).
+        then speak it (equivalent to calling speak(…, "debrief")).
 
         accuracy     — 0.0–1.0 (e.g. 0.82 → 82 %)
         missed_cells — list of braille cell labels that were most missed
@@ -55,7 +50,7 @@ Speaking
 ENVIRONMENT VARIABLES
 ---------------------
     DEEPGRAM_API_KEY    — Deepgram secret key
-    ELEVENLABS_API_KEY  — ElevenLabs secret key
+    DEEPGRAM_TTS_MODEL  — the voice (default aura-2-thalia-en)
 
     VOICE_IO_MOCK=1     — Offline/mock mode: prints instead of hitting APIs.
                           Useful for dev/CI without spending credits.
@@ -130,11 +125,6 @@ DEBUG_MODE: bool = os.getenv("VOICE_IO_DEBUG", "0").strip() in ("1", "true", "ye
 
 DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
 
-# ElevenLabs integration is retained in code but not used on the active run
-# path. ELEVENLABS_API_KEY is not required; nothing in the normal flow checks
-# or warns about it being absent.
-ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
-
 # Deepgram TTS: Aura 2 (more natural than Aura 1, and it says the last word of a short line in full; checked by synthesising lines and
 # transcribing them back). DEEPGRAM_TTS_MODEL in .env picks another voice. Aura 1 ("aura-asteria-en" and the like) drops the last
 # ~200-300 ms of a short line ("cat" -> "ca"), so for an Aura 1 voice a pause is added after the last word (TTS_TAIL).
@@ -142,8 +132,6 @@ DEEPGRAM_TTS_MODEL: str = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-thalia-en")
 TTS_TAIL = "..."  # synthesised as a pause, not a word: if anything still eats the end, this is what goes
 WAV_SILENCE_SECONDS = 0.45  # extra quiet at the end of the file, for phone players that clip the last buffer
 
-# ElevenLabs voice ID retained for future reference; not called at runtime.
-ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 
 # Deepgram STT model.
 # nova-3 is Deepgram's current flagship real-time model (better accuracy,
@@ -1186,9 +1174,7 @@ def speak(text: str, mode: str = "normal") -> None:
 
     Args:
         text: The text to speak.
-        mode: Accepted for API compatibility ("normal", "debrief") but both
-              route through Deepgram TTS.  ElevenLabs code is retained in
-              _elevenlabs_speak() but is not called from this path.
+        mode: "normal" or "debrief" (both are spoken by Deepgram).
     """
     global _speaking_text, _echo_text, _echo_until
     if not BARGE_IN:
@@ -1853,45 +1839,6 @@ def prefetch_speech(lines: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ElevenLabs TTS — real implementation
-# ---------------------------------------------------------------------------
-
-
-def _elevenlabs_speak(text: str) -> None:
-    try:
-        import pyaudio  # type: ignore[import-untyped]
-        import requests  # type: ignore[import-untyped]
-    except ImportError as exc:
-        log.error("Missing dependency for ElevenLabs TTS: %s", exc)
-        return
-
-    if not ELEVENLABS_API_KEY:
-        log.error("ELEVENLABS_API_KEY is not set.")
-        return
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream"
-    headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg",
-    }
-    payload = {
-        "text": text,
-        "model_id": "eleven_turbo_v2",
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
-    }
-
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=15, stream=True)
-        resp.raise_for_status()
-    except Exception as exc:
-        log.error("ElevenLabs TTS request failed: %s", exc)
-        return
-
-    _play_mp3_stream(resp.iter_content(chunk_size=4096))
-
-
-# ---------------------------------------------------------------------------
 # Audio playback helpers
 # ---------------------------------------------------------------------------
 
@@ -1996,29 +1943,6 @@ def _play_audio_stream(chunks) -> None:
             pa.terminate()
     except Exception as exc:
         log.error("Audio playback failed: %s", exc)
-
-
-def _play_mp3_stream(chunks) -> None:
-    """Decode and play an MP3 byte stream (used for ElevenLabs output)."""
-    try:
-        import pyaudio  # type: ignore[import-untyped]
-        from pydub import AudioSegment  # type: ignore[import-untyped]
-        from pydub.playback import play  # type: ignore[import-untyped]
-    except ImportError as exc:
-        log.error(
-            "Missing dependency for MP3 playback: %s. "
-            "Install with: pip install pydub pyaudio",
-            exc,
-        )
-        return
-
-    buf = io.BytesIO(b"".join(chunks))
-    buf.seek(0)
-    try:
-        seg = AudioSegment.from_mp3(buf)
-        play(seg)
-    except Exception as exc:
-        log.error("MP3 playback failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

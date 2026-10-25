@@ -833,11 +833,11 @@ class SpeakerRedirectTests(unittest.TestCase):
             phonelink.install_phone_speaker(type("V", (), {"speak": lambda *a: None})(), PhoneLink("127.0.0.1", 0, tls=False))
         self.assertIn("--sound laptop", str(ctx.exception))
 
-    def test_the_real_voice_io_still_has_the_two_functions_we_redirect(self):
+    def test_the_real_voice_io_still_has_the_function_we_redirect(self):
         import tutor
         voice, _ = tutor.load_teammate_modules(mock=True)
-        for name in ("_play_audio_stream", "_play_mp3_stream"):
-            self.assertTrue(callable(getattr(voice, name, None)), f"voice_io.{name} is gone: the phone speaker redirect would break")
+        self.assertTrue(callable(getattr(voice, "_play_audio_stream", None)), "voice_io._play_audio_stream is gone: the phone speaker "
+                        "redirect would break")
 
     @unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")
     def test_the_tutors_own_speech_lines_are_heard_on_the_phone_one_at_a_time(self):

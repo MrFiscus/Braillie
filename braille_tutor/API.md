@@ -4,7 +4,7 @@ Start the server (from `braille_tutor/`, venv active):
 
 ```
 python tutor_server.py --mock --mode letters            # offline voice, speech is printed
-python tutor_server.py --mode letters                   # real Deepgram / ElevenLabs voice (needs the API keys)
+python tutor_server.py --mode letters                   # real Deepgram voice (needs DEEPGRAM_API_KEY)
 ```
 
 It listens on `http://127.0.0.1:8000`. Open that address for a built-in console page (no Node needed), or call the API

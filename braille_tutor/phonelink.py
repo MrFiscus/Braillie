@@ -174,13 +174,12 @@ def audio_seconds(data: bytes, kind: str) -> float:
 
 
 def install_phone_speaker(voice, link: "PhoneLink") -> Callable:
-    """Redirect voice_io's finished audio (Deepgram WAV, ElevenLabs MP3) to the phone whenever the phone can play it, else leave it
-    to voice_io's own laptop playback. Only the two playback functions are swapped; the synthesis (your friend's voices) is
-    untouched. Returns a function that puts everything back."""
-    names = ("_play_audio_stream", "_play_mp3_stream")
-    missing = [n for n in names if not callable(getattr(voice, n, None))]
-    if missing:
-        raise RuntimeError(f"voice_io no longer has {', '.join(missing)}: cannot move the sound to the phone (use --sound laptop)")
+    """Redirect voice_io's finished audio (Deepgram WAV, and MP3 if a voice module plays any) to the phone whenever the phone can play
+    it, else leave it to voice_io's own laptop playback. Only the playback functions are swapped; the synthesis is untouched. Returns
+    a function that puts everything back."""
+    if not callable(getattr(voice, "_play_audio_stream", None)):
+        raise RuntimeError("voice_io no longer has _play_audio_stream: cannot move the sound to the phone (use --sound laptop)")
+    names = tuple(n for n in ("_play_audio_stream", "_play_mp3_stream") if callable(getattr(voice, n, None)))
     original = {n: getattr(voice, n) for n in names}
 
     cut_off = getattr(voice, "playback_interrupted", None)  # the learner talked over it: stop the clip on the phone too
@@ -204,7 +203,8 @@ def install_phone_speaker(voice, link: "PhoneLink") -> Callable:
         return play
 
     voice._play_audio_stream = routed("_play_audio_stream", "audio/wav")
-    voice._play_mp3_stream = routed("_play_mp3_stream", "audio/mpeg")
+    if "_play_mp3_stream" in original:
+        voice._play_mp3_stream = routed("_play_mp3_stream", "audio/mpeg")
 
     def restore() -> None:
         for n in names:

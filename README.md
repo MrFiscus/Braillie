@@ -156,8 +156,7 @@ website-frontend/     React + TypeScript + Vite: the landing page, voice-driven 
 voice_io.py            Deepgram speech in and out (streamed), used by the tutor.
 run_all.sh              Starts the tutor and the website together (the way to run it above).
 requirements-voice.txt  Root-level Python deps for voice_io.py.
-backend/, run_server.py An earlier prototype (a separate WebSocket server); superseded by
-                       braille_tutor/tutor_server.py + run_all.sh above and no longer used.
+backend/               Word checking for Read (braillie/word_correction.py: a misread word is read again, never guessed).
 ```
 
 ## Documentation
