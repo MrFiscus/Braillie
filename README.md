@@ -53,7 +53,7 @@ speaking and listening). An [Anthropic](https://console.anthropic.com) API key i
 understand free speech; everything else works without it.
 
 ```bash
-git clone https://github.com/MrFiscus/Braillie.git
+git clone https://github.com/learnwithbraillie/Braillie.git
 cd Braillie
 
 # Python side: detection, finger tracking, the tutor, the phone link

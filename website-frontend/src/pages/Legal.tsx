@@ -5,7 +5,7 @@ import DisplayMenu from '../components/DisplayMenu.tsx'
 import SiteFooter from '../components/SiteFooter.tsx'
 
 const UPDATED = '24 October 2026'
-const ISSUES = 'https://github.com/MrFiscus/Braillie/issues'
+const ISSUES = 'https://github.com/learnwithbraillie/Braillie/issues'
 
 /** A plain page of text: the landing page's header, a title, the sections, and the footer. Written to be read aloud: short sections,
  * real headings, no tables. */

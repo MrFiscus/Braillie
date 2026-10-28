@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 
-const REPO = 'https://github.com/MrFiscus/Braillie'
+const REPO = 'https://github.com/learnwithbraillie/Braillie'
 
 // (plain <a> for the landing page's sections: they are on another page from the legal pages, and a full load lands on the right spot)
 const COLUMNS: { title: string; links: { label: string; to: string; external?: boolean; page?: boolean }[] }[] = [
