@@ -185,7 +185,8 @@ class DiagnoseTests(unittest.TestCase):
 
     def test_small_markers_warn_but_still_register(self):
         img, _ = HomographyTests().render()
-        small = cv2.resize(img, None, fx=0.1, fy=0.1, interpolation=cv2.INTER_AREA)  # markers ~20 px wide
+        f = 20 / (page.MARKER_SIZE_MM * 5)  # (the scene is 5 px per mm)
+        small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)  # markers ~20 px wide
         H, note = self.note(small)
         self.assertIsNotNone(H)
         self.assertIn("markers small", note)

@@ -505,6 +505,7 @@ def main() -> None:
     if link is not None and session.hub:
         session.phone_ready_fn = lambda: link.connected  # the greeting waits until the phone is linked
         session.phone_code_fn = lambda: link.code  # (read out on the connect page, for anyone who cannot scan the code)
+        session.phone_backup_fn = link.use_backup  # (shown only when they say the code is not working)
     rt = TutorRuntime(phone[1] if phone else open_camera(a.camera), feed, session, rv,
                       loop_file=not phone and bool(a.camera) and Path(a.camera).is_file(), phone=link)
     rt.start()

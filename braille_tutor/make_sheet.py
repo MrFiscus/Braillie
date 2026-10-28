@@ -136,7 +136,7 @@ def render_flat_test(name: str = "alphabet", markers: bool = True) -> np.ndarray
 PACK = ("alphabet", "words", "lookalikes", "numbers")  # Learn, Read, Quiz, and numbers and signs for going further
 PACK_TITLES = {"alphabet": ("The alphabet", "for Learn"), "words": ("Words", "for Read"), "lookalikes": ("Look-alikes", "for Quiz"),
                "numbers": ("Numbers and signs", "for advanced practice")}
-ID_Y_MM, ID_RIGHT_MM, ID_PITCH_MM = 38.0, 192.0, 7.0  # the sheet's raised ID dots (see sheets.SHEET_BUMPS): top right, in a row
+ID_Y_MM, ID_RIGHT_MM, ID_PITCH_MM = 53.0, 192.0, 7.0  # the sheet's raised ID dots (see sheets.SHEET_BUMPS): top right, in a row, under the marker
 BRAND = Path(__file__).parent / "sheet" / "brand"  # Braillo, drawn from the website's own picture of him
 FONT_WOFF2 = Path(__file__).parent.parent / "website-frontend" / "public" / "fonts" / "atkinson-hyperlegible-next.woff2"
 ACCENT = (11, 58, 176)  # the website's blue
@@ -178,40 +178,42 @@ def _mm(x: float, y: float) -> tuple[int, int]:
 
 
 def _header(img, draw, name: str, side: str) -> None:
-    """Braillo, the wordmark, the sheet's name, and which side this is. On the poking side it is laid out the other way round (Braillo
-    and the words at the right), because the sheet's ID dots come through at the top left there."""
+    """The wordmark, the sheet's name, which sheet of the four, and which side this is, centred between the corner markers (the
+    reading side has a marker in each corner, see _markers; the poking side keeps the same layout so the two match)."""
+    title, use = PACK_TITLES[name]
+    cx = A4_MM[0] / 2
+    word = _font(7, 800)
+    x0 = cx - draw.textlength("Braillie.", font=word) / MM / 2
+    draw.text(_mm(x0, 12), "Braillie", font=word, fill="black")
+    draw.text((_mm(x0, 12)[0] + int(draw.textlength("Braillie", font=word)), _mm(x0, 12)[1]), ".", font=word, fill=ACCENT)
+    draw.text(_mm(cx, 22), title, font=_font(9.5, 800), fill="black", anchor="ma")
+    number = PACK.index(name) + 1
+    draw.text(_mm(cx, 35), f"Sheet {number} of {len(PACK)}  ·  {use}", font=_font(4.4, 600), fill=SOFT, anchor="ma")
+    # which side, as a label: solid for the reading side, outlined for the poking side
+    label = "Reading side" if side == "reading" else "Poking side"
+    f = _font(3.8, 800)
+    w = draw.textlength(label, font=f) / MM + 8
+    box = [_mm(cx - w / 2, 43), _mm(cx + w / 2, 51)]
+    if side == "reading":
+        draw.rounded_rectangle(box, radius=int(4 * MM), fill=ACCENT)
+        draw.text(_mm(cx, 47), label, font=f, fill="white", anchor="mm")
+    else:
+        draw.rounded_rectangle(box, radius=int(4 * MM), outline=ACCENT, width=int(0.5 * MM))
+        draw.text(_mm(cx, 47), label, font=f, fill=ACCENT, anchor="mm")
+    draw.line([_mm(14, 61), _mm(196, 61)], fill=SOFT, width=max(1, int(0.3 * MM)))
+
+
+def _markers(img) -> None:
+    """The four corner markers (ArUco, the ones the tutor looks for): with them the camera places the page in every frame, even
+    when the phone moves, a hand covers an edge, or part of the paper is out of view (any three of the four are enough). Only on
+    the reading side, the one the camera sees. Centred on the layout's own corners (MARKER_POS_MM), unrotated."""
     from PIL import Image
 
-    title, use = PACK_TITLES[name]
-    braillo = Image.open(BRAND / "braillo.png").convert("RGBA")
-    h = int(round(40 * MM))
-    braillo = braillo.resize((int(braillo.width * h / braillo.height), h), Image.LANCZOS)
-    left = side == "reading"
-    bw = braillo.width / MM
-    img.paste(braillo, _mm(14 if left else 196 - bw, 12), braillo)
-    x = 14 + bw + 4 if left else 196 - bw - 4  # where the words start (reading side) or end (poking side)
-    anchor = "la" if left else "ra"
-    word = _font(8.5, 800)
-    wordmark_w = draw.textlength("Braillie.", font=word) / MM
-    wx = x if left else x - wordmark_w
-    draw.text(_mm(wx, 13), "Braillie", font=word, fill="black")
-    draw.text((_mm(wx, 13)[0] + int(draw.textlength("Braillie", font=word)), _mm(wx, 13)[1]), ".", font=word, fill=ACCENT)
-    draw.text(_mm(x, 25), title, font=_font(11, 800), fill="black", anchor=anchor)
-    number = PACK.index(name) + 1
-    draw.text(_mm(x, 40), f"Sheet {number} of {len(PACK)}  ·  {use}", font=_font(4.6, 600), fill=SOFT, anchor=anchor)
-    # which side, as a label at the top corner away from Braillo: solid for the reading side, outlined for the poking side
-    label = "Reading side" if side == "reading" else "Poking side"
-    f = _font(4.4, 800)
-    w = draw.textlength(label, font=f) / MM + 10
-    x0 = 196 - w if left else 14
-    box = [_mm(x0, 14), _mm(x0 + w, 25)]
-    if left:
-        draw.rounded_rectangle(box, radius=int(5.5 * MM), fill=ACCENT)
-        draw.text(_mm(x0 + w / 2, 19.5), label, font=f, fill="white", anchor="mm")
-    else:
-        draw.rounded_rectangle(box, radius=int(5.5 * MM), outline=ACCENT, width=int(0.6 * MM))
-        draw.text(_mm(x0 + w / 2, 19.5), label, font=f, fill=ACCENT, anchor="mm")
-    draw.line([_mm(14, 58), _mm(196, 58)], fill=SOFT, width=max(1, int(0.3 * MM)))
+    d = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
+    size = int(round(MARKER_MM * MM))
+    for i, (mx, my) in MARKER_POS_MM.items():
+        tile = Image.fromarray(cv2.aruco.generateImageMarker(d, i, size)).convert("RGB")
+        img.paste(tile, _px(mx - MARKER_MM / 2, my - MARKER_MM / 2, False))
 
 
 def id_points(name: str) -> list[tuple[float, float]]:
@@ -234,9 +236,10 @@ def _id_mark(draw, name: str, side: str) -> None:
             draw.ellipse([cx - point, cy - point, cx + point, cy + point], fill="black")
     words = f"{n} bump{'s' if n > 1 else ''}: sheet {n}"
     if side == "reading":
-        draw.text(_mm(ID_RIGHT_MM + 2.4, ID_Y_MM + 6), words, font=_font(3.4, 600), fill=SOFT, anchor="ra")
+        draw.text(_mm(ID_RIGHT_MM - SHEET_BUMPS[name] * ID_PITCH_MM, ID_Y_MM), words, font=_font(3.4, 600), fill=SOFT, anchor="rm")
     else:
-        draw.text(_mm(A4_MM[0] - ID_RIGHT_MM - 2.4, ID_Y_MM + 6), words, font=_font(3.4, 600), fill=SOFT, anchor="la")
+        draw.text(_mm(A4_MM[0] - ID_RIGHT_MM + SHEET_BUMPS[name] * ID_PITCH_MM, ID_Y_MM), words, font=_font(3.4, 600), fill=SOFT,
+                  anchor="lm")
 
 
 def _labels(draw, sheet, mirror: bool) -> None:
@@ -250,6 +253,7 @@ def render_reading_side(name: str):
     """The side that is felt (and that the camera sees): every dot printed solid black where its bump comes up."""
     sheet = get_sheet(name)
     img, draw = _page()
+    _markers(img)
     _header(img, draw, name, "reading")
     _id_mark(draw, name, "reading")
     r = DOT_R_MM * MM
@@ -258,10 +262,14 @@ def render_reading_side(name: str):
             cx, cy = _px(x, y, False)
             draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="black")
     _labels(draw, sheet, False)
-    draw.line([_mm(14, 272), _mm(196, 272)], fill=SOFT, width=max(1, int(0.3 * MM)))
-    draw.text(_mm(14, 277), "Feel the dots. Hear the letters.", font=_font(4.4, 800), fill="black")
-    draw.text(_mm(196, 277), f"Which sheet? Count the bumps at the top right: {SHEET_BUMPS[name]}.", font=_font(4, 400), fill=SOFT,
-              anchor="ra")
+    # at the foot, between the bottom markers: the line, and Braillo
+    from PIL import Image
+
+    draw.text(_mm(A4_MM[0] / 2, 249), "Feel the dots. Hear the letters.", font=_font(4.4, 800), fill="black", anchor="ma")
+    braillo = Image.open(BRAND / "braillo.png").convert("RGBA")
+    h = int(round(24 * MM))
+    braillo = braillo.resize((int(braillo.width * h / braillo.height), h), Image.LANCZOS)
+    img.paste(braillo, (int(round(A4_MM[0] / 2 * MM - braillo.width / 2)), int(round(256 * MM))), braillo)
     return img
 
 

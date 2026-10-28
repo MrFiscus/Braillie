@@ -75,7 +75,7 @@ const Target = ({ letter, dots, showDots }: { letter: string; dots: number[]; sh
 
 // Before a new learner's first lesson: how much braille do they know already? (The same as saying it; the lessons start from there.)
 const LEVELS: { level: Level; label: string; start: string }[] = [
-  { level: 'new', label: 'New to braille', start: 'Start from A' },
+  { level: 'new', label: 'New to braille', start: 'Start from A. Not sure? Pick this.' },
   { level: 'some', label: 'Some letters', start: 'Start at K' },
   { level: 'alphabet', label: 'The alphabet', start: 'Start at look-alikes' },
   { level: 'numbers', label: 'Letters and numbers', start: 'Start at punctuation' },

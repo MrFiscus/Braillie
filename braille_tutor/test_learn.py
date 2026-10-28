@@ -288,6 +288,39 @@ class AdvancedLessonTests(unittest.TestCase):
         self.assertIn("the capital sign", host.last())
 
 
+class SheetSeenTests(unittest.TestCase):
+    """While a lesson waits for its sheet, what the camera makes of the page is said by the lesson, once, in its own words."""
+
+    def waiting(self):
+        p = Progress()
+        for lesson in LESSONS[:7]:
+            p.lesson_done(lesson.id, 1.0)
+        j, host, clock, _ = make(progress=p)  # (the alphabet sheet is on the desk; lesson 8 needs the numbers sheet)
+        j.on_start()
+        self.assertEqual((j.phase, j.lesson.id), ("await_sheet", "l8"))
+        return j, host, clock
+
+    def test_the_wrong_sheet_is_named_with_the_one_that_is_needed(self):
+        j, host, clock = self.waiting()
+        n = len(host.said)
+        j.sheet_seen("alphabet")
+        self.assertEqual(len(host.said), n + 1)
+        self.assertEqual(host.said[-1], "That's the alphabet sheet. This lesson needs the numbers sheet, the one with four bumps in "
+                                        "its top right corner.")
+        j.sheet_seen(None)
+        self.assertTrue(host.said[-1].startswith("I can't tell which sheet that is yet. This lesson needs the numbers sheet"))
+        j.sheet_seen("numbers")  # (the right one: nothing to say here, the lesson begins on its own)
+        self.assertEqual(len(host.said), n + 2)
+
+    def test_when_the_camera_can_tell_sheets_apart_the_reminder_leaves_it_to_the_camera(self):
+        j, host, clock = self.waiting()
+        host.identifies_sheets = lambda: True
+        n, asked = len(host.said), len(host.requests)
+        run(j, host, clock, learn.REMIND_EVERY + 1)
+        self.assertEqual(len(host.said), n, "no second voice: what the camera sees is said instead (sheet_seen)")
+        self.assertGreater(len(host.requests), asked, "but it does look again")
+
+
 class LevelTests(unittest.TestCase):
     """Before a new learner's first lesson: how much braille do they know already? The lessons start from there."""
 
@@ -300,7 +333,7 @@ class LevelTests(unittest.TestCase):
         j, host, clock, p = self.fresh()
         j.on_start()
         self.assertEqual((j.phase, j.target), ("placing", None))
-        self.assertIn("how much braille do you know already?", host.last())
+        self.assertIn("how much braille do you know?", host.last())
         j.on_start()  # ("start" again: the question again)
         self.assertEqual(j.phase, "placing")
         self.assertEqual(host.said[-1], learn.ASK_LEVEL)
@@ -311,14 +344,16 @@ class LevelTests(unittest.TestCase):
         j.on_level("new")
         self.assertEqual((j.lesson.id, j.target, p.level), ("l1", "a", "new"))
         self.assertIn("start at the very beginning", host.last())
-        self.assertIn("here's how braille works", host.last())
+        self.assertIn("First, how braille works", host.last())
+        self.assertEqual(host.last().count("start"), 2, "Then we'll start ... Let's start with: not 'before we start' as well")
 
     def test_knowing_the_alphabet_starts_at_the_look_alikes_and_asks_for_that_sheet(self):
         j, host, clock, p = self.fresh()
         j.on_start()
         j.on_level("alphabet")
         self.assertEqual((j.lesson.id, j.phase, p.level, p.start_lesson), ("l6", "await_sheet", "alphabet", "l6"))
-        self.assertIn("start at lesson 6, Look-alikes", host.last())
+        self.assertIn("you know the alphabet. We'll start at lesson 6,", host.last())
+        self.assertEqual(host.last().count("Look-alikes"), 1, "the lesson is named once, not twice")
         self.assertIn("look-alikes sheet", host.last())
         self.assertEqual(p.next_lesson(LESSONS).id, "l6")
         self.assertEqual(Progress.from_dict(p.to_dict()).level, "alphabet")
@@ -357,8 +392,35 @@ class LevelTests(unittest.TestCase):
         self.assertEqual(j.target, "a")
         j.ask_level()
         self.assertEqual((j.phase, j.target), ("placing", None))
+        self.assertEqual(host.last(), learn.ASK_LEVEL_AGAIN, "not 'before we start': they have started")
         j.on_level("numbers")
         self.assertEqual((j.lesson.id, p.level), ("l8", "numbers"))
+
+    def test_someone_who_started_further_on_is_pointed_back_to_the_first_lessons_at_the_end(self):
+        p = Progress()
+        p.level, p.start_lesson = "numbers", "l8"
+        p.lesson_done("l8", 1.0)
+        j, host, clock, _ = make(progress=p)
+        j.on_start()
+        self.assertIn("finished every lesson from where you started. Say lesson one", host.last())
+
+    def test_a_first_hint_while_teaching_does_not_repeat_what_was_just_said(self):
+        j, host, clock, _ = make()
+        j.on_start()
+        answer(j, host, clock, "a")
+        leave(j, host, clock)
+        self.assertIn("It's A with one more dot, at the middle-left", host.last())  # (B is introduced by how it grows from A)
+        j.on_hint()
+        self.assertNotIn("It's A with one more dot", host.last())
+        self.assertIn("Feel along each row", host.last())
+
+    def test_the_warm_up_says_how_a_letter_differs_from_its_mix_up_without_naming_the_wrong_one_as_this(self):
+        self.assertEqual(learn.unlike("d", "a"), "Unlike D, it has no dots at the top-right and middle-right.")
+
+    def test_signs_are_not_counted_as_letters(self):
+        self.assertEqual(learn._letters(["a", "b"]), " letters")
+        self.assertEqual(learn._letters(["^", "."]), "")
+        self.assertEqual(learn._letters(["a", "1"]), "")
 
     def test_what_people_say_is_understood(self):
         for said, level in [("I'm new", "new"), ("nothing at all", "new"), ("not sure", "new"), ("beginner", "new"),

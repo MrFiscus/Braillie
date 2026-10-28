@@ -25,10 +25,11 @@ who can't see the screen: from the front page to your progress, **everything can
 - **Braillo knows what's going on.** Say "Braillo" and ask anything, or just talk: with an Anthropic API key, Claude works out what
   you meant, knowing the page you're on, what the camera sees, which letter your finger is on, your progress, and what he's
   waiting for you to do. ("I can't find it" gets a hint; "can we move on?" goes to the next lesson.)
-- **A phone is the camera.** Scan a QR code and your phone becomes Braillie's eyes, speaker and microphone. On Wi-Fi that blocks
-  it, a backup link over a tunnel takes over by itself.
-- **Speech that starts straight away.** Braillo's voice (Deepgram Aura 2) plays as it's made, on the laptop or the phone, with
-  captions that follow along sentence by sentence.
+- **A phone is the camera.** Scan a QR code and your phone becomes Braillie's eyes. Braillo talks and listens through the
+  laptop, whose echo canceller keeps him from hearing himself (`--sound phone --mic phone` moves both to the phone instead). If the
+  Wi-Fi blocks the phone, say "it's not working" and the code switches to a backup link over a tunnel.
+- **Speech that starts straight away.** Braillo's voice (Deepgram Aura 2) plays as it's made, with captions that follow along
+  sentence by sentence.
 - **Built for blind and low-vision users.** Screen-reader-friendly markup, every action on a key as well as by voice, WCAG AAA
   colour contrast, light, dark and two high-contrast themes, and four text sizes.
 - **Remembers your progress.** Google sign-in keeps it across sessions. Guests go straight in, and nothing of theirs is saved.
@@ -128,7 +129,9 @@ plain surface that contrasts with the paper.
 has 2, look-alikes has 3, and numbers has 4. Braillo describes each sheet the same way when it asks for one ("the one with two bumps
 in its top right corner").
 
-`./run_all.sh` runs with `--paper`, so Braillie finds the page from its own four edges. No corner markers are needed. To rebuild the
+**The four black squares in the corners** of the reading side are markers for the camera. From any three of them it places the
+page in every frame, so the phone can move, a hand can cover an edge, or part of the paper can be out of view, and your finger is
+still read on the right cell. If the markers can't be seen, Braillie falls back to the paper's own four edges. To rebuild the
 sheets, run `python braille_tutor/make_sheet.py`. The older single-sided templates (with or without registration markers) can still
 be made by name, e.g. `python make_sheet.py alphabet`; see
 [`braille_tutor/README.md`](braille_tutor/README.md#reading-our-printed--poked-sheets-correctly---sheet). For reading a real

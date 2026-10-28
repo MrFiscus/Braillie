@@ -107,7 +107,7 @@ FACTS = ("Here's something fun: Louis Braille invented this system when he was j
          "Here's something fun: skilled readers can read braille about as fast as many people read print.",
          "Here's something fun: you can find braille on lift buttons, medicine boxes and train tickets.",
          "Here's something fun: the six dots give sixty-three patterns, enough for letters, numbers, and punctuation too.")
-NEARLY = ("Not quite.", "Close, but not that one.", "Almost.", "Good try.")
+NEARLY = ("Not quite.", "Not that one.", "Good try.", "Nice try.")  # (nothing that says it was close: often it is not)
 AGAIN = ("Have another feel.", "Try again.", "Feel around and try once more.")
 NEXT = ("Next, {l}.", "Now {l}.", "On to {l}.")  # (a new letter in a lesson, after the last one was found)
 FIND = ("Can you find it?", "See if you can find it.", "Have a feel for it.")  # (asking after the first letter: the "rest" part is known by then)
@@ -182,17 +182,28 @@ def relation(letter: str, known) -> Optional[str]:
     return f"It's {k.upper()} with {NUMBER_WORD[len(extra)].lower()} more dots: {positions(extra)}."
 
 
-def contrast(touched: str, wanted: str) -> str:
-    """What the finger is on, and what to feel for instead, told from the wanted letter's side so it is easy to follow by ear:
-    "That's the letter E. The letter C has a dot at the top-right, and no dot at the middle-right." """
-    a, b = SYMBOL_DOTS[touched], SYMBOL_DOTS[wanted]
-    have, lack = b - a, a - b  # the wanted letter has `have` that the touched one lacks, and lacks `lack` that the touched one has
+def _differences(other: str, wanted: str) -> str:
+    """What `wanted` has that `other` lacks, and lacks that it has: "a dot at the top-right, and no dot at the middle-right"."""
+    a, b = SYMBOL_DOTS[other], SYMBOL_DOTS[wanted]
+    have, lack = b - a, a - b  # the wanted letter has `have` that the other one lacks, and lacks `lack` that the other one has
     parts = []
     if have:
         parts.append(f"a dot at the {positions(have)}" if len(have) == 1 else f"dots at the {positions(have)}")
     if lack:
         parts.append(f"no dot at the {positions(lack)}" if len(lack) == 1 else f"no dots at the {positions(lack)}")
-    return f"That's {name(touched)}. {cap(name(wanted))} has {' and '.join(parts) if len(parts) == 1 else ', and '.join(parts)}."
+    return " and ".join(parts) if len(parts) == 1 else ", and ".join(parts)
+
+
+def contrast(touched: str, wanted: str) -> str:
+    """What the finger is on, and what to feel for instead, told from the wanted letter's side so it is easy to follow by ear:
+    "That's the letter E. The letter C has a dot at the top-right, and no dot at the middle-right." """
+    return f"That's {name(touched)}. {cap(name(wanted))} has {_differences(touched, wanted)}."
+
+
+def unlike(other: str, wanted: str) -> str:
+    """How `wanted` differs from a letter it gets mixed up with, before the finger is on either: "Unlike D, it has no dots at the
+    top-right and middle-right." """
+    return f"Unlike {short(other)}, it has {_differences(other, wanted)}."
 
 
 def compare_pair(a: str, b: str) -> str:
@@ -205,9 +216,16 @@ def compare_pair(a: str, b: str) -> str:
 # their start are still there ("lesson one" goes back), and practice mixes in letters from them, so what they said is checked as
 # they go: a letter they miss comes back in the next warm-up.
 LEVELS = {"new": "l1", "some": "l3", "alphabet": "l6", "numbers": "l8"}  # what they said -> the lesson to start at
-ASK_LEVEL = ("Before we start, how much braille do you know already? Say new, if you're just starting. Say some, if you know a few "
-             "letters. Say alphabet, if you know A to Z. Or say numbers, if you know the numbers too.")
-RETRY_LEVEL = "Sorry, I didn't catch that. Say new, some, alphabet, or numbers."
+ASK_LEVEL = ("Before we start: how much braille do you know? Say new if you're just beginning, some if you know a few letters, "
+             "alphabet if you know all of A to Z, or numbers if you know those too. Not sure? Just say new, and we'll start at the "
+             "beginning.")
+RETRY_LEVEL = "Sorry, I didn't catch that. Say new, some, alphabet, or numbers. Not sure? Say new."
+# What Braillo says back, so they hear what he understood (new learners hear how braille works instead, see on_level)
+LEVEL_REPLIES = {"some": "Nice, you've made a start. We'll pick up at {where}, and I'll slip in a few of the first letters to check them.",
+                 "alphabet": "Great, you know the alphabet. We'll start at {where}, and I'll check a few earlier letters along the way.",
+                 "numbers": "Brilliant, you know your numbers too. We'll start at {where}, and I'll check some letters and numbers along "
+                            "the way."}
+ASK_LEVEL_AGAIN = "Sure. How much braille do you know? Say new, some, alphabet, or numbers."  # ("change my level", later on)
 _NOT_KNOWN = re.compile(r"\b(?:no|not|don'?t know|do not know|never learn(?:ed|t)|without)\s+(?:any\s+|the\s+)?(?:numbers?|alphabet|letters?)\b")
 
 
@@ -225,8 +243,13 @@ def level_of(text: str) -> Optional[str]:
     return None
 
 
-def welcome_first_time() -> str:
-    return ("Before we start, here's how braille works. Each letter is a small cell with room for six dots, in two columns of three. "
+def _letters(keys) -> str:
+    """ " letters" when they are all letters (counting "of 8 letters"), else nothing: numbers and signs are not letters."""
+    return " letters" if keys and all(k in DOTS for k in keys) else ""
+
+
+def welcome_first_time(lead: str = "Before we start, here's") -> str:
+    return (f"{lead} how braille works. Each letter is a small cell with room for six dots, in two columns of three. "
             "I'll tell you which dots a letter has, and you find it on the sheet with your finger.")
 
 
@@ -288,6 +311,7 @@ class Journey:
         self.lost_notices = 0
         self.off_page_since = -1e9
         self.round_no, self.lesson_results, self.session_results = 1, {}, []
+        self._mixed_now: set = set()  # the mix-ups in the current lesson (see _start_lesson)
         self.in_a_row, self.session_started, self.taught = 0, False, []
         self.review_confusions: dict = {}
         self._await_since = 0.0
@@ -383,13 +407,18 @@ class Journey:
         self._lead = ""
         self._start_lesson(self.lessons[max(0, min(index, len(self.lessons) - 1))])
 
+    def resume_visit(self) -> None:
+        """Back to the lessons later in the same visit (after reading, say): no welcome again, and not counted as a new session."""
+        self.session_started = True
+        self._hold("Back to the lessons.")
+
     def ask_level(self) -> None:
         """"Change my level": leave whatever is going on and ask again how much braille they know."""
         if self.phase in ASKING + ("await_sheet",):
             self._abandon_round()
         self._lead = ""
         self.phase, self.target, self.last_activity = "placing", None, self.clock()
-        self._speak(ASK_LEVEL)
+        self._speak(ASK_LEVEL if self._new_learner() else ASK_LEVEL_AGAIN)
 
     def on_level(self, level: str) -> None:
         """Their answer to ASK_LEVEL (said, or pressed on the screen): keep it, and start the lessons from there."""
@@ -403,12 +432,11 @@ class Journey:
         self.progress.level, self.progress.start_lesson = level, LEVELS[level]
         self._save()
         start = next(l for l in self.lessons if l.id == LEVELS[level])
-        where = f"lesson {self.lessons.index(start) + 1}, {start.title}"
+        where = f"lesson {self.lessons.index(start) + 1}"  # (its title comes next, with the lesson itself)
         if level == "new":
-            self._hold(f"Then we'll start at the very beginning. {welcome_first_time()}")
+            self._hold(f"Then we'll start at the very beginning. {welcome_first_time('First,')}")
         else:
-            self._hold(f"{'Brilliant' if level == 'numbers' else 'Great'}. Then we'll start at {where}. "
-                       "I'll mix in some earlier ones too, to check them as we go.")
+            self._hold(LEVEL_REPLIES[level].format(where=where))
         self._start_lesson(start)
 
     def _new_learner(self) -> bool:
@@ -502,6 +530,10 @@ class Journey:
         if lesson is None:
             self.phase = "recap"
             self.last_activity = self.clock()
+            skipped = [l for l in self.lessons if l.id == self.progress.start_lesson]
+            if skipped and self.lessons.index(skipped[0]) > 0:  # (they started further on: the first ones are still there)
+                return self._speak("You have finished every lesson from where you started. Say lesson one to go over the earlier ones, "
+                                   "practice for a mixed review, or explore to feel the letters freely.")
             self._speak("You have finished every lesson. Say practice for a mixed review, explore to feel the letters freely, or stop.")
             return
         self._start_lesson(lesson)
@@ -521,6 +553,7 @@ class Journey:
 
     def _start_lesson(self, lesson: Lesson) -> None:
         self.lesson, self.round_no, self.lesson_results = lesson, 1, {}
+        self._mixed_now = set()  # the mix-ups in this lesson (the end of the lesson mentions only these)
         self.word, self._word_done = None, False
         self.taught = [l for prev in self.lessons[: self.lessons.index(lesson)] for l in prev.letters if l in SYMBOL_DOTS]
         if self.host.sheet_name() != lesson.sheet:
@@ -534,12 +567,24 @@ class Journey:
     def _remind_sheet(self, nag: bool = False) -> None:
         self._await_since = self.clock()
         self.host.request_sheet(self.lesson.sheet)
+        identifies = getattr(self.host, "identifies_sheets", None)
+        if nag and identifies is not None and identifies():
+            return  # (the camera is having another look: what it sees is said then, see sheet_seen, so this would only say it twice)
         text = (f"I'm waiting for the {sheet_words(self.lesson.sheet)} sheet, the one with {feel_for(self.lesson.sheet)}. Put it in "
                 "front of the camera and hold it steady.")
         if nag:
             self._nag(text)
         else:
             self.host.say(text)
+
+    def sheet_seen(self, sheet: Optional[str]) -> None:
+        """The camera made out which sheet is in view (None: it could not tell) while this lesson waits for its own. The lesson says
+        it, in its own words: the wrong one, and which is needed. (The right one starts the lesson by itself, see _tick_sheet.)"""
+        if self.phase != "await_sheet" or self.lesson is None or sheet == self.lesson.sheet:
+            return
+        self._await_since = self.clock()  # (just said: the reminder need not follow straight after)
+        want = f"This lesson needs the {sheet_words(self.lesson.sheet)} sheet, the one with {feel_for(self.lesson.sheet)}."
+        self._speak(f"That's the {sheet_words(sheet)} sheet. {want}" if sheet else f"I can't tell which sheet that is yet. {want}")
 
     def _tick_sheet(self, now: float) -> None:
         if self.host.sheet_name() == self.lesson.sheet and self.host.cells():
@@ -593,7 +638,7 @@ class Journey:
             return
         if self.phase == "warmup":  # taught again: the dots, and what it was mixed up with
             mixed = self.progress.confused_with(t)
-            careful = f" It's been getting mixed up with {short(mixed[0])}, so careful. {contrast(mixed[0], t)}" if mixed and not repeat else ""
+            careful = f" It's been getting mixed up with {short(mixed[0])}. {unlike(mixed[0], t)}" if mixed and not repeat else ""
             text = f"{cap(name(t))}. {dot_words(t)}{careful} {find}"
         elif self.phase == "teach":
             rel = relation(t, self.taught) if self.lesson and not repeat else None
@@ -635,6 +680,7 @@ class Journey:
         self.last_activity = now
         if touched:
             self.progress.record_confusion(touched, self.target)
+            self._mixed_now.add((touched, self.target))
             self.review_confusions[(touched, self.target)] = self.review_confusions.get((touched, self.target), 0) + 1
         self.host.tone("wrong")
         if self.tries >= MAX_TRIES:
@@ -700,10 +746,11 @@ class Journey:
         self.last_activity = self.clock()
         cell = self._cell_of(t)
         rel = relation(t, self.taught)
-        if self.hints == 1 and self.phase != "teach":
-            text = f"{cap(name(t))} has {has_dots(t)}"
-        elif self.hints <= 2 and rel:
-            aid = self.coach.aid(name(t)) if self.coach is not None else None
+        said_rel = self.phase == "teach"  # (introducing a letter already says how it grows from one they know: not again as a hint)
+        aid = self.coach.aid(name(t)) if (self.coach is not None and self.hints <= 2) else None
+        if self.hints == 1 and not (said_rel and aid):
+            text = f"{cap(name(t))} has {has_dots(t)}" + (" Feel along each row, one cell at a time." if said_rel else "")
+        elif self.hints <= 2 and (aid or (rel and not said_rel)):
             text = aid or rel
         elif cell:
             text = f"It is in row {cell['row'] + 1}, column {cell['col'] + 1}. {dot_words(t)}"
@@ -809,12 +856,12 @@ class Journey:
         self.host.tone("done" if mastered else "ready")
         nxt = self.progress.next_lesson(self.lessons)
         if mastered:
-            text = f"Lesson complete! You found {len(got)} of {len(letters)} letters first time, with no help."
+            text = f"Lesson complete! You found {len(got)} of {len(letters)}{_letters(letters)} first time, with no help."
             text += (f" The tricky {'one was' if len(tricky) == 1 else 'ones were'} {_and([short(l) for l in tricky])}." if tricky
                      else " Every one.")
         else:
             text = f"That's the end of the lesson. You found {len(got)} of {len(letters)} first time; {_and([short(l) for l in tricky])} need more practice. I'll bring them back at the start of the next lesson."
-        confused = self.progress.top_confusions(1)
+        confused = [c for c in self.progress.top_confusions(5) if (c[0], c[1]) in self._mixed_now][:1]  # (this lesson's, not old news)
         if confused and confused[0][2] >= 2:
             text += f" You have been mixing up {name(confused[0][0])} and {name(confused[0][1])}: practice will focus on those."
         known, met = len(self.progress.learned()), len(self.progress.practised())
@@ -879,20 +926,22 @@ class Journey:
 
     def _say_session_recap(self) -> None:
         rs = self.session_results
+        staying = bool(getattr(self.host, "staying", lambda: False)())  # (back to the menu, not leaving: no goodbye)
         if not rs:
-            self.host.say("Goodbye. Come back soon.")
+            if not staying:
+                self.host.say("Goodbye. Come back soon.")
             return
         clean = sum(1 for _, ok, h, t in rs if ok and h == 0 and t == 0)
         got = sum(1 for _, ok, _h, _t in rs if ok)
         p = self.progress
-        text = f"That's the end of this session. You found {got} of {len(rs)} letters, {clean} of them with no help."
+        text = f"That's the end of this session. You found {got} of {len(rs)}{_letters([r[0] for r in rs])}, {clean} of them with no help."
         if p.learned():
             text += f" You now know {len(p.learned())} letters well."
         confused = p.top_confusions(1)
         if confused:
             text += f" Worth watching: {name(confused[0][0])} and {name(confused[0][1])} get mixed up."
         self.host.tone("done")
-        self.host.say(text + " Well done for practising. See you next time.")
+        self.host.say(text + (" Well done for practising." if staying else " Well done for practising. See you next time."))
 
     def _aid_requests(self, letters) -> list:
         return [{"name": name(l), "dots": sorted(SYMBOL_DOTS[l]), "positions": [POSITION[d] for d in sorted(SYMBOL_DOTS[l])]}

@@ -234,37 +234,31 @@ PROMPTS = {  # canned things the website may ask the tutor to say (it cannot mak
     "give_up": "I'll stop listening for now. You can use the buttons on the screen instead: press tab to move between "
                "them.",
     "connect_phone": (
-        "Now let's connect your phone. Open its camera, point it at the code on the screen, and tap the link that pops "
-        "up. Then tap the big Start button, and I'll say hello. If it won't scan, type the address on the screen into "
-        "your phone's browser, and enter the code {code}.",
+        "Now let's connect your phone. Open its camera, point it at the code on the screen, and tap the link that "
+        "pops up. Then tap the big Start button, and I'll say hello.",
         "Next, your phone. Point its camera at the code on the screen and tap the link that appears. When the page "
-        "opens, tap the big Start button, and you'll hear me say hello. Can't scan it? Type the address from the screen"
-        " into your phone's browser, then the code {code}.",
-        "Let's link your phone. Open the camera, aim it at the code on the screen, and tap the link. On the page that "
-        "opens, tap the big Start button. If scanning doesn't work, type the address on the screen into the phone's "
-        "browser, with the code {code}.",
-        "Time to connect your phone. Hold its camera up to the code on the screen, then tap the link it shows. Tap the "
-        "big Start button, and I'll greet you. If it won't scan, open the address on the screen in the phone's browser,"
-        " and type the code {code}.",
+        "opens, tap the big Start button, and you'll hear me say hello.",
+        "Let's link your phone. Open the camera, aim it at the code on the screen, and tap the link. On the page that"
+        " opens, tap the big Start button.",
+        "Time to connect your phone. Hold its camera up to the code on the screen, then tap the link it shows. Tap "
+        "the big Start button, and I'll greet you.",
         "Now for your phone. Scan the code on the screen with its camera, and tap the link. When the page loads, tap "
-        "the big Start button. No luck scanning? Type the address on the screen into the phone's browser, and the code "
-        "{code}.",
-        "Let's get your phone ready. Point its camera at the code on the screen until a link appears, and tap it. Then "
-        "tap the big Start button, and I'll say hello. If that doesn't work, open the address on the screen in the "
-        "phone's browser, and type the code {code}.",
+        "the big Start button.",
+        "Let's get your phone ready. Point its camera at the code on the screen until a link appears, and tap it. "
+        "Then tap the big Start button, and I'll say hello.",
         "Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. On "
-        "the new page, tap the big Start button. If the code won't scan, go to the address on the screen in the phone's"
-        " browser, and enter the code {code}.",
-        "Okay, now the phone. Use its camera to scan the code on the screen, and tap the link. When the page loads, tap"
-        " the big Start button. If scanning is tricky, type the address on the screen into the phone's browser, with "
-        "the code {code}.",
+        "the new page, tap the big Start button.",
+        "Okay, now the phone. Use its camera to scan the code on the screen, and tap the link. When the page loads, "
+        "tap the big Start button.",
         "Now we'll connect your phone. Hold its camera up to the code on the screen, and tap the link that appears. "
-        "Then press the big Start button, and I'll say hello. If it won't scan, open the address on the screen in your "
-        "phone's browser, and type the code {code}.",
+        "Then press the big Start button, and I'll say hello.",
         "Let's bring in your phone. Point its camera at the code on the screen, and tap the link. On the page that "
-        "opens, tap the big Start button, and I'll greet you. Can't scan? Type the address from the screen into the "
-        "phone's browser, then the code {code}.",
+        "opens, tap the big Start button, and I'll greet you.",
     ),
+    # (the phone dropped out for good, mid-way: the website shows the code again, see usePhoneWatch.ts)
+    "reconnect_phone": "I've lost your phone. Scan the code on the screen with its camera again, tap Start, and we'll carry on where we were.",
+    # (only when they say it is not working: the way in without scanning, which most people never need to hear)
+    "connect_help": "If it won't scan, open the address on the screen in your phone's browser, and type the code {code}.",
 }
 DIALOGUE_SECONDS = 30.0  # the sign-in page keeps the conversation open by pinging; if it stops (tab closed) the tutor goes back to normal
 # Your page (the profile). Only the tutor says these, never the browser's own voice: {progress} and {letters} are filled in from the
@@ -303,8 +297,9 @@ _SPOKEN_LETTER = re.compile(
 
 # The website's pages, as Braillo is told about them (the website says which is open, see set_page).
 WEBSITE_PAGES = {
-    "landing": "the front page of the website, about Braillie; nothing is running yet",
-    "login": "signing in: they say Google to sign in (progress saved) or guest (nothing saved), then their first name",
+    "landing": "the front page of the website, about Braillie; nothing is running yet. To begin they say start learning, which opens "
+               "the sign-in page",
+    "login": "signing in: they say Google to sign in (progress saved) or guest (nothing saved)",
     "connect-phone": "connecting the phone: they scan the QR code on the laptop screen with the phone's camera, open the link, and tap "
                      "Start; the phone then becomes the camera that watches the sheet",
     "modes": "home: they choose Learn (the letters, a few at a time), Read (words read aloud) or Quiz (find look-alike letters)",
@@ -317,18 +312,22 @@ WEBSITE_PAGES = {
 # Pages that have no voice of their own: arriving on one, Braillo says where they are and how to hear what they can do there.
 ARRIVAL_LINES = {
     "landing": "Hi, I'm Braillo. Would you like me to talk you through this website by voice? Say yes, or no.",
-    "privacy": "This is the privacy policy. Say go back to return, or what can I say to hear the links on this page.",
-    "terms": "These are the terms of use. Say go back to return, or what can I say to hear the links on this page.",
-    "accessibility": "This is the accessibility statement. Say go back to return, or what can I say to hear the links on this page.",
+    "privacy": "This is the privacy policy. Say go back to return, or more options to hear the links on this page.",
+    "terms": "These are the terms of use. Say go back to return, or more options to hear the links on this page.",
+    "accessibility": "This is the accessibility statement. Say go back to return, or more options to hear the links on this page.",
 }
 # The front page asks first (above); a "yes" gets the welcome, and later visits a short reminder; a "no" and it stays quiet there.
 LANDING_WELCOME = ("Welcome to Braillie. Here you learn braille by touch, with me, Braillo, talking you through it. First, print the "
                    "practice sheets, and press each dot through from the back with a pen, so the dots stand up. If you can't do that "
                    "yourself, ask someone to print and poke them for you. When you're ready, say start learning to begin.")
-LANDING_AGAIN = "You're on Braillie's front page. Say start learning to begin, or what can I say to hear everything here."
 LANDING_NO = "Okay, I'll stay quiet. If you want me, just say Braillo."
 _YES = re.compile(r"^(?:yes|yeah|yep|yup|sure|please|okay|ok|yes please|go on|go ahead|of course|i would|i do|please do)\b")
 _NO = re.compile(r"^(?:no|nope|nah|no thanks|no thank you|not now|i'?m fine|that'?s okay)\b")
+# "It's not working", "I can't scan it", "nothing happens": on the connect-phone page, the way in without scanning (see _cant_connect)
+_CANT_CONNECT = re.compile(r"\b(?:can'?t|cannot|can not|won'?t|doesn'?t|does not|isn'?t|is not|didn'?t|not)\s+(?:\w+\s+){0,2}?"
+                           r"(?:scan\w*|connect\w*|work\w*|open\w*|load\w*|find\w*|see\w*)\b|\bnothing (?:is )?happen\w*\b|"
+                           r"\b(?:having |got )?(?:trouble|problems?)\b|\bstuck\b")
+_SIGN_IN_WORDS = re.compile(r"\b(?:go+g+(?:le|el|ol|al)s?|guest|sign ?in|log ?in)\b")
 _CHANGE_LEVEL = re.compile(r"\b(?:change|set|reset|pick|choose|switch|redo)\b.*\blevel\b|\bmy level\b")
 # "Help" on the pages of the way in, where the activities' own help does not apply yet (nothing can be learned before signing in).
 PAGE_HELP = {
@@ -466,7 +465,7 @@ GREETINGS = (
     "Lovely, {name}, everything is ready. What shall we do?",
     "Right, {name}. What do you feel like doing today?",
     "All set, {name}! Where would you like to start?",
-    "Hi again, {name}. What would you like to do now?",
+    "Nice to have you here, {name}. What would you like to do?",
 )
 _last_greeting: list = [None]
 
@@ -583,7 +582,7 @@ def wire_new_page(session: "TutorSession", feed: "CameraFeed") -> None:
     # printed layout (photos): live refine under a finger used to drag boxes on words / lookalikes.
     session.grade_cells = lambda: _cells_for_grading(session.cells, feed.stable)
     feed.on_sheet = session.set_sheet
-    feed.announce = lambda text: threading.Thread(target=session.say, args=(text,), daemon=True).start()  # speaking blocks
+    feed.announce = lambda text: threading.Thread(target=session.sheet_news, args=(text,), daemon=True).start()  # speaking blocks
 
 
 def _cells_for_grading(printed: list, stable: list) -> list:
@@ -654,6 +653,13 @@ class _JourneyHost:
 
     def sheet_name(self) -> str:
         return self.s.current_sheet()
+
+    def identifies_sheets(self) -> bool:
+        return bool(getattr(self.s, "identifies_sheets", False))
+
+    def staying(self) -> bool:
+        """Is stopping a lesson only going back to the menu (the menu-driven app), not leaving?"""
+        return bool(self.s.hub)
 
     def symbol_key(self, cell: dict):
         """What the sheet has printed in this cell (on the numbers sheet, the cell with dot 1 is the number 1, not A)."""
@@ -739,6 +745,7 @@ class TutorSession:
         self.heard_fn: Optional[Callable] = self._voice_heard  # what the voice module last heard (tests may replace it)
         self._watcher: Optional[threading.Thread] = None
         self.journey: Optional[Journey] = None
+        self._lessons_for: Optional[str] = None  # who has had lessons already this visit (see set_mode)
         if mode == "learn":  # the guided lessons (learn.py)
             self.journey = self._new_journey()
         # the menu: who is using it, and which of learn / read / quiz they chose (see set_user, set_mode)
@@ -748,6 +755,8 @@ class TutorSession:
         self.select_sheet: Optional[Callable] = None  # set by the apps: read this printed sheet now (no need to recognise it)
         self.phone_ready_fn: Optional[Callable] = None  # set by the apps when a phone is the camera: is it connected?
         self.phone_code_fn: Optional[Callable] = None  # set by the apps when a phone is the camera: the code to type on it
+        self.phone_backup_fn: Optional[Callable] = None  # set by the apps: show the backup link (a tunnel) in the QR code; True if it now is
+        self._backup_shown = False
         self._greeted_for: Optional[str] = None
         self.muted = False  # the learner turned the microphone off with the mute key (see set_muted)
         self._epoch = 0  # bumped whenever the mode changes: the loops of the previous mode notice and stop
@@ -915,7 +924,7 @@ class TutorSession:
             return False
         if self.hub and self.hub_mode == "menu":
             return False
-        return not (self.journey is not None and self.journey.phase in ("idle", "await_sheet", "done"))
+        return not (self.journey is not None and self.journey.phase in ("idle", "await_sheet", "done", "placing"))
 
     def watch_once(self, now: float) -> Optional[str]:
         """One look at what is going on, speaking up if needed (called about twice a second by the watcher; testable on its own)."""
@@ -948,10 +957,30 @@ class TutorSession:
                 self.hearing.seen, self.guided, self._offer_n = int(heard["n"]), answer, None
                 self.say(LANDING_WELCOME if answer else LANDING_NO)
                 return None
+            if self._cant_connect(heard):  # "it won't scan": then (and only then) the backup code, or else the way in without scanning
+                self.hearing.seen = int(heard["n"])
+                if not self._backup_shown and self.phone_backup_fn is not None and self.phone_backup_fn():
+                    from phonelink import BACKUP_LINE
+                    self._backup_shown = True
+                    self.say(BACKUP_LINE)
+                else:  # (no backup to show, or it is up already and still no luck: typing the address in)
+                    self.speak_prompt("connect_help")
+                return None
+            if self._wants_to_sign_in(heard):  # "Google" on the front page: the sign-in page (which then asks for itself)
+                self.hearing.seen = int(heard["n"])
+                self._go("login")
+                return None
             control = self._names_a_control(heard)
             if control is not None:  # "privacy policy", "press dark": that button, link or option on the open page
                 self.hearing.seen = int(heard["n"])
                 self._press(control)
+                return None
+            if self._asks_to_change_level(heard):  # "change my level" (while being asked already: asked again)
+                self.hearing.seen = int(heard["n"])
+                if self.journey is not None and (not self.hub or self.hub_mode == "learn"):
+                    self._learn("ask_level")
+                else:
+                    self.say("Your level belongs to the lessons. Say learn, then change my level.")
                 return None
             level = self._answers_level(heard)
             if level is not None:  # "I know the alphabet", to "how much braille do you know already?" ("": not understood)
@@ -960,13 +989,6 @@ class TutorSession:
                     self._learn("on_level", level)
                 elif heard.get("reason") != OVER_SPEECH:  # (a word or two of its own voice, misheard: not worth a "sorry")
                     self.say(RETRY_LEVEL)
-                return None
-            if self._asks_to_change_level(heard):  # "change my level"
-                self.hearing.seen = int(heard["n"])
-                if self.journey is not None and (not self.hub or self.hub_mode == "learn"):
-                    self._learn("ask_level")
-                else:
-                    self.say("Your level belongs to the lessons. Say learn, then change my level.")
                 return None
             index = self._asks_for_lesson(heard)
             if index is not None:  # "lesson three", "go to K to O"
@@ -984,6 +1006,20 @@ class TutorSession:
         if msg:
             return msg if self.nag(msg, now) else None
         return None
+
+    def _cant_connect(self, heard: Optional[dict]) -> bool:
+        """On the connect-phone page, before the phone is in: they say it is not working (the QR code will not scan, say)."""
+        if not self.website or self.page != "connect-phone" or not self._new_heard(heard):
+            return False
+        if self.phone_ready_fn is not None and self.phone_ready_fn():
+            return False
+        return bool(_CANT_CONNECT.search(str(heard.get("text") or "").lower()))
+
+    def _wants_to_sign_in(self, heard: Optional[dict]) -> bool:
+        """"Google", "guest" or "sign in" said on a page before the sign-in page (the front page, say): they want the sign-in page."""
+        if not (self.hub and self.website) or self.user is not None or self.page in (None, "login") or not self._new_heard(heard):
+            return False
+        return bool(_SIGN_IN_WORDS.search(str(heard.get("text") or "").lower()))
 
     def _names_a_control(self, heard: Optional[dict]) -> Optional[str]:
         """Something new was said (no command) that names a control on the open page: which one."""
@@ -1081,7 +1117,7 @@ class TutorSession:
         if self.guided is None:
             self._offer_n = self._heard_n()
             return ARRIVAL_LINES["landing"]  # "would you like me to talk you through it?"
-        return LANDING_AGAIN if self.guided else None
+        return LANDING_WELCOME if self.guided else None  # (back again: the whole welcome, which says what to do, not a short reminder)
 
     def _heard_n(self) -> int:
         heard = self.heard_fn() if self.heard_fn is not None else None
@@ -1123,7 +1159,8 @@ class TutorSession:
             ctx["page"], ctx["page_is_for"] = self.page, WEBSITE_PAGES[self.page]
         if self.hub:
             ctx["signed_in"] = "no" if self.user is None else ("with Google (progress saved)" if self.user["kind"] == "google"
-                                                               else "as a guest (progress not saved)")
+                                                               else "as a guest (progress not saved: they have been told, so do "
+                                                                    "not say it again unless they ask)")
         if self.phone_ready_fn is not None:
             ctx["phone_connected"] = bool(self.phone_ready_fn())
         try:
@@ -1186,7 +1223,12 @@ class TutorSession:
     def _waiting_for(self) -> str:
         """What the tutor expects the learner to do next, in a sentence."""
         if self.hub and self.website and self.user is None:
-            return "them to sign in: say Google, or guest, on the sign-in page"
+            if self.page == "login":
+                return "them to sign in: say Google, or guest"
+            if self.page in ("landing", "privacy", "terms", "accessibility"):
+                return ("them to say start learning (if they say they want to begin, start is the action: do it, do not tell them "
+                    "to say it); the next page then speaks for itself, so do not describe it or its choices")
+            return "them to sign in first: saying Google, or guest, takes them to the sign-in page"
         if self.hub and self.phone_ready_fn is not None and not self.phone_ready_fn():
             return "them to connect their phone: scan the QR code on the screen with the phone's camera, then tap Start"
         if self.hub and self.hub_mode == "menu":
@@ -1194,6 +1236,8 @@ class TutorSession:
         j = self.journey
         if j is not None:
             st = j.status()
+            if st["phase"] == "placing":
+                return "them to say how much braille they know already: new, some, alphabet, or numbers"
             if st["phase"] == "await_sheet" and st["lesson"]:
                 return f"them to put the {st['lesson']['sheet']} sheet under the camera, flat and all in view"
             if st["phase"] == "word" and st["target"]:
@@ -1218,6 +1262,10 @@ class TutorSession:
         if reply is None:
             msg = acc.NOT_UNDERSTOOD if self._listening_state() and self.settings.hearing_feedback else None
             return msg if msg and self.nag(msg) else None
+        return self._act_on(reply)
+
+    def _act_on(self, reply: dict) -> Optional[str]:
+        """Do what Braillo made of what was said: say his line, and run the command it names (if it may run now)."""
         self._nags.clear()  # they are talking to us
         action, line = reply["action"], reply["say"]
         if line:
@@ -1291,6 +1339,13 @@ class TutorSession:
         if self.ask is None or not self.ask.enabled:
             self.say("I cannot answer questions right now. Add an Anthropic API key to the .env file to turn Braillo on.")
             return
+        if self.website and self.hub and callable(getattr(self.ask, "respond", None)):
+            # On the website, "Braillo, let's begin" should begin, not explain how to: what was said may be something to do as well
+            # as something to answer. (Only a plain question with nothing to do gets the longer answer below.)
+            reply = self.ask.respond(q, self.talk_context())
+            if reply is not None and (reply["action"] != "none" or reply["say"]):
+                self._act_on(reply)
+                return
         answer = self.ask.answer(q, context=self.talk_context())
         if not answer:
             self.say("Sorry, I could not get an answer just then. Try again in a moment.")
@@ -1552,7 +1607,7 @@ class TutorSession:
         """Speak the word under the finger right now (read mode), or say how to place the finger."""
         pos = self.finger()
         if pos is None:
-            return self.say("I can't see your finger. Rest it on a word, or click the picture where it is.")
+            return self.say("I can't see your finger. Rest it on a word.")
         self._read_word(pos)
 
     def set_mode(self, mode: str, lesson: Optional[int] = None) -> None:
@@ -1573,6 +1628,10 @@ class TutorSession:
                 self.select_sheet(cfg["sheet"])  # switches what the camera reads for, and (through set_sheet) which cells this session knows
             if mode == "learn":
                 self.journey = self._new_journey()
+                who = (self.user or {}).get("key")
+                if who is not None and self._lessons_for == who:
+                    self.journey.resume_visit()  # (they have had lessons already this visit: no "welcome back", no new session)
+                self._lessons_for = who
                 return self._learn("go_to_lesson", lesson) if lesson is not None else self._learn("on_start")
             self.contracted = False  # the printed sheets are plain letters and words
             self._start_dwell_loop()
@@ -1583,8 +1642,7 @@ class TutorSession:
                                 "You can also say read or found it. Say menu to choose something else.")
             self.questions, self.state = 8, "idle"
             self.say(f"Quiz time. Put the look-alikes sheet, the one with {feel_for('lookalikes')}, in front of the camera. I will name a "
-                     "letter: find it and rest your finger on it. If I cannot see your finger, click the picture where it is. Say menu to "
-                     "stop.")
+                     "letter: find it and rest your finger on it. Say menu to stop.")
             self.on_start()
 
     def _start_dwell_loop(self) -> None:
@@ -1629,7 +1687,7 @@ class TutorSession:
                         elif kind == "word" and self.mode == "read" and self.state == "reading":
                             self._read_word(pos)
                 elif nag and not self.is_speaking():
-                    self.nag("I can't see your finger. Rest it on the page, or click the picture where it is.")
+                    self.nag("I can't see your finger. Rest it on the page.")
             except Exception:
                 traceback.print_exc()
             time.sleep(0.1)
@@ -1767,6 +1825,18 @@ class TutorSession:
             if self.new_page is not None:
                 self.new_page()
             self.say("Okay. Show me the next page and hold it in view." if self.identifies_sheets else "Okay. Ready for the next page.")
+
+    def sheet_news(self, text: str) -> None:
+        """What the camera made of the page in view, after "next page" or a lesson asking for its sheet. While a lesson waits for its
+        sheet, the lesson says it in its own words (which sheet that is, and which it needs), so two voices never talk over each
+        other; otherwise it is said as it is."""
+        j = self.journey
+        if self.hub and (self.hub_mode == "menu" or (j is not None and j.phase in ("placing", "idle"))):
+            return  # (nothing chosen yet, or still saying how much braille they know: the sheet is not their business yet)
+        if j is not None and j.phase == "await_sheet":
+            seen = None if text.startswith("I couldn't tell") else self.current_sheet()
+            return self._learn("sheet_seen", seen)
+        self.say(text)
 
     def set_sheet(self, sheet) -> None:
         """Switch to another printed sheet (what the cells are, and what they mean)."""
@@ -2025,7 +2095,7 @@ class TutorSession:
                 self.voice.speak(text, "debrief")
             else:
                 self.voice.speak_debrief(accuracy, missed)  # the built-in debrief (also the fallback if the LLM is slow or off)
-        else:
+        elif not (self.hub and self.hub_mode != "menu"):  # (in the menu-driven app they are only going back to the menu: no goodbye)
             self.say("Goodbye.")
         self._prefetch_adaptive_selection()
         if self.adaptive_planner is not None and not stop:

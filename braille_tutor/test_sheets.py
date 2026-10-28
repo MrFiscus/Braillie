@@ -129,6 +129,23 @@ class SheetRenderTests(unittest.TestCase):
                                  "3_lookalikes_poking.png", "3_lookalikes_reading.png", "4_numbers_poking.png", "4_numbers_reading.png",
                                  "braillie-sheets.pdf"])
 
+    def test_the_reading_side_carries_the_four_markers_and_they_place_every_dot(self):
+        """The corner markers are how the camera keeps the page placed while the phone moves or a hand covers an edge: all four
+        must be found on the printed reading side, and the page they give must put each dot where it is printed."""
+        import numpy as np
+        for name in make_sheet.PACK:
+            img = np.asarray(make_sheet.render_reading_side(name).convert("RGB"))[:, :, ::-1].copy()
+            seen = page.visible_marker_corners(img)
+            self.assertEqual(sorted(seen), [0, 1, 2, 3], name)
+            H = page.homography_from_marker_corners(seen)
+            for c in sheets.get_sheet(name).cells:
+                for x, y in make_sheet.dot_points(c):
+                    px, py = make_sheet._px(x, y, False)
+                    gx, gy = page.to_page(H, px, py)
+                    self.assertLess(np.hypot(gx - x, gy - y), 0.3, (name, c["row"], c["col"]))
+            poke = np.asarray(make_sheet.render_poking_side(name).convert("RGB"))[:, :, ::-1].copy()
+            self.assertEqual(page.visible_marker_corners(poke), {}, "only the reading side has them (the camera never sees the back)")
+
     def test_each_sheet_can_be_told_by_touch_by_its_bumps_at_the_top_right(self):
         import numpy as np
         for n, name in enumerate(make_sheet.PACK, 1):
@@ -259,6 +276,26 @@ class PaperDetectionTests(unittest.TestCase):
         self.assertIsNotNone(ap.homography(img))  # and it comes back by itself
         ap.unlock()
         self.assertIsNone(ap.last_H)
+
+    def test_a_held_position_is_dropped_when_the_camera_moves(self):
+        """A hand over the page hides its edges: the last position is held. But if the camera moved meanwhile, that position is
+        wrong (a finger on CAT would be read where RED was), so it is dropped: the page is "not seen" until the edges come back."""
+        import pagefind
+        img, _ = paper_scene()
+
+        def hand_over_it(frame, shift):
+            f = np.roll(frame, shift, axis=1).copy()
+            cv2.rectangle(f, (0, 0), (760, 380), (60, 60, 60), -1)  # a hand over the top of the page, corners and all
+            return f
+
+        for shift, kept in ((0, True), (8, True), (60, False)):
+            ap = pagefind.AutoPage(*page.A4_MM, origin=self.ORIGIN, track=False, refresh_seconds=0, hold_seconds=5)
+            self.assertIsNotNone(ap.homography(img))
+            held = ap.homography(hand_over_it(img, shift))
+            self.assertEqual(held is not None, kept, f"shifted {shift} px")
+            self.assertEqual(ap.moved, not kept)
+        self.assertIsNotNone(ap.homography(img), "and it finds the page again by itself")
+        self.assertFalse(ap.moved)
 
     def test_edge_only_autopage_follows_a_moved_sheet(self):
         import pagefind

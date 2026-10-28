@@ -307,6 +307,29 @@ def find_page_homography(frame: np.ndarray, w_mm: float, h_mm: float, origin: tu
     return (None, why) if q is None else (homography_from_corners(q, w_mm, h_mm, origin), "")
 
 
+MOVED_FRACTION = 0.025  # the whole picture shifted by this share of its width: the camera moved (a hand coming in does not do that)
+
+
+def _small(frame: np.ndarray) -> np.ndarray:
+    """A small grey copy of a frame (160 px wide), for telling whether the camera moved."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    h, w = gray.shape[:2]
+    return cv2.resize(gray, (160, max(1, int(round(160 * h / w)))), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+
+def _moved(ref: Optional[np.ndarray], frame: np.ndarray) -> bool:
+    """Has the camera moved since `ref` (see _small)? The picture as a whole shifted: phase correlation finds one shift for all of
+    it, which a hand over part of the page does not produce. Not knowing counts as moved."""
+    if ref is None:
+        return True
+    now = _small(frame)
+    if now.shape != ref.shape:
+        return True
+    window = cv2.createHanningWindow((ref.shape[1], ref.shape[0]), cv2.CV_32F)
+    (dx, dy), response = cv2.phaseCorrelate(ref, now, window)
+    return bool(response > 0.05 and np.hypot(dx, dy) > MOVED_FRACTION * ref.shape[1])
+
+
 class AutoPage:
     """Page source for `--auto-page` / `--paper`: finds the page edges, then either tracks the page or keeps re-finding it.
 
@@ -323,10 +346,13 @@ class AutoPage:
         self.tracker, self.prev, self.steady, self.reason = None, None, 0, ""
         self.last_H: Optional[np.ndarray] = None
         self.last_seen, self.last_try = 0.0, 0.0
+        self._ref: Optional[np.ndarray] = None  # a small grey copy of the frame the page was last found in (see _moved)
+        self.moved = False  # the camera moved while the edges were hidden, so the held position was dropped
 
     def unlock(self) -> None:
         """Forget the current page and look for the edges again (bound to the r key)."""
         self.tracker, self.prev, self.steady, self.last_H, self.last_seen, self.last_try = None, None, 0, None, 0.0, 0.0
+        self._ref, self.moved = None, False
 
     @property
     def status(self) -> str:
@@ -367,8 +393,14 @@ class AutoPage:
         q, self.reason = find_page(frame, *self.size_mm)
         if q is not None:
             self.last_H, self.last_seen = homography_from_corners(q, *self.size_mm, self.origin), now
+            self._ref, self.moved = _small(frame), False
             return self.last_H
         if self.last_H is not None and now - self.last_seen < self.hold:
+            if _moved(self._ref, frame):
+                # The camera itself moved (the whole picture shifted), so where the page was is no longer where it is: a finger
+                # would be read against the old place and land on the wrong cell. Better to say the page is not seen.
+                self.last_H, self.moved = None, True
+                return None
             return self.last_H  # hidden for a moment (a hand over an edge): keep the last good position
         self.last_H = None
         return None

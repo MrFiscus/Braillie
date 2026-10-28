@@ -12,6 +12,12 @@
 # arguments. --phone-camera needs the phone and laptop on the same Wi-Fi;
 # neither has a --no-... flag to turn it off in tutor_server.py.
 #
+# The phone is the camera only: Braillo talks through the laptop's speaker and
+# listens with the laptop's microphone (--sound laptop --mic laptop), because
+# the laptop's echo canceller can only take out a voice the laptop played
+# itself. Played on the phone, Braillo hears itself back and cuts itself off.
+# Pass --sound phone and/or --mic phone to use the phone's instead.
+#
 # All arguments are forwarded to tutor_server.py. The script itself only
 # controls --host and --port (always 127.0.0.1:8000 for the dev server).
 #
@@ -52,15 +58,24 @@ fi
 ARGS=("$@")
 PHONE_CAMERA=0
 PAPER=0
+SOUND=0
+MIC=0
 for arg in "$@"; do
     [ "$arg" = "--phone-camera" ] && PHONE_CAMERA=1
     [ "$arg" = "--paper" ] && PAPER=1
+    case "$arg" in --sound|--sound=*) SOUND=1 ;; --mic|--mic=*) MIC=1 ;; esac
 done
 if [ "$PHONE_CAMERA" -eq 0 ]; then
     ARGS+=("--phone-camera")
 fi
 if [ "$PAPER" -eq 0 ]; then
     ARGS+=("--paper")
+fi
+if [ "$SOUND" -eq 0 ]; then
+    ARGS+=("--sound" "laptop")
+fi
+if [ "$MIC" -eq 0 ]; then
+    ARGS+=("--mic" "laptop")
 fi
 
 echo ""

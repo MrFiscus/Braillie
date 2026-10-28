@@ -161,6 +161,20 @@ CHUNK_MS: int = 100  # milliseconds of audio per microphone read
 # _is_echo). VOICE_IO_BARGE_IN=0 goes back to muting the microphone for every line, as before.
 BARGE_IN: bool = os.getenv("VOICE_IO_BARGE_IN", "1").strip() not in ("0", "false", "no")
 ECHO_TAIL_SECONDS = 1.5  # after a line ends, the room (and Deepgram) may still be giving back its last words
+PHONE_ECHO_TAIL_SECONDS = 3.5  # the same, when the phone plays the line and listens: its echo comes back later, over the network
+# Set by the phone link (phonelink.install_phone_mic) while the sound heard comes from the phone's microphone. The laptop's echo
+# canceller cannot take out a line the PHONE played (it never heard it, and the network delay keeps changing), so then the app's
+# own words are taken out one by one (_without_echo), and only a real command cuts the app off: three stray words, which may well
+# be its own voice misheard, do not.
+MIC_FROM_PHONE: bool = False
+SPEAKER_ON_PHONE: bool = False  # set by phonelink.install_phone_speaker while the lines are played on the phone (same problem)
+CUT_OFF_BY = ("hush", "stop")  # with the echo not cancellable, only these cut a line off ("read", say, is also a word Braillo says)
+
+
+def _echo_unreliable() -> bool:
+    """Is the app's own voice coming back in a way the laptop's echo canceller cannot take out (played on, or heard through, the
+    phone)? Then its words are taken out of what is heard one by one, and only "stop" or "quiet" cuts a line off."""
+    return MIC_FROM_PHONE or SPEAKER_ON_PHONE
 TALK_OVER_WORDS = 3  # this many of the learner's own words (not the app's) while it talks: they are talking to it, so it stops
 OVER_SPEECH = "heard over speech"  # the reason given for a short answer heard while the app talked (see _classify_transcript)
 TALK_OVER_CONFIDENCE = 0.55  # a command said over the app's voice comes back less sure than one said in quiet: it is allowed less
@@ -695,7 +709,7 @@ def _learner_words(normalized: str, now: float | None = None, consume: bool = Fa
     app's own line leaking through (three words or more, nearly all of them the line's) is dropped, and nothing is picked out of
     what the learner says, whose words may well be the line's own ("continue as a guest"). Without it, the app's words are taken
     out of the mixed transcript one by one (see _without_echo)."""
-    if _canceller is None:
+    if _canceller is None or _echo_unreliable():
         return _without_echo(normalized, now, consume)
     now = time.monotonic() if now is None else now
     line = _speaking_text or (_echo_text if now < _echo_until else "")
@@ -832,8 +846,11 @@ def _barge_in(transcript: str, confidence: float, words: list[Word] | None = Non
         return
     found = _match_phrase(own)
     command = found is not None and _phrase_confidence(found[1], words, confidence) >= TALK_OVER_CONFIDENCE
-    if (command or len(own.split()) >= TALK_OVER_WORDS) and interrupt():
+    if _echo_unreliable():  # (its own voice, misheard, must not cut it off: only a clear "stop" or "quiet" does)
+        command = command and found[0] in CUT_OFF_BY
+    if (command or (len(own.split()) >= TALK_OVER_WORDS and not _echo_unreliable())) and interrupt():
         log.info("Barge-in: %r cut the app off.", own)
+        print(f"voice_io: barge-in: {own!r} cut the line off", flush=True)  # (worth seeing in the tutor's log: it stops Braillo mid-line)
 
 
 def _debug_transcript_event(
@@ -1193,7 +1210,7 @@ def speak(text: str, mode: str = "normal") -> None:
         log.exception("speak() failed for mode=%r; text=%r", mode, text)
     finally:
         _speaker_thread.speaking = False
-        _echo_until = time.monotonic() + ECHO_TAIL_SECONDS
+        _echo_until = time.monotonic() + (PHONE_ECHO_TAIL_SECONDS if _echo_unreliable() else ECHO_TAIL_SECONDS)
         _speaking_text = ""
         if not BARGE_IN:
             resume_listening()

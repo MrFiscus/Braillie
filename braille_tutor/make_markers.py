@@ -12,7 +12,7 @@ BORDER_PX = 100  # white quiet zone around each PNG (ArUco needs one to be detec
 DPI = 300
 MM = DPI / 25.4
 SHEET_PX = (int(210 * MM), int(297 * MM))  # A4, (w, h)
-SHEET_MARKER_MM = 40  # printed marker side; the white border adds 10 mm on each side
+SHEET_MARKER_MM = 30  # printed marker side (the two-sided sheets print them in their corners); the white border adds 10 mm on each side
 LABELS = {0: "top left", 1: "top right", 2: "bottom right", 3: "bottom left"}
 
 

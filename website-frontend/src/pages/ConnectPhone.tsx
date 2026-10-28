@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import BigButton from '../components/BigButton.tsx'
 import Lyrics from '../components/Lyrics.tsx'
 import Mascot from '../components/Mascot.tsx'
@@ -11,12 +11,16 @@ import { useVoiceTab } from '../voice/useVoiceTab.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useTutorSession } from '../tutor/useTutorSession.ts'
 import { useUser } from '../auth/useUser.ts'
+import { backTo } from '../tutor/phoneWatch.ts'
 
 // After signing in: link the phone (a QR code to scan; the tutor also SAYS how, for someone who cannot see the screen). The moment the
 // phone is linked the tutor greets the user by name and asks what they want to do, and this page moves on to the choice by itself. Started
 // without --phone-camera, the laptop's camera is used and there is nothing to link.
 const ConnectPhone = () => {
   const navigate = useNavigate()
+  const { search } = useLocation()
+  const rejoining = search.includes('back=') // (the phone dropped out: here to scan it again, then back to where they were)
+  const onward = backTo(search) // where to go once the phone is linked
   const { user, loading } = useUser()
   const { state, reach } = useTutorState()
   useTutorSession(user, state)
@@ -37,8 +41,8 @@ const ConnectPhone = () => {
   useEffect(() => {
     if (!waiting || told.current) return
     told.current = true
-    void sayPrompt('connect_phone').catch(() => {}) // (after whatever is still being said, such as "Hi, guest!": not over it)
-  }, [waiting])
+    void sayPrompt(rejoining ? 'reconnect_phone' : 'connect_phone').catch(() => {}) // (after whatever is still being said: not over it)
+  }, [waiting, rejoining])
 
   // (the tutor may have started after this page did: tell it the colours again when the phone joins, so the phone's page matches)
   const phoneOn = !!phone?.connected
@@ -48,9 +52,9 @@ const ConnectPhone = () => {
 
   useEffect(() => {
     if (!linked || !user || !knowsUser) return
-    const t = window.setTimeout(() => navigate(menuDriven ? '/modes' : '/practice'), 2500) // long enough to hear the start of the greeting
+    const t = window.setTimeout(() => navigate(menuDriven ? onward : '/practice'), 2500) // long enough to hear the start of the greeting
     return () => window.clearTimeout(t)
-  }, [linked, user, knowsUser, menuDriven, navigate]) // (plain true/false values: an object that changes with every poll would restart the timer forever)
+  }, [linked, user, knowsUser, menuDriven, onward, navigate]) // (plain true/false values: an object that changes with every poll would restart the timer forever)
 
   let message = 'Looking for the tutor…'
   if (reach === 'no') message = 'I cannot reach the tutor. Start it on the laptop, then this page will update by itself.'
@@ -58,7 +62,7 @@ const ConnectPhone = () => {
   else if (phone && !phone.connected) message = 'Scan the code with your phone’s camera, then open the link.'
   else if (phone) message = 'Your phone is connected. Listen: the tutor will ask what you want to do.'
 
-  const next = () => navigate(menuDriven ? '/modes' : '/practice')
+  const next = () => navigate(menuDriven ? onward : '/practice')
   // what Braillo says on screen when it is not talking: one short line
   const shortLine =
     reach === 'no' ? 'Start Braillie on the laptop' : !phone ? 'Nothing to connect' : phone.connected ? 'Phone connected!' : 'Scan the code with your phone'
@@ -66,7 +70,7 @@ const ConnectPhone = () => {
   const spoken = useSpeechPosition(speech, state?.settings?.speech_speed)
 
   const muted = !!state?.muted
-  const again = () => void sayPrompt('connect_phone', undefined, true).catch(() => {})
+  const again = () => void sayPrompt(rejoining ? 'reconnect_phone' : 'connect_phone', undefined, true).catch(() => {})
 
   // Laid out like home: Braillo on the left saying what to do (the mute key and "hear it again" under him), and on the right the one
   // thing to use, the code to scan (then the phone's own view once it is linked).

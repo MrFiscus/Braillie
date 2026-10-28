@@ -21,7 +21,7 @@ SHEET_ORIGIN_MM = ((A4_MM[0] - PAGE_W_MM) / 2, (A4_MM[1] - PAGE_H_MM) / 2)
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 # id 0 top left, 1 top right, 2 bottom right, 3 bottom left -> page coordinates (mm), y down.
 MARKER_POS_MM = {0: (0.0, 0.0), 1: (PAGE_W_MM, 0.0), 2: (PAGE_W_MM, PAGE_H_MM), 3: (0.0, PAGE_H_MM)}
-MARKER_SIZE_MM = 40.0  # printed marker side; must match make_markers.py's SHEET_MARKER_MM
+MARKER_SIZE_MM = 30.0  # printed marker side; must match make_markers.py's SHEET_MARKER_MM
 # fewer point pairs than this makes findHomography's fit too loosely constrained to trust
 MIN_MARKERS_FOR_HOMOGRAPHY = 3
 

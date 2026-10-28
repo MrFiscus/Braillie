@@ -123,12 +123,17 @@
 </main>
 <script>
 "use strict";
+// What this phone does besides being the camera: the laptop fills this in when it sends the page. sound: the tutor's voice plays
+// here; mic: the tutor listens here. By default the laptop does both (its echo canceller can only take out a voice it played
+// itself), and then this page touches neither the speaker nor the microphone: on an iPhone, switching the sound to a call-like mode
+// is what pauses the camera.
+const ROLE = /*BRAILLIE_ROLE*/{ sound: true, mic: true };
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status"), video = $("preview"), braillo = $("braillo");
 let code = new URLSearchParams(location.search).get("t") || "";
 let stream = null, running = false, wake = null;
 let lastSpoken = "", lastSpokenAt = 0, pageOk = null, pageBadSince = 0, lastNag = 0;
-let soundOn = false, clipPlaying = false;
+let soundOn = false, clipPlaying = false, laptopLost = false;
 let playingClip = 0, hushedClip = 0, stopClip = null;   // the clip playing now, the last one the learner cut off, and how to stop it
 let nagGap = 12000;                                    // "cannot see the page" comes round less and less often while nothing changes
 let micCtx = null, micStream = null, micOn = false;   // the phone's microphone, sent to the laptop for the spoken commands
@@ -175,8 +180,11 @@ function say(text, tone) {
   const now = Date.now();
   if (text === lastSpoken && now - lastSpokenAt < 8000) return;
   lastSpoken = text; lastSpokenAt = now;
-  try {                                   // also spoken by the phone itself (iOS only allows this after a tap, so it may stay silent until then)
-    if ("speechSynthesis" in window && !clipPlaying) {
+  // Also spoken by the phone itself (iOS only allows this after a tap, so it may stay silent until then), but only when the tutor is
+  // not already speaking through this phone, or cannot be reached: its own voice would cut in between the tutor's sentences (and on
+  // iPhone, stop the rest of them), and the tutor says the same things itself.
+  try {
+    if ("speechSynthesis" in window && !clipPlaying && ((ROLE.sound && !soundOn) || laptopLost)) {
       speechSynthesis.cancel();
       speechSynthesis.speak(new SpeechSynthesisUtterance(text));
     }
@@ -193,6 +201,7 @@ function setAudioSession(type) {
 
 // Must be called straight from a tap (before any await): starts the silent clip that unlocks sound for the whole page.
 function unlockAudio() {
+  if (!ROLE.sound) return Promise.resolve();   // (the laptop speaks: nothing to unlock here)
   try {
     setAudioSession("playback");   // iPhone: play even with the ring/silent switch on (until the microphone starts, see start())
     prepareMic();
@@ -483,7 +492,9 @@ async function start() {
     return;
   }
   try {
-    try {           // camera and microphone in one prompt...
+    if (!ROLE.mic) {  // (the laptop listens: the camera alone, and the phone's sound left as it is)
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(), audio: false });
+    } else try {           // camera and microphone in one prompt...
       setAudioSession("play-and-record");
       stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(),
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
@@ -538,21 +549,29 @@ function announce(info) {
 // getUserMedia's track still reports "live". Nothing else notices: drawImage() keeps drawing the
 // same last-decoded picture, and the loop below would otherwise upload that one dead frame 8x a
 // second forever, with the laptop unable to tell a genuinely still page from a frozen video.
-let lastVideoTime = -1, stallSince = 0, restarting = false, restartFailures = 0;
-const STALL_MS_TO_RESTART = 1800;    // this long with currentTime not moving is a freeze, not a slow tick
+// iPhone also simply PAUSES the <video> when the sound starts or stops (the audio session changing under it): playing it again is
+// all that is needed, so that is tried first, and the camera is only restarted if the picture is still stuck after that.
+let lastVideoTime = -1, stallSince = 0, restarting = false, restartFailures = 0, nudged = false;
+const STALL_MS_TO_NUDGE = 1200;      // this long with currentTime not moving: play the video again (cheap, nothing restarts)
+const STALL_MS_TO_RESTART = 4000;    // still stuck this long: a real freeze, restart the camera
+const RESTART_TIMEOUT_MS = 6000;     // a camera restart that has not answered by then is not going to
 const MAX_RESTART_FAILURES = 3;      // after this many failed restarts in a row, stop hammering getUserMedia
+
+const within = (ms, p) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`no answer in ${ms} ms`)), ms))]);
 
 async function restartCamera() {
   const oldVideoTrack = stream && stream.getVideoTracks()[0];
+  // iPhone gives the camera to one stream at a time: asking for a second while the old one is open can leave the request hanging
+  // for ever, so the old one is let go first.
+  if (oldVideoTrack) { try { oldVideoTrack.stop(); } catch (e) { /* already gone */ } }
   try {
-    const fresh = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(), audio: false });
+    const fresh = await within(RESTART_TIMEOUT_MS, navigator.mediaDevices.getUserMedia({ video: videoConstraints(), audio: false }));
     const newVideoTrack = fresh.getVideoTracks()[0];
     const audioTracks = (stream && stream.getAudioTracks()) || [];
     stream = new MediaStream([newVideoTrack, ...audioTracks]);
     video.srcObject = stream;
     await video.play().catch(() => {});
     await applyTrackPreferences(newVideoTrack);
-    if (oldVideoTrack) { try { oldVideoTrack.stop(); } catch (e) { /* already gone */ } }
     report("camera-restarted", `${video.videoWidth}x${video.videoHeight}`);
     restartFailures = 0;
     return true;
@@ -566,6 +585,12 @@ async function restartCamera() {
   }
 }
 
+const FRAME_TIMEOUT_MS = 4000;  // an upload that has not answered by then is given up (see loop)
+function timeLimit(ms) {
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) return AbortSignal.timeout(ms);
+  const c = new AbortController(); setTimeout(() => c.abort(), ms); return c.signal;
+}
+
 async function loop() {
   const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
   let failures = 0;
@@ -574,26 +599,31 @@ async function loop() {
     if (video.videoWidth) {
       if (video.currentTime !== lastVideoTime) {
         lastVideoTime = video.currentTime;
-        stallSince = 0;
+        stallSince = 0; nudged = false;
       } else if (!stallSince) {
         stallSince = t0;
+      }
+      if (stallSince && !nudged && (video.paused || t0 - stallSince >= STALL_MS_TO_NUDGE)) {
+        nudged = true;
+        report("camera-nudged", `paused=${video.paused} at ${video.currentTime.toFixed(2)}s`);
+        video.play().catch(() => {});
       }
       if (stallSince && t0 - stallSince >= STALL_MS_TO_RESTART && !restarting && restartFailures < MAX_RESTART_FAILURES) {
         restarting = true;
         report("camera-stalled", `video.currentTime stuck at ${video.currentTime.toFixed(2)}s`);
         say("The camera froze. Restarting it…", "bad");
-        const ok = await restartCamera();
-        lastVideoTime = -1; stallSince = 0; restarting = false;
-        if (ok) { await sleep(200); }   // give the fresh stream a moment before drawing from it
-        continue;
+        // (not awaited: the loop keeps talking to the laptop meanwhile, so what the tutor is saying still arrives)
+        restartCamera().finally(() => { lastVideoTime = -1; stallSince = 0; nudged = false; restarting = false; });
       }
       const s = Math.min(1, (overInternet ? 960 : 1280) / Math.max(video.videoWidth, video.videoHeight));
       canvas.width = Math.round(video.videoWidth * s); canvas.height = Math.round(video.videoHeight * s);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", overInternet ? 0.6 : 0.8));
       try {
+        // (with a time limit: on shaky Wi-Fi an iPhone request can hang for ever, and this loop, the video and the tutor's voice
+        // would all stop with it. A frame that is late is dropped and the next one goes.)
         const res = await fetch("/phone/frame?t=" + encodeURIComponent(code),
-                                { method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" } });
+                                { method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" }, signal: timeLimit(FRAME_TIMEOUT_MS) });
         if (res.status === 403) { halt(); say("The laptop did not accept this phone. Reload the page and scan the code again.", "bad"); return; }
         if (!res.ok) throw new Error("bad reply " + res.status);
         const info = await res.json();
@@ -601,11 +631,11 @@ async function loop() {
         announce(info);
         hush(info.hush);
         if (info.say && soundOn) playClip(info.say);   // (not awaited: the camera keeps streaming while it talks)
-        if (failures >= 5) say("Connected again.", "ok");
+        if (failures >= 5) { laptopLost = false; say("Connected again.", "ok"); }
         failures = 0;
       } catch (e) {
         failures += 1;
-        if (failures === 5) say("Lost the connection to the laptop. Check that both are on the same Wi-Fi.", "bad");
+        if (failures === 5) { laptopLost = true; say("Lost the connection to the laptop. Check that both are on the same Wi-Fi.", "bad"); }
         if (failures === 1) console.warn("upload failed", e);
         await sleep(500);
       }

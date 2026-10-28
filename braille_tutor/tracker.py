@@ -147,6 +147,8 @@ class RobustPage:
             if H is not None:
                 self.last_H, self.last_good, self.source, self.detail = H, now, "paper", ""
                 return H
+        if self.paper_fallback is not None and getattr(self.paper_fallback, "moved", False) and self.source == "paper":
+            self.last_H, self.tracker = None, None  # (the camera moved: a position from the paper's edges is wrong now, not held)
         if self.last_H is not None and now - self.last_good < self.hold:
             self.source, self.detail = "holding", f"{len(seen)}/4 markers, {now - self.last_good:.0f}s"
             return self.last_H

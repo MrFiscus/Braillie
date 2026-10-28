@@ -5,6 +5,7 @@ import DisplayMenu from './DisplayMenu.tsx'
 import Sidebar from './Sidebar.tsx'
 import VoiceBar from './VoiceBar.tsx'
 import { useTutorState } from '../tutor/useTutorState.ts'
+import { usePhoneWatch } from '../tutor/usePhoneWatch.ts'
 import { useUser } from '../auth/useUser.ts'
 
 // The two steps of the way in (sign in, link the phone). After them it is the app: no step bar.
@@ -22,6 +23,7 @@ const Shell = () => {
   const step = STEPS[pathname] ?? null
   const done = step === null ? 1 : step / STEP_COUNT
   const { state } = useTutorState(500) // for the voice bar
+  usePhoneWatch(state, pathname) // (the phone gone for good: the code to scan it again)
 
   useEffect(() => {
     // Moving to another page (the address changes without a reload) must read like a new page: it gets its own title in the tab and the

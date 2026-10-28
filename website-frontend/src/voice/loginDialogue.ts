@@ -120,27 +120,31 @@ const VERSIONS = {
   go_google: [() => "Opening Google now. From here, use your keyboard or screen reader on the Google page."],
   give_up: [() => "I'll stop listening for now. You can use the buttons on the screen instead: press tab to move between them."],
   connect_phone: [
-    (code: string) =>
-      `Now let's connect your phone. Open its camera, point it at the code on the screen, and tap the link that pops up. Then tap the big Start button, and I'll say hello. If it won't scan, type the address on the screen into your phone's browser, and enter the code ${spelled(code)}.`,
-    (code: string) =>
-      `Next, your phone. Point its camera at the code on the screen and tap the link that appears. When the page opens, tap the big Start button, and you'll hear me say hello. Can't scan it? Type the address from the screen into your phone's browser, then the code ${spelled(code)}.`,
-    (code: string) =>
-      `Let's link your phone. Open the camera, aim it at the code on the screen, and tap the link. On the page that opens, tap the big Start button. If scanning doesn't work, type the address on the screen into the phone's browser, with the code ${spelled(code)}.`,
-    (code: string) =>
-      `Time to connect your phone. Hold its camera up to the code on the screen, then tap the link it shows. Tap the big Start button, and I'll greet you. If it won't scan, open the address on the screen in the phone's browser, and type the code ${spelled(code)}.`,
-    (code: string) =>
-      `Now for your phone. Scan the code on the screen with its camera, and tap the link. When the page loads, tap the big Start button. No luck scanning? Type the address on the screen into the phone's browser, and the code ${spelled(code)}.`,
-    (code: string) =>
-      `Let's get your phone ready. Point its camera at the code on the screen until a link appears, and tap it. Then tap the big Start button, and I'll say hello. If that doesn't work, open the address on the screen in the phone's browser, and type the code ${spelled(code)}.`,
-    (code: string) =>
-      `Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. On the new page, tap the big Start button. If the code won't scan, go to the address on the screen in the phone's browser, and enter the code ${spelled(code)}.`,
-    (code: string) =>
-      `Okay, now the phone. Use its camera to scan the code on the screen, and tap the link. When the page loads, tap the big Start button. If scanning is tricky, type the address on the screen into the phone's browser, with the code ${spelled(code)}.`,
-    (code: string) =>
-      `Now we'll connect your phone. Hold its camera up to the code on the screen, and tap the link that appears. Then press the big Start button, and I'll say hello. If it won't scan, open the address on the screen in your phone's browser, and type the code ${spelled(code)}.`,
-    (code: string) =>
-      `Let's bring in your phone. Point its camera at the code on the screen, and tap the link. On the page that opens, tap the big Start button, and I'll greet you. Can't scan? Type the address from the screen into the phone's browser, then the code ${spelled(code)}.`,
+    () =>
+      `Now let's connect your phone. Open its camera, point it at the code on the screen, and tap the link that pops up. Then tap the big Start button, and I'll say hello.`,
+    () =>
+      `Next, your phone. Point its camera at the code on the screen and tap the link that appears. When the page opens, tap the big Start button, and you'll hear me say hello.`,
+    () =>
+      `Let's link your phone. Open the camera, aim it at the code on the screen, and tap the link. On the page that opens, tap the big Start button.`,
+    () =>
+      `Time to connect your phone. Hold its camera up to the code on the screen, then tap the link it shows. Tap the big Start button, and I'll greet you.`,
+    () =>
+      `Now for your phone. Scan the code on the screen with its camera, and tap the link. When the page loads, tap the big Start button.`,
+    () =>
+      `Let's get your phone ready. Point its camera at the code on the screen until a link appears, and tap it. Then tap the big Start button, and I'll say hello.`,
+    () =>
+      `Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. On the new page, tap the big Start button.`,
+    () =>
+      `Okay, now the phone. Use its camera to scan the code on the screen, and tap the link. When the page loads, tap the big Start button.`,
+    () =>
+      `Now we'll connect your phone. Hold its camera up to the code on the screen, and tap the link that appears. Then press the big Start button, and I'll say hello.`,
+    () =>
+      `Let's bring in your phone. Point its camera at the code on the screen, and tap the link. On the page that opens, tap the big Start button, and I'll greet you.`,
   ],
+  // (the phone dropped out for good, mid-way: the code is shown again, see usePhoneWatch.ts)
+  reconnect_phone: [() => `I've lost your phone. Scan the code on the screen with its camera again, tap Start, and we'll carry on where we were.`],
+  // (only when they say it is not working: the way in without scanning)
+  connect_help: [(code: string) => `If it won't scan, open the address on the screen in your phone's browser, and type the code ${spelled(code)}.`],
 } as const satisfies Record<string, readonly ((w: string) => string)[]>
 
 const planned: Partial<Record<keyof typeof VERSIONS, number>> = {}

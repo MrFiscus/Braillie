@@ -203,6 +203,47 @@ def test_with_the_echo_canceller_the_learners_words_are_kept_whole() -> None:
         voice_io._canceller = saved
 
 
+def test_through_the_phone_only_a_command_cuts_it_off_and_its_own_words_are_taken_out() -> None:
+    """The phone plays the line and listens: the laptop's canceller cannot take that echo out, and what comes back is often
+    misheard. So three stray words do not cut the line off there (a command still does), and the line's own words are taken out
+    of what is heard, one by one, even with the canceller running."""
+    welcome = "Learn teaches the letters a few at a time. Read says a word aloud. Say learn, read, or quiz."
+    saved = voice_io._canceller, voice_io.MIC_FROM_PHONE
+    voice_io._canceller, voice_io.MIC_FROM_PHONE = object(), True
+    try:
+        with _Fired(welcome):
+            voice_io._process_transcript_event("lean teaches the ladders a few", 0.9, False)  # (its own voice, misheard)
+            assert not voice_io._interrupted.is_set(), "echo-like chatter does not cut Braillo off through the phone"
+        with _Fired(welcome) as fired:
+            voice_io._process_transcript_event("stop", 0.95, False)
+            assert voice_io._interrupted.is_set(), "a command still does"
+        with _Fired(welcome):
+            assert voice_io._learner_words("say learn read or quiz please") == "please"  # (the line's words come out)
+    finally:
+        voice_io._canceller, voice_io.MIC_FROM_PHONE = saved
+
+
+def test_played_on_the_phone_a_mode_name_in_its_own_line_does_not_cut_it_off() -> None:
+    """The real case: the menu line says "Read says a word aloud", the phone plays it, the microphone hears "read says" back, and
+    "read" is a command. With the sound on the phone that is its own voice: taken out, and nothing is cut off. A clear "stop" still
+    cuts it off, whichever microphone hears it."""
+    line = "Learn teaches the letters a few at a time. Read says a word aloud when you rest your finger on it. Say learn, read, or quiz."
+    saved = voice_io._canceller, voice_io.MIC_FROM_PHONE, voice_io.SPEAKER_ON_PHONE
+    voice_io._canceller, voice_io.MIC_FROM_PHONE, voice_io.SPEAKER_ON_PHONE = object(), False, True  # (laptop mic, phone speaker)
+    try:
+        with _Fired(line):
+            voice_io._process_transcript_event("read says", 0.95, False)
+            assert not voice_io._interrupted.is_set(), "its own words, played on the phone, do not cut it off"
+        with _Fired(line):
+            voice_io._process_transcript_event("quiz", 0.95, False)  # (a command, but one the line says: not a reason to stop)
+            assert not voice_io._interrupted.is_set()
+        with _Fired(line):
+            voice_io._process_transcript_event("be quiet", 0.95, False)
+            assert voice_io._interrupted.is_set(), "quiet still does"
+    finally:
+        voice_io._canceller, voice_io.MIC_FROM_PHONE, voice_io.SPEAKER_ON_PHONE = saved
+
+
 def main() -> None:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for test in tests:

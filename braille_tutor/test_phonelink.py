@@ -984,7 +984,18 @@ def fake_tunnel(body: str) -> str:
     return str(path)
 
 
-GOOD_TUNNEL = 'print("|  https://quiet-river-paper-cloud.trycloudflare.com  |", flush=True)\ntime.sleep(60)'
+GOOD_TUNNEL = ('print("|  https://quiet-river-paper-cloud.trycloudflare.com  |", flush=True)\n'
+               'print("2026-09-20T09:43:24Z INF Registered tunnel connection connIndex=0 location=lhr01 protocol=quic", flush=True)\ntime.sleep(60)')
+
+
+class PhoneRoleTests(unittest.TestCase):
+    def test_the_page_is_told_whether_it_plays_and_listens_too(self):
+        """Camera only (the default from run_all.sh: the laptop speaks and listens), or camera, speaker and microphone."""
+        only = phonelink.phone_page({"sound": False, "mic": False})
+        self.assertIn(b'const ROLE = {"sound": false, "mic": false};', only)
+        self.assertNotIn(phonelink.ROLE_PLACEHOLDER, only)
+        both = phonelink.phone_page({"sound": True, "mic": True})
+        self.assertIn(b'const ROLE = {"sound": true, "mic": true};', both)
 
 
 class TunnelTests(unittest.TestCase):
@@ -1062,6 +1073,7 @@ class TunnelTests(unittest.TestCase):
     def test_its_output_keeps_being_read_so_a_chatty_program_is_never_stalled(self):
         done = Path(tempfile.mkdtemp()) / "done"
         body = ('print("https://quiet-river-paper-cloud.trycloudflare.com", flush=True)\n'
+                'print("2026-09-20T09:43:24Z INF Registered tunnel connection connIndex=0 location=lhr01 protocol=quic", flush=True)\n'
                 'for i in range(4000):\n    print("log line " + "x" * 200, flush=True)\n'
                 f'open({str(done)!r}, "w").write("finished")')  # ~800 KB: far more than a pipe holds unread
         t = phonelink.start_tunnel(8443, binary=fake_tunnel(body), timeout=10)
@@ -1458,39 +1470,35 @@ class BackupLinkTests(unittest.TestCase):
         self.clock = FakeClock()
         link = PhoneLink("192.168.1.23", 8443, code="123456", clock=self.clock)
         link.waiting_since = self.clock()
+        link.resolves = lambda url: True  # (these made-up tunnel names are taken as findable; see the test below for one that is not)
         return link
+
+    def test_a_backup_address_that_cannot_be_found_is_never_shown(self):
+        link = self.link()
+        link.backup_url, link.resolves = "https://gone-away.trycloudflare.com", lambda url: False
+        self.assertFalse(link.use_backup())
+        self.assertEqual(link.url, "https://192.168.1.23:8443/phone?t=123456", "the QR code keeps the local link")
+
+    def test_a_tunnel_cloudflare_never_took_is_not_ready(self):
+        body = 'print("|  https://quiet-river-paper-cloud.trycloudflare.com  |", flush=True)\ntime.sleep(60)'
+        with self.assertRaises(phonelink.TunnelError) as e:
+            phonelink.start_tunnel(8443, binary=fake_tunnel(body), timeout=1.5)
+        self.assertIn("never took the tunnel", str(e.exception))
 
     def test_nothing_changes_without_a_backup(self):
         link = self.link()
         self.clock.t += 600
-        self.assertFalse(link.backup_due())
         self.assertFalse(link.use_backup())
         self.assertEqual(link.base, "https://192.168.1.23:8443")
 
-    def test_it_is_used_when_nothing_has_reached_the_laptop_for_a_while(self):
+    def test_it_is_shown_only_when_asked_for_never_by_itself(self):
         link = self.link()
         link.backup_url = "https://quiet-river.trycloudflare.com"
-        self.clock.t += phonelink.BACKUP_AFTER - 1
-        self.assertFalse(link.backup_due(), "not yet")
-        self.clock.t += 2
-        self.assertTrue(link.backup_due())
+        self.clock.t += 600  # (a long wait with nothing reaching the laptop: still the local code, until they say it is not working)
+        self.assertEqual(link.url, "https://192.168.1.23:8443/phone?t=123456")
         self.assertTrue(link.use_backup())
         self.assertEqual(link.url, "https://quiet-river.trycloudflare.com/phone?t=123456", "the QR code now has the backup link")
         self.assertTrue(link.tunnelled)
-        self.assertFalse(link.backup_due(), "once only")
-
-    def test_not_when_a_phone_got_through_or_before_the_code_is_on_screen(self):
-        link = self.link()
-        link.backup_url = "https://quiet-river.trycloudflare.com"
-        link.contact("192.168.1.40")  # a phone reached the laptop: the network is fine, the backup would not help
-        self.clock.t += 600
-        self.assertFalse(link.backup_due())
-        other = self.link()
-        other.backup_url = link.backup_url
-        other.waiting_since = None  # the website is still signing in: the code is not up yet
-        self.clock.t += 600
-        self.assertFalse(other.backup_due())
-        self.assertTrue(other.use_backup(), "but the learner can still ask for it")
 
     def test_the_backup_link_wins_over_a_trusted_name(self):
         link = self.link()
