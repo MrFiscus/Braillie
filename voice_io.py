@@ -175,7 +175,7 @@ def _echo_unreliable() -> bool:
     """Is the app's own voice coming back in a way the laptop's echo canceller cannot take out (played on, or heard through, the
     phone)? Then its words are taken out of what is heard one by one, and only "stop" or "quiet" cuts a line off."""
     return MIC_FROM_PHONE or SPEAKER_ON_PHONE
-TALK_OVER_WORDS = 3  # this many of the learner's own words (not the app's) while it talks: they are talking to it, so it stops
+TALK_OVER_WORDS = 3  # fewer of the learner's own words than this while it talks: maybe an answer, maybe its own voice (OVER_SPEECH)
 OVER_SPEECH = "heard over speech"  # the reason given for a short answer heard while the app talked (see _classify_transcript)
 TALK_OVER_CONFIDENCE = 0.55  # a command said over the app's voice comes back less sure than one said in quiet: it is allowed less
 
@@ -232,6 +232,17 @@ _COMMAND_MAP: dict[str, str] = {
     "give me a hint": "hint",
     "clue": "hint",
     "help me": "hint",
+    "i'm stuck": "hint",  # (at once, no need to ask Claude what it meant)
+    "im stuck": "hint",
+    "i am stuck": "hint",
+    "stuck": "hint",
+    "stuck on this one": "hint",  # (longer than "this one", which means found it)
+    "i'm stuck on this one": "hint",
+    "im stuck on this one": "hint",
+    "stuck on this": "hint",
+    "i can't find it": "hint",
+    "i cant find it": "hint",
+    "where is it": "hint",
     "hence": "hint",          # confirmed misread of "hint"
     "hen": "hint",            # confirmed misread of "hint"
     "hints": "hint",          # confirmed misread of "hint"
@@ -272,6 +283,13 @@ _COMMAND_MAP: dict[str, str] = {
     "start lesson": "start quiz",
     "begin lesson": "start quiz",
     "start learning": "start quiz",
+    "i'm ready": "start quiz",  # (a lesson waiting for its sheet: "I'm ready", I have it)
+    "i am ready": "start quiz",
+    "im ready": "start quiz",
+    "got the sheet": "start quiz",
+    "i have the sheet": "start quiz",
+    "i've got the sheet": "start quiz",
+    "sheet is ready": "start quiz",
     # --- the menu: what do you want to do today? -------------------------
     "learn": "learn",
     "let's learn": "learn",
@@ -346,6 +364,57 @@ _COMMAND_MAP: dict[str, str] = {
     "back to normal": "normal",
     "stop": "stop",
     "quit": "stop",
+    "exit": "menu",  # (leaving an activity: back to choosing, like "menu")
+    "leave": "menu",
+    "quit lesson": "menu",
+    # (other ways people say it: nobody has to remember the one word; all go back to the menu, with a word on how it went)
+    "take me back": "menu",
+    "take me home": "menu",
+    "back to the menu": "menu",
+    "back to menu": "menu",
+    "go to the menu": "menu",
+    "go to menu": "menu",
+    "i want to go back": "menu",
+    "let's go back": "menu",
+    "lets go back": "menu",
+    "something else": "menu",
+    "do something else": "menu",
+    "different mode": "menu",
+    "change activity": "menu",
+    "stop the lesson": "menu",
+    "stop lesson": "menu",
+    "end the lesson": "menu",
+    "end lesson": "menu",
+    "end this": "menu",
+    "let's stop": "menu",
+    "lets stop": "menu",
+    "i want to stop": "menu",
+    "that's enough": "menu",
+    "thats enough": "menu",
+    "that is enough": "menu",
+    "that is enough for today": "menu",
+    "enough for today": "menu",
+    "i've had enough": "menu",
+    "ive had enough": "menu",
+    "done for today": "menu",
+    "done for the day": "menu",
+    "i'm done for today": "menu",
+    "i'm done for the day": "menu",
+    "im done for the day": "menu",
+    "call it a day": "menu",
+    "let's call it a day": "menu",
+    "no more": "menu",
+    "exit lesson": "menu",
+    "leave lesson": "menu",
+    "get me out of here": "menu",
+    "get me out": "menu",
+    "quit quiz": "menu",
+    "stop quiz": "menu",
+    "stop the quiz": "menu",
+    "end quiz": "menu",
+    "stop reading": "menu",
+    "i'm done with this": "menu",
+    "im done with this": "menu",
     "finish": "stop",
     "finished": "stop",
     "i'm finished": "stop",
@@ -622,6 +691,11 @@ def _normalize_transcript(transcript: str) -> str:
     return normalized.rstrip(".,!?;:")
 
 
+_LEAVING = ("menu", "stop", "sign out")  # (said after the wake word, these leave even in a question: "can we stop")
+_QUESTION_WORDS = {"what", "how", "why", "where", "when", "who", "which", "is", "are", "can", "could", "does", "do", "did", "will",
+                   "would", "should", "tell", "explain"}  # (after the wake word, a question goes to Braillo whatever words are in it)
+
+
 def _match_phrase(normalized_transcript: str) -> tuple[str, str] | None:
     """(command, the phrase that matched) for the longest whole-phrase match, or None.
 
@@ -629,7 +703,17 @@ def _match_phrase(normalized_transcript: str) -> tuple[str, str] | None:
     asks the AI tutor instead of switching into Learn mode.
     """
     for phrase, pattern in _COMMAND_PATTERNS:
-        if _COMMAND_MAP[phrase] == "braillo" and pattern.search(normalized_transcript):
+        found = pattern.search(normalized_transcript) if _COMMAND_MAP[phrase] == "braillo" else None
+        if found:
+            # ...except a short command after it, not a question: "hey Braillo, quit", "hey Braillo, I need a hint", "hey Braillo,
+            # let's do read" are those commands (from real runs, where they were taken as questions)
+            rest = normalized_transcript[found.end():]
+            words = _words(rest)
+            if 0 < len(words) <= 5 and (words[0] not in _QUESTION_WORDS or any(_COMMAND_MAP[p] in _LEAVING and q.search(rest)
+                                                                            for p, q in _COMMAND_PATTERNS)):
+                for other, other_pattern in _COMMAND_PATTERNS:
+                    if _COMMAND_MAP[other] != "braillo" and other_pattern.search(rest):
+                        return _COMMAND_MAP[other], other
             return "braillo", phrase
     for phrase, pattern in _COMMAND_PATTERNS:
         if pattern.search(normalized_transcript):
@@ -660,7 +744,11 @@ def _fuzzy_phrase(normalized: str) -> tuple[str, str] | None:
     for phrase in _FUZZY_PHRASES:
         if _consonants(heard) == _consonants(phrase):
             return _COMMAND_MAP[phrase], phrase
-    best = max(_FUZZY_PHRASES, key=lambda p: difflib.SequenceMatcher(None, heard, p).ratio())
+    # (nearly the same letters is too loose for leaving: "one more" is not "no more", from a real run)
+    near = [p for p in _FUZZY_PHRASES if _COMMAND_MAP[p] not in ("menu", "sign out", "stop")]
+    if not near:
+        return None
+    best = max(near, key=lambda p: difflib.SequenceMatcher(None, heard, p).ratio())
     return (_COMMAND_MAP[best], best) if difflib.SequenceMatcher(None, heard, best).ratio() >= FUZZY_RATIO else None
 
 
@@ -679,6 +767,12 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[a-z0-9']+", text.casefold())
 
 
+def _echo_words(text: str) -> list[str]:
+    """The words, for telling the app's own line from the learner's: every way the speech service writes the app's name ("brello",
+    "brailo") counts as "braillo", so the name in its own line ("Hi, I'm Braillo"), coming back misspelt, is not taken for the wake word."""
+    return ["braillo" if _COMMAND_MAP.get(w) == "braillo" else w for w in _words(text)]
+
+
 def _without_echo(normalized: str, now: float | None = None, consume: bool = False) -> str:
     """What is left of a transcript once the words of the line the app is saying (or just said) are taken out.
 
@@ -694,9 +788,9 @@ def _without_echo(normalized: str, now: float | None = None, consume: bool = Fal
         return normalized
     left = _echo_left if consume else collections.Counter(_echo_left)
     own = []
-    for w in _words(normalized):
-        if left[w] > 0:
-            left[w] -= 1  # the app's own word, coming back: each word of the line is only taken out as often as the line says it
+    for w, key in zip(_words(normalized), _echo_words(normalized)):
+        if left[key] > 0:
+            left[key] -= 1  # the app's own word, coming back: each word of the line is only taken out as often as the line says it
         else:
             own.append(w)
     return " ".join(own)
@@ -713,9 +807,9 @@ def _learner_words(normalized: str, now: float | None = None, consume: bool = Fa
         return _without_echo(normalized, now, consume)
     now = time.monotonic() if now is None else now
     line = _speaking_text or (_echo_text if now < _echo_until else "")
-    heard = _words(normalized)
+    heard = _echo_words(normalized)
     if line and len(heard) >= 3:
-        said = set(_words(line))
+        said = set(_echo_words(line))
         if sum(w in said for w in heard) / len(heard) >= LEAK_SHARE:
             return ""
     return normalized
@@ -757,6 +851,29 @@ def _mark_playing(text: str, wav: bytes | None) -> None:
     global _playing
     seconds = _wav_seconds(wav) if wav is not None else len(text.split()) / SPOKEN_WORDS_PER_SECOND
     _playing = {"text": text, "started": time.time(), "seconds": round(seconds, 3)}
+
+
+ECHO_WINDOW_BEFORE, ECHO_WINDOW_AFTER = 4.0, 0.6  # a word heard this long after the app said it (or just before): its own echo
+
+
+def _said_just_now(phrase: str, now: float | None = None) -> bool:
+    """Did the app itself say this phrase within the last few seconds (by where it falls in the line playing, or just played)?
+    A command word that comes back that soon after the app said it is its own voice, heard back ("Learn teaches the letters"
+    heard as "learn"); the learner saying it at another moment is not. Words are placed evenly over the line's length."""
+    line = _playing
+    if not line:
+        return False
+    now = time.time() if now is None else now
+    words, target = _words(line["text"]), _words(phrase)
+    if not words or not target:
+        return False
+    started, seconds = line["started"], max(float(line["seconds"]), 0.1)
+    for i in range(len(words) - len(target) + 1):
+        if words[i:i + len(target)] == target:
+            said_at = started + (i + 0.5) / len(words) * seconds
+            if now - ECHO_WINDOW_BEFORE <= said_at <= now + ECHO_WINDOW_AFTER:
+                return True
+    return False
 
 
 def now_playing() -> dict | None:
@@ -816,6 +933,8 @@ def _classify_transcript(
         return normalized, None, far
 
     found = _match_phrase(normalized) or _fuzzy_phrase(normalized)
+    if found is not None and mixed and found[0] not in CUT_OFF_BY and _said_just_now(found[1]):
+        return normalized, None, "echo of the app's own voice"  # (a command word it had just said itself, heard back)
     if found is not None:
         command, phrase = found
         many = len(normalized.split()) > LONG_UTTERANCE_WORDS
@@ -841,14 +960,19 @@ def _barge_in(transcript: str, confidence: float, words: list[Word] | None = Non
     without waiting for the end of the utterance. The command itself is run when the final transcript arrives."""
     if not _speaking_text or _mic_paused or _user_muted:
         return
-    own = _learner_words(_normalize_transcript(transcript))
+    # Strictly: the words of the line being said are taken out one by one even with the echo canceller running, because a line that
+    # leaks past it comes back slightly misheard ("that's me, now the word C" for "That's E. Now the word C"), and cutting Braillo
+    # off over his own voice is worse than a learner having to say "stop". What they really say over it still gets through.
+    own = _without_echo(_normalize_transcript(transcript))
     if not own or _room.check(*_span(words)):
         return
     found = _match_phrase(own)
     command = found is not None and _phrase_confidence(found[1], words, confidence) >= TALK_OVER_CONFIDENCE
     if _echo_unreliable():  # (its own voice, misheard, must not cut it off: only a clear "stop" or "quiet" does)
         command = command and found[0] in CUT_OFF_BY
-    if (command or (len(own.split()) >= TALK_OVER_WORDS and not _echo_unreliable())) and interrupt():
+    # Only a command (or Braillo's name) cuts a line off. Other talk is heard and answered after the line, not over it: in a
+    # room with other people in it, or with its own voice coming back misheard, "three words of their own" stopped it mid-sentence.
+    if command and interrupt():
         log.info("Barge-in: %r cut the app off.", own)
         print(f"voice_io: barge-in: {own!r} cut the line off", flush=True)  # (worth seeing in the tutor's log: it stops Braillo mid-line)
 
@@ -896,8 +1020,8 @@ def _process_transcript_event(transcript: str, confidence: float, is_final: bool
         return None
     if normalized and ignored_reason in (None, "no command phrase matched", "confidence below threshold", OVER_SPEECH):
         _status["heard"] = {"n": _status["heard"]["n"] + 1, "text": normalized, "matched": command is not None, "reason": ignored_reason}
-        if command is None and ignored_reason != OVER_SPEECH:
-            interrupt()  # the learner is talking to it: it stops to listen (a no-op if it is quiet)
+        print(f"voice_io: heard {normalized!r}" + (f" -> {command}" if command else ""), flush=True)  # (so the log shows the conversation)
+        # (no interrupt for talk that is not a command: it is answered once the line has finished, see _barge_in)
     if command is not None:
         log.info("Command recognised: %r (conf=%.2f)", command, confidence)
         _status["last_transcript"] = normalized
@@ -1199,7 +1323,7 @@ def speak(text: str, mode: str = "normal") -> None:
     _interrupted.clear()
     _speaking_text = _echo_text = text
     _echo_left.clear()
-    _echo_left.update(_words(text))
+    _echo_left.update(_echo_words(text))
     _speaker_thread.speaking = True
     try:
         if MOCK_MODE:
@@ -1749,9 +1873,11 @@ def _deepgram_speak(text: str) -> None:
         # Otherwise it plays as it arrives: Deepgram sends the first audio within a fraction of a second but takes about half the
         # line's own length to send all of it, so waiting for the whole of a long line before playing meant seconds of silence.
         _mark_playing(text, None)
-        _play_audio_stream(_streamed(text, DeepgramClient))
-    except Exception as exc:
+        _play_audio_stream(_with_first_deadline(_streamed(text, DeepgramClient), FIRST_AUDIO_SECONDS))
+    except Exception as exc:  # (no answer from Deepgram in time, or none at all: the line is still said, by this computer)
         log.error("Deepgram TTS failed: %s", exc)
+        print(f"voice_io: Deepgram did not answer ({type(exc).__name__}): saying it with this computer's own voice", flush=True)
+        _local_say(text)
 
 
 # Lines the app says again and again (the welcome, the menu, "Sorry, I did not catch that") are synthesised once and kept, so they
@@ -1795,13 +1921,66 @@ def _synthesise(text: str, client_class=None) -> bytes:
     return raw
 
 
+FIRST_AUDIO_SECONDS = 4.0  # no sound from Deepgram this long after asking: the network is in trouble, say it another way
+
+
+def _with_first_deadline(source, seconds: float):
+    """`source`'s chunks, read on a thread of their own, raising TimeoutError if the first does not come within `seconds` (a
+    request to Deepgram on a bad network can hang for tens of seconds, and everything said after it waits behind it)."""
+    items: "queue.Queue" = queue.Queue()
+    end = object()
+
+    def pump() -> None:
+        try:
+            for chunk in source:
+                items.put(chunk)
+        except Exception as exc:  # (handed over, raised where it is read)
+            items.put(exc)
+        finally:
+            items.put(end)
+
+    threading.Thread(target=pump, daemon=True, name="speech-pump").start()
+    wait = seconds
+    while True:
+        try:
+            item = items.get(timeout=wait)
+        except queue.Empty:
+            raise TimeoutError(f"no audio from Deepgram within {wait:.0f} s") from None
+        wait = 30.0
+        if item is end:
+            return
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
+def _local_say(text: str) -> None:
+    """Say a line with this computer's own voice (macOS `say`), when Deepgram cannot: plainer, but never silent. Cut off like any
+    other line (barge-in)."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("say"):
+        return
+    try:
+        proc = subprocess.Popen(["say", "-r", "185", _for_tts(text)])
+    except OSError as exc:
+        log.error("local voice failed: %s", exc)
+        return
+    while proc.poll() is None:
+        if playback_interrupted():
+            proc.terminate()
+            break
+        time.sleep(0.05)
+
+
 def _streamed(text: str, client_class):
     """The WAV for `text`, chunk by chunk as Deepgram sends it, then a little silence (see WAV_SILENCE_SECONDS). Once it has all come
     it is kept (as _synthesise keeps it), and the length noted for the captions is corrected. Stops early if the line is cut off."""
     client = client_class(api_key=DEEPGRAM_API_KEY)
     got, fmt = bytearray(), None
     for chunk in client.speak.v1.audio.generate(text=_for_tts(text), model=DEEPGRAM_TTS_MODEL, encoding="linear16", container="wav",
-                                                request_options={"timeout_in_seconds": 30}):
+                                                request_options={"timeout_in_seconds": 15}):
         if playback_interrupted():
             return
         got += chunk

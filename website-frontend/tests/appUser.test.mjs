@@ -6,7 +6,7 @@ import ts from 'typescript'
 
 const source = readFileSync(new URL('../src/auth/appUser.ts', import.meta.url), 'utf8')
 const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
-const { firstName, userFromAccount, loadGuest, saveGuest, clearGuest, sessionFor, GUEST_KEY } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
+const { firstName, userFromAccount, newGuest, forgetOldGuest, sessionFor, OLD_GUEST_KEY } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
 
 class Storage {
   constructor() { this.m = new Map() }
@@ -37,34 +37,22 @@ test('a Google account: given name first, then the full name, then the email, th
   assert.equal(userFromAccount({ id: 'u6', user_metadata: { given_name: 42 } }).name, 'friend', 'a non-text name is ignored, not crashed on')
 })
 
-test('a guest is remembered for this tab and only ever by first name, with an id for the visit', () => {
-  const s = new Storage()
-  assert.equal(loadGuest(s), null)
-  const g = saveGuest(s, 'Gina Rossi')
+test('a guest is only a first name and an id for this visit, and each guest is a new visit', () => {
+  const g = newGuest('Gina Rossi')
   assert.equal(g.kind, 'guest')
   assert.equal(g.name, 'Gina')
   assert.match(g.id, /^[A-Za-z0-9_-]{1,80}$/)
-  assert.deepEqual(JSON.parse(s.getItem(GUEST_KEY)), { name: 'Gina', id: g.id }, 'nothing but the name and the visit is stored')
-  assert.deepEqual(loadGuest(s), g, 'a refresh is the same guest')
-  assert.notEqual(saveGuest(new Storage(), 'Gina').id, g.id, 'the next guest is another visit')
-  assert.equal(saveGuest(s, '   ').name, 'friend', 'no name given: a friendly default')
-  clearGuest(s)
-  assert.equal(loadGuest(s), null)
+  assert.notEqual(newGuest('Gina').id, g.id, 'the next guest is another visit')
+  assert.equal(newGuest('   ').name, 'friend', 'no name given: a friendly default')
 })
 
-test('storage that is missing, broken or full never stops a guest continuing', () => {
-  assert.equal(loadGuest(null), null)
-  assert.equal(saveGuest(null, 'Ana').name, 'Ana')
-  clearGuest(null)
-  const broken = { getItem() { throw new Error('blocked') }, setItem() { throw new Error('full') }, removeItem() { throw new Error('blocked') } }
-  assert.equal(loadGuest(broken), null)
-  assert.equal(saveGuest(broken, 'Ana').name, 'Ana')
-  clearGuest(broken)
-  for (const junk of ['not json', '{"name": 5}', '{}', 'null', '"x"']) {
-    const s = new Storage()
-    s.setItem(GUEST_KEY, junk)
-    assert.equal(loadGuest(s), null, junk)
-  }
+test('a guest an older version stored is cleared away, and broken storage is no problem', () => {
+  const s = new Storage()
+  s.setItem(OLD_GUEST_KEY, JSON.stringify({ name: 'Old', id: 'abc' }))
+  forgetOldGuest(s)
+  assert.equal(s.getItem(OLD_GUEST_KEY), null)
+  forgetOldGuest(null)
+  forgetOldGuest({ removeItem() { throw new Error('blocked') } })
 })
 
 test('what is sent to the tutor: a google learner brings their account id, a guest brings nothing to keep', () => {

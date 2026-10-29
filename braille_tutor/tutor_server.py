@@ -174,16 +174,19 @@ class TutorRuntime:
         session = self.session
         if path == "/api/session":
             kind, name, profile = body.get("kind"), body.get("name"), body.get("profile")
+            if kind == "none":  # (nobody is signed in on the website: an old guest from before a reload, say, is forgotten)
+                session.forget_user()
+                return 200, {"ok": True, "hub": session.hub_status()}
             if kind not in ("google", "guest"):
-                raise ValueError('"kind" must be "google" or "guest"')
+                raise ValueError('"kind" must be "google", "guest" or "none"')
             if not isinstance(name, str) or not name.strip():
                 raise ValueError('"name" must be a non-empty string')
             good = isinstance(profile, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", profile)
             if kind == "google" and not good:
                 raise ValueError('a google session needs a "profile" (the account id: letters, digits, - and _)')
             # (a guest's "profile" is the visit's id: it only tells one guest from the next, so each starts afresh; nothing is saved)
-            session.set_user(name, kind, profile if good else None)
-            return 200, {"ok": True, "hub": session.hub_status()}
+            taken = session.set_user(name, kind, profile if good else None) is not False  # (False: they have just signed out)
+            return 200, {"ok": taken, "hub": session.hub_status()}
         if path == "/api/mode":
             mode = str(body.get("mode", "")).lower()
             if mode != "menu" and mode not in tutor.HUB_MODES:
@@ -233,7 +236,7 @@ class TutorRuntime:
 
     def command(self, name: str) -> None:
         """Run a tutor command in its own thread (speaking blocks, and the request must not)."""
-        threading.Thread(target=getattr(self.session, COMMANDS[name]), daemon=True).start()
+        threading.Thread(target=self.session.pressed, args=(COMMANDS[name],), daemon=True).start()
 
     def finger_from_json(self, body: dict) -> None:
         if body.get("clear") is True:
@@ -352,7 +355,7 @@ def make_handler(rt: TutorRuntime):
         def do_POST(self):
             path = self.path.split("?")[0]
             if path not in ("/api/command", "/api/finger", "/api/progress", "/api/session", "/api/mode", "/api/prompt", "/api/dialogue", "/api/settings", "/api/page",
-                            "/api/mic", "/api/phone/backup"):
+                            "/api/mic", "/api/phone/backup", "/api/level"):
                 return self._json(404, {"error": "not found"})
             body = self._read_json()
             if body is None:
@@ -452,9 +455,18 @@ def make_handler(rt: TutorRuntime):
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:
+        """A browser that closed its connection (a reload, a closed tab, the servers stopping) is not an error worth a traceback."""
+        import sys
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def serve(rt: TutorRuntime, host: str = "127.0.0.1", port: int = 8000) -> ThreadingHTTPServer:
     """Create the HTTP server (not yet serving). port=0 picks a free port."""
-    server = ThreadingHTTPServer((host, port), make_handler(rt))
+    server = _Server((host, port), make_handler(rt))
     server.daemon_threads = True
     return server
 
@@ -495,7 +507,7 @@ def main() -> None:
     session.voice_status = tutor.voice_check(voice)
     tutor.report_voice(session.voice_status)  # silence must never be a mystery
     session.attach()
-    phone = phonelink.start_phone(a, announce=lambda text: session.say(text), voice=voice,
+    phone = phonelink.start_phone(a, announce=session.phone_news, voice=voice,
                                   on_ready=session.on_phone_ready if session.hub else None)
     tutor.install_speed(voice, session, a)  # after the phone speaker, so the phone gets the slowed speech too
     link = phone[0] if phone else None

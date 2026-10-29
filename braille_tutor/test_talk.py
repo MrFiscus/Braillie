@@ -164,6 +164,17 @@ class FreeSpeechTests(unittest.TestCase):
         self.s.watch_once(1.0)
         self.assertEqual(self.voice.said, ["D has dots one, four and five."])
 
+    def test_asking_for_help_in_other_words_gets_the_apps_own_hint_counted_after_a_warm_word(self):
+        self.s.ask = Talker({"action": "hint", "say": "No worries!"})
+        self.s.on_start()  # (a quiz under way: a letter is being asked for)
+        self.voice.said.clear()
+        self.hear("i really cannot work this one out", 1)
+        before = self.s.hints
+        self.s.watch_once(1.0)
+        self.assertEqual(self.voice.said[0], "No worries!")
+        self.assertRegex(self.voice.said[-1], r"has \d dots?:", "then the hint itself, from the app's ladder")
+        self.assertEqual(self.s.hints, before + 1, "and it counts")
+
     def test_a_reply_and_a_command_that_changes_something_both_happen(self):
         self.s.ask = Talker({"action": "menu", "say": "Sure."})
         self.s.hub = True

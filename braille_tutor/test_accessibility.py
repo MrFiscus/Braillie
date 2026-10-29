@@ -257,10 +257,12 @@ class SessionTests(unittest.TestCase):
         s.set_mode("learn")
         j = s.journey
         j.on_next()  # skip to a letter to ask for
+        finger.pos = cell_pos("alphabet", "m")  # (searching: moving over the sheet; hints only come while they search)
         base = j.last_activity
         s.apply_settings({"pace": "relaxed"})
         j.tick(base + learn.HINT_AFTER[0] + 1)
         self.assertEqual(j.hints, 0, "12 s is not enough when relaxed")
+        finger.pos = cell_pos("alphabet", "n")  # (still searching: the finger moves on)
         j.tick(base + learn.HINT_AFTER[0] * acc.RELAXED_HINTS + 1)
         self.assertEqual(j.hints, 1)
         s.set_mode("menu")
@@ -276,14 +278,26 @@ class SessionTests(unittest.TestCase):
         s.watch_once(15.0)
         self.assertIsNone(s.watch_once(19.0), "nor while they are asked how much braille they know")
         s._learn("on_level", "new")
-        n = len(voice.said)
-        s.watch_once(20.0)
-        self.assertIsNone(s.watch_once(22.5))
-        self.assertEqual(s.watch_once(23.5), acc.LOST)
+        self.assertEqual(s.learning_status()["phase"], "await_sheet")
+        self.assertIsNone(s.watch_once(20.0))
+        self.assertIsNone(s.watch_once(30.0), "nor while the lesson waits for its sheet (it says what it is waiting for itself)")
+        seen[0] = True
+        deadline = time.monotonic() + 5
+        while s.learning_status()["phase"] == "await_sheet" and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(s.learning_status()["phase"], "teach")
+        deadline = time.monotonic() + 5
+        while s._speech.locked() and time.monotonic() < deadline:  # (the lesson's opening lines, said by its own thread)
+            time.sleep(0.05)
+        s.watch_once(31.0)
+        seen[0] = False
+        s.watch_once(40.0)
+        self.assertIsNone(s.watch_once(42.5))
+        self.assertEqual(s.watch_once(43.5), acc.LOST)
         self.assertEqual(voice.said[-1], acc.LOST)
         seen[0] = True
-        s.watch_once(26.0)
-        self.assertEqual(s.watch_once(28.0), acc.FOUND)
+        s.watch_once(46.0)
+        self.assertEqual(s.watch_once(48.0), acc.FOUND)
         s.set_mode("menu")
 
     def test_it_does_not_speak_over_itself(self):

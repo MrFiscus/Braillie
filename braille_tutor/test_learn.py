@@ -288,6 +288,38 @@ class AdvancedLessonTests(unittest.TestCase):
         self.assertIn("the capital sign", host.last())
 
 
+class WordedHintTests(unittest.TestCase):
+    """The app decides what a hint gives away (and counts it); Claude, if on, puts it for this learner."""
+
+    def test_the_hint_knows_what_they_touched_and_how_it_differs_and_the_app_counts_it(self):
+        j, host, clock, _ = make()
+        seen = []
+        host.hint_words = lambda hint, facts: seen.append((hint, facts)) or "You were on A. D is A plus two dots on the right."
+        j.on_start()
+        answer(j, host, clock, "a")
+        leave(j, host, clock)
+        answer(j, host, clock, "b")
+        leave(j, host, clock)
+        answer(j, host, clock, "c")
+        leave(j, host, clock)
+        self.assertEqual(j.target, "d")
+        answer(j, host, clock, "a")  # (a wrong touch: A, when D was asked for)
+        leave(j, host, clock)
+        j.on_hint()
+        hint, facts = seen[-1]
+        self.assertEqual((facts["looking_for"], facts["just_touched"], facts["hint_number"]), ("the letter D", "the letter A", 1))
+        self.assertEqual(facts["how_it_differs_from_what_they_touched"], "Unlike A, it has dots at the top-right and middle-right.")
+        self.assertEqual(host.last(), "You were on A. D is A plus two dots on the right.")
+        self.assertEqual(j.hints, 1, "counted")
+
+    def test_without_claude_the_hint_is_the_apps_own(self):
+        j, host, clock, _ = make()
+        host.hint_words = lambda hint, facts: None
+        j.on_start()
+        j.on_hint()
+        self.assertTrue(host.last().startswith("The letter A has one dot, at the top-left."), host.last())
+
+
 class SheetSeenTests(unittest.TestCase):
     """While a lesson waits for its sheet, what the camera makes of the page is said by the lesson, once, in its own words."""
 
@@ -333,10 +365,10 @@ class LevelTests(unittest.TestCase):
         j, host, clock, p = self.fresh()
         j.on_start()
         self.assertEqual((j.phase, j.target), ("placing", None))
-        self.assertIn("how much braille do you know?", host.last())
-        j.on_start()  # ("start" again: the question again)
+        self.assertIn("how familiar are you with braille?", host.last())
+        j.on_start()  # ("start" again: the question again, briefly)
         self.assertEqual(j.phase, "placing")
-        self.assertEqual(host.said[-1], learn.ASK_LEVEL)
+        self.assertEqual(host.said[-1], learn.ASK_LEVEL_AGAIN)
 
     def test_new_starts_at_the_beginning_with_how_braille_works(self):
         j, host, clock, p = self.fresh()
@@ -352,7 +384,7 @@ class LevelTests(unittest.TestCase):
         j.on_start()
         j.on_level("alphabet")
         self.assertEqual((j.lesson.id, j.phase, p.level, p.start_lesson), ("l6", "await_sheet", "alphabet", "l6"))
-        self.assertIn("you know the alphabet. We'll start at lesson 6,", host.last())
+        self.assertIn("you've learned it before. We'll start at lesson 6,", host.last())
         self.assertEqual(host.last().count("Look-alikes"), 1, "the lesson is named once, not twice")
         self.assertIn("look-alikes sheet", host.last())
         self.assertEqual(p.next_lesson(LESSONS).id, "l6")
@@ -670,7 +702,10 @@ class HintTests(unittest.TestCase):
             leave(j, host, clock)
         n = len(host.said)
         want = j.target
-        host.finger_pos = None
+        host.finger_pos = None  # (finger off the page: nothing to help with yet, so no hint however long it takes)
+        run(j, host, clock, HINT_AFTER[2] + 5)
+        self.assertEqual(j.hints, 0)
+        host.finger_pos = (-20.0, -20.0)  # (searching: on the paper, between cells)
         run(j, host, clock, HINT_AFTER[0] + 1)
         first = host.said[n:]
         self.assertTrue(any("Here's a hint" in s and learn.has_dots(want) in s for s in first), first)
@@ -848,9 +883,38 @@ class SheetTests(unittest.TestCase):
         self.assertEqual(j.phase, "await_sheet", "still the alphabet sheet on the desk")
         host.sheet = "lookalikes"  # the learner swaps it (the tutor recognises it)
         run(j, host, clock, 0.5)
+        self.assertEqual(j.phase, "await_sheet", "only once it stays in view")
+        run(j, host, clock, 2)
         self.assertEqual(j.phase, "teach")
         self.assertEqual(j.target, "a")
         self.assertIn("Look-alikes", " ".join(host.said))
+
+    def test_a_lesson_waits_until_its_sheet_is_really_under_the_camera(self):
+        """They are told which sheet, and given time to get it: the lesson starts by itself once the camera can see it."""
+        j, host, clock, p = make()
+        host.page_visible = lambda: False  # (the right sheet is chosen, but nothing is under the camera yet)
+        j.on_start()
+        self.assertEqual(j.phase, "await_sheet")
+        self.assertIn("Get the alphabet sheet ready", host.last())
+        self.assertIn("I'll start as soon as I can see it", host.last())
+        run(j, host, clock, 10)
+        self.assertEqual(j.phase, "await_sheet")
+        j.on_start()  # "I'm ready", but it is not in view: what it is waiting for
+        self.assertEqual(j.phase, "await_sheet")
+        self.assertIn("waiting for the alphabet sheet", host.last())
+        host.page_visible = lambda: True
+        run(j, host, clock, 3)
+        self.assertEqual((j.phase, j.target), ("teach", "a"))
+        self.assertTrue(any("I can see the sheet" in x for x in host.said))
+        self.assertEqual(sum("alphabet sheet" in x for x in host.said), 2, "the sheet is named when asked for, not again in the intro")
+
+    def test_saying_ready_with_the_sheet_in_view_starts_at_once(self):
+        j, host, clock, p = make()
+        host.page_visible = lambda: False
+        j.on_start()
+        host.page_visible = lambda: True
+        j.on_found_it()  # ("got it")
+        self.assertEqual((j.phase, j.target), ("teach", "a"))
 
     def test_it_reminds_them_now_and_then_while_waiting(self):
         j, host, clock, p = make()
@@ -984,8 +1048,8 @@ class MiscTests(unittest.TestCase):
 
     def test_nothing_is_said_about_the_finger_while_the_sheet_itself_is_missing(self):
         j, host, clock, p = make()
-        host.page_visible = lambda: False
         j.on_start()
+        host.page_visible = lambda: False
         n = len(host.said)
         host.finger_pos = None
         run(j, host, clock, 20)

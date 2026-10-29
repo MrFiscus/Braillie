@@ -26,10 +26,15 @@ DEFAULT_BASE_URL = "https://api.anthropic.com"
 # (claude-sonnet-5-5 or claude-opus-5-5 for smarter, costlier answers).
 DEFAULT_MODEL = "claude-haiku-5-5"
 POSITION_WORDS = {"top", "middle", "bottom", "left", "right"}
+# Braillo's conversation (answering questions, working out what was meant): the fast model. The questions are short and the facts
+# that matter are given to him (BRAILLE_FACTS, BRAILLE_HISTORY), so it answers well, and starts speaking in about a second (streamed).
+# BRAILLIE_TALK_MODEL=claude-opus-5-5 gives richer answers, about half a second later.
+TALK_MODEL = DEFAULT_MODEL
 REPLY_EFFORT = "low"  # everything asked for here is a short spoken line or a small plan: low effort answers soonest
 MAX_TOKENS = 4000  # the model's thinking counts toward this too; the prompts themselves keep what is said short
 FALLBACK_BETA = "server-side-fallback-2026-07-01"  # a declined request is re-run on Anthropic's recommended fallback model
-NO_FALLBACK_PREFIXES = ("claude-haiku",)  # Haiku has no server-side fallback model: the request is sent without one
+NO_FALLBACK_PREFIXES = ("claude-haiku",)
+QUICK_WITHOUT_THINKING = ("claude-haiku",)  # models that may skip thinking at low effort (Opus 5.5 cannot: a 400)  # Haiku has no server-side fallback model: the request is sent without one
 
 
 class LLMError(RuntimeError):
@@ -57,27 +62,59 @@ class LLMClient:
         return cls(key, model or os.environ.get("BRAILLIE_LLM_MODEL", DEFAULT_MODEL),
                    os.environ.get("BRAILLIE_LLM_BASE_URL", DEFAULT_BASE_URL))
 
-    def _text(self, system: str, user: str, max_tokens: Optional[int], output: Optional[dict] = None) -> str:
-        """One request; the reply's text. Raises on any error, and on a reply that was declined or cut off."""
+    def _text(self, system: str, user: str, max_tokens: Optional[int], output: Optional[dict] = None,
+              timeout: Optional[float] = None, quick: bool = False) -> str:
+        """One request; the reply's text. Raises on any error, and on a reply that was declined or cut off. `quick`: a small job
+        (a line put another way, a hint) done without thinking first where the model allows it, which takes a third of the time."""
         request = dict(model=self.model, max_tokens=max_tokens or MAX_TOKENS, system=system,
                        messages=[{"role": "user", "content": user}],
-                       output_config={"effort": REPLY_EFFORT, **(output or {})}, timeout=self.timeout)
+                       output_config={"effort": REPLY_EFFORT, **(output or {})}, timeout=timeout or self.timeout)
+        if quick and self.model.startswith(QUICK_WITHOUT_THINKING):
+            request["thinking"] = {"type": "disabled"}
+        # (a request with its own short time limit is not retried: a retry would double the wait it is limiting, and the caller
+        # already has something to say instead)
+        client = self._client.with_options(max_retries=0) if timeout else self._client
         if self.model.startswith(NO_FALLBACK_PREFIXES):
-            response = self._client.messages.create(**request)
+            response = client.messages.create(**request)
         else:
-            response = self._client.beta.messages.create(**request, betas=[FALLBACK_BETA], fallbacks="default")
+            response = client.beta.messages.create(**request, betas=[FALLBACK_BETA], fallbacks="default")
         if response.stop_reason in ("refusal", "max_tokens"):
             raise LLMError(f"no usable reply (stop_reason={response.stop_reason})")
         return "".join(b.text for b in response.content if b.type == "text").strip()
 
-    def chat(self, system: str, user: str, max_tokens: Optional[int] = None) -> str:
-        """One request; returns the reply text. Raises on any error."""
-        return self._text(system, user, max_tokens)
+    def chat(self, system: str, user: str, max_tokens: Optional[int] = None, timeout: Optional[float] = None,
+             quick: bool = False) -> str:
+        """One request; returns the reply text. Raises on any error (a `timeout` in seconds, if given, for this request only)."""
+        return self._text(system, user, max_tokens, timeout=timeout, quick=quick)
 
-    def chat_json(self, system: str, user: str, schema: dict) -> dict:
+    def chat_json_stream(self, system: str, user: str, schema: dict, on_text) -> dict:
+        """chat_json, streamed: `on_text(text so far)` is called as the reply arrives (so the start of an answer can be spoken
+        before the rest has come), then the whole reply is returned as a dict."""
+        shape = schema.get("schema", schema)
+        request = dict(model=self.model, max_tokens=MAX_TOKENS, system=system, messages=[{"role": "user", "content": user}],
+                       output_config={"effort": REPLY_EFFORT, "format": {"type": "json_schema", "schema": shape}},
+                       timeout=self.timeout)
+        if self.model.startswith(NO_FALLBACK_PREFIXES):
+            stream_ctx = self._client.messages.stream(**request)
+        else:
+            stream_ctx = self._client.beta.messages.stream(**request, betas=[FALLBACK_BETA], fallbacks="default")
+        text = ""
+        with stream_ctx as stream:
+            for chunk in stream.text_stream:
+                text += chunk
+                on_text(text)
+            final = stream.get_final_message()
+        if final.stop_reason in ("refusal", "max_tokens"):
+            raise LLMError(f"no usable reply (stop_reason={final.stop_reason})")
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("Claude returned a non-object reply")
+        return parsed
+
+    def chat_json(self, system: str, user: str, schema: dict, quick: bool = False) -> dict:
         """A reply shaped exactly by `schema` (a JSON schema, or {"name", "schema"} around one), as a dict."""
         shape = schema.get("schema", schema)
-        parsed = json.loads(self._text(system, user, None, {"format": {"type": "json_schema", "schema": shape}}))
+        parsed = json.loads(self._text(system, user, None, {"format": {"type": "json_schema", "schema": shape}}, quick=quick))
         if not isinstance(parsed, dict):
             raise ValueError("Claude returned a non-object reply")
         return parsed
@@ -243,6 +280,32 @@ def _braille_facts() -> str:
 
 
 BRAILLE_FACTS = _braille_facts()
+# What Braillo talks about: he is a braille tutor, not a general assistant. Asked for a brownie recipe, he says so kindly and steers
+# back, rather than answering it.
+ON_TOPIC = (
+    "Stay on your subject: braille and reading and writing by touch, its history and Louis Braille, blindness and low vision as "
+    "they relate to reading and learning, tips for learning, and this app and how to use it. If they ask about anything else (a "
+    "recipe, homework, the news, other topics), do not answer it or give any of it: say kindly, in one short sentence, that you are "
+    "only here to help with braille, and offer to carry on with it. Small talk about how they are feeling, or a thank you, is fine "
+    "to answer briefly."
+)
+# What a curious learner asks about ("when was braille invented?", "who made it?"): the well-established facts, so the answer is
+# right rather than remembered. Anything beyond them, Braillo answers from what he knows, and says so if he is not sure.
+BRAILLE_HISTORY = (
+    "About braille (well-established facts: use them, and if asked something they do not cover, answer from what you know and say "
+    "if you are not sure): Braille was invented by Louis Braille, born on 4 January 1809 in Coupvray, near Paris, France. He lost "
+    "his sight as a small child after an accident with a tool in his father's leather workshop, at about three years old. At the "
+    "Royal Institute for Blind Youth in Paris he met Charles Barbier's night writing, a code of raised dots made for soldiers to "
+    "read in the dark, and simplified it into a cell of six dots. He had the system working by 1824, when he was about fifteen, and "
+    "first published it in 1829. He died on 6 January 1852; France officially adopted braille in 1854, and it spread around the "
+    "world. World Braille Day is on 4 January, his birthday. A cell has six dots in two columns of three, which gives 64 patterns "
+    "(63 with at least one dot raised). Braille is a way of writing, not a language: it is used for many languages. Uncontracted "
+    "braille (often called grade 1) spells every letter; contracted braille (grade 2) uses short forms for common words and letter "
+    "groups, such as one cell for and or the. Unified English Braille (UEB) is the standard English code in most English-speaking "
+    "countries; the United States adopted it in 2016. Maths can be written in Nemeth code (in the United States) or UEB, and there "
+    "is braille for music. Braille is written with a slate and stylus, a braille writer such as the Perkins Brailler (from 1951), "
+    "or printed by braille embossers, and read on refreshable braille displays that raise pins electronically."
+)
 PERSONA = (
     "You are Braillo, a friendly little robot shaped like a braille cell, and the voice of Braillie, an app that teaches braille by "
     "touch to people who are often blind or have low vision. You talk like a warm, patient, upbeat teacher: short, natural spoken "
@@ -270,7 +333,8 @@ RULES = (
     "describe what the next page will ask (it says so itself). When they clearly want to do what you are waiting for, do it rather "
     "than telling them which words to say. Do not tell them again what they have just been told (you_said_last), such as that a guest's "
     "progress is not saved. Never "
-    "claim to see what app_now does not say. If the camera "
+    "claim to see what app_now does not say, and never state facts about the app beyond the description above. Do not end every "
+    "reply with a nudge about what to say next: add one only when it helps, and never the same one twice running. If the camera "
     "cannot see the sheet or their finger, say so, and how to fix it: the whole sheet in view and flat, good light, the phone about "
     "thirty centimetres above. Teaching: describe letters by their dots. Do not give away where a letter is on the sheet (its row "
     "and column) unless they have already had two hints, or ask for it outright. You do not know how the sheet is laid out, so "
@@ -278,9 +342,9 @@ RULES = (
     "addresses or braille symbols; say letters and dot numbers in words. Do not repeat your last line word for word. "
 )
 ASK_SYSTEM = (
-    PERSONA + " " + APP_MAP + " " + RULES + "They asked you a question (after saying your name): answer it like a real tutor who "
-    "knows the topic, in under 60 words unless they clearly want more. Answer any honest question, not only about braille. "
-    + BRAILLE_FACTS
+    PERSONA + " " + APP_MAP + " " + RULES + "They asked you a question: answer it like a real tutor who knows the topic and enjoys "
+    "it, in two to four spoken sentences (under 70 words) unless they clearly want more. " + ON_TOPIC + " For braille and its "
+    "history, use the facts below. " + BRAILLE_FACTS + " " + BRAILLE_HISTORY
 )
 # What free speech (no exact command phrase) may be turned into; the tutor runs the matching command.
 TALK_ACTIONS = ("none", "repeat", "hint", "found it", "next", "next page", "start", "stop", "menu", "learn", "read", "quiz",
@@ -291,17 +355,18 @@ TALK_SYSTEM = (
     "- addressed: false if this was not said to you (other people talking, the TV, noise, half a word). Then action none, say "
     "empty, lesson 0.\n"
     "- action: the app command they want, if they clearly want one. For example: 'what was that letter again' is repeat; 'I'm "
-    "stuck' or 'where is it' is hint; 'this one' or 'I'm on it now' is found it; 'skip this one' is next; 'take me home' or 'let's "
-    "do something else' is menu; 'I want to practise reading' is read; 'can we move on to the next lesson' is next lesson; 'go "
+    "stuck' or 'where is it' is hint; 'this one' or 'I'm on it now' is found it; 'I'm ready' or 'I've got the sheet' (while waiting for a sheet) is start; 'skip this one' is next; 'take me home' or 'let's "
+    "do something else' is menu; wanting to stop, quit, finish or take a break ('I want to stop', 'I'm done', 'can we stop now', 'I need a break') is menu too: the app then asks them to confirm, so never just say you are stopping, or tell them to say home, without the action; 'I want to practise reading' is read; 'can we move on to the next lesson' is next lesson; 'go "
     "back a lesson' is previous lesson; 'let's do K to O' or 'lesson three' is lesson (with its number); 'how am I doing' or 'show "
     "my progress' is my page; 'I'm done for today, log me out' is sign out. Otherwise none.\n"
     "- lesson: the lesson number (1 to 8) when the action is lesson; otherwise 0.\n"
-    "- say: what to say back: at most two short sentences, under 40 words. Leave it empty when the action speaks for itself "
-    "(repeat, hint, next, a lesson or a page already talk). Answer questions about braille, the letters, the app and the moment "
-    "directly. If they did not understand your last line, explain it differently. " + BRAILLE_FACTS
+    "- say: what to say back: usually one or two short sentences, under 40 words. Leave it empty when the action speaks for itself "
+    "(repeat, hint, next, a lesson or a page already talk). When they ask a question (about braille, its history, the letters, the "
+    "app or the moment), answer it properly, like a tutor who enjoys the topic: up to four spoken sentences, under 70 words. If "
+    "they did not understand your last line, explain it differently. " + ON_TOPIC + " " + BRAILLE_FACTS + " " + BRAILLE_HISTORY
 )
-SPEAKING_ACTIONS = ("next lesson", "previous lesson", "lesson", "my page", "menu", "learn", "read", "quiz", "start", "practice",
-                    "explore", "next", "next page", "sign out")  # actions that say their own piece once they run
+SPEAKING_ACTIONS = ("hint", "next lesson", "previous lesson", "lesson", "my page", "menu", "learn", "read", "quiz", "start", "practice",
+                    "explore", "next", "next page", "sign out", "stop")  # actions that say their own piece once they run
 TALK_SCHEMA = {
     "name": "braillo_reply",
     "strict": True,
@@ -317,7 +382,43 @@ TALK_SCHEMA = {
         "additionalProperties": False,
     },
 }
+HINT_TIMEOUT = 2.5  # seconds: a hint not worded by then is given as the app wrote it
+# A hint for this learner: the app decides what the hint gives away (the dots first, then how the letter grows from one they know,
+# then where it is) and counts it; Claude only puts it for them, in the light of what they touched and what they mix up.
+HINT_SYSTEM = (
+    PERSONA + " A learner is looking for a braille symbol on their sheet and needs a hint. You get `hint`, the hint the app is about "
+    "to give; `keep`, words it must still contain exactly (dot positions, row and column); `facts`, what they are looking for, what "
+    "they just touched instead and exactly how the two differ, what they often mix it up with, and their level; and `you_said_last`, "
+    "your last few lines. Give the same hint your own way, for this learner, right now: if they just touched something else, start "
+    "from it, using the difference given (never work dots out yourself); if they often mix it up with another, say so; for a "
+    "beginner be gentle and simple, for someone who knows more be brief. Encouraging, never discouraging. Keep every word in `keep`. "
+    "Do not say where it is on the sheet (rows, columns, left or right of anything) unless `hint` already does, and give away "
+    "nothing more than `hint` does. One or two short spoken sentences, under 40 words, not worded like your last lines. Spoken "
+    "words only: no markdown, lists or quotation marks."
+)
+VARIANTS_SYSTEM = (
+    PERSONA + " You get `line`, something the app says aloud for you again and again, and `keep`, words it must still contain exactly "
+    "as written (what the learner can say back, names of sheets, letters, numbers). Write `how_many` different ways you might say "
+    "it, each warm and natural, as you would in conversation, and each clearly different from the others. Keep every instruction "
+    "and every word in `keep`; add nothing the learner must do and no new facts. Never longer than the line by more than a third. "
+    "Spoken words only: no markdown, lists, emoji or quotation marks."
+)
+VARIANTS_SCHEMA = {"type": "object", "properties": {"versions": {"type": "array", "items": {"type": "string"}}},
+                   "required": ["versions"], "additionalProperties": False}
 HISTORY_TURNS = 6  # exchanges kept, so "what about the next one?" means something
+LESSON_COUNT = 8  # (learn.LESSONS: A to E ... capitals and punctuation)
+PHRASE_TIMEOUT = 2.5  # seconds: a line Braillo would say in his own words is said as written if Claude has not answered by then
+# Braillo in his own words: the app knows WHAT to say (the facts, the instructions, the words the learner can say back); Claude says
+# it the way Braillo would right now, so the same moment does not sound the same every time, and what was just said is not said again.
+PHRASE_SYSTEM = (
+    PERSONA + " " + APP_MAP + " You get `line`, something the app is about to say aloud for you; `keep`, words it must still contain "
+    "exactly as written (what the learner can say back, names of sheets, letters, numbers, codes); `app_now`, what is happening; and "
+    "`you_said_last`, your last few lines. Say the line your own way, as you would say it in this moment: warm, natural, a little "
+    "playful, never stiff or robotic, and not the same words as before. Keep every instruction and every word in `keep`. Add nothing "
+    "the learner must do that the line does not ask, and no facts that are in neither the line nor app_now. If they heard something "
+    "in the line a moment ago (in you_said_last), say it more briefly or leave it out, but keep every word in `keep`. Never longer "
+    "than the line by more than a third. Spoken words only: no markdown, lists, emoji or quotation marks. Reply with the line only."
+)
 
 
 def strip_ask_wake(text: str) -> str:
@@ -331,6 +432,35 @@ def looks_like_question(text: str) -> bool:
     """True when the leftover after the wake word is enough to send to the model."""
     words = text.split()
     return bool(words) and (len(words) >= 2 or text.endswith("?") or len(text) >= 8)
+
+
+def _keeps(said: str, keep) -> bool:
+    """Does a line said another way still contain each of these words or phrases, as whole words?"""
+    low = said.casefold()
+    return all(re.search(r"(?<![a-z0-9])" + re.escape(k.casefold()) + r"(?![a-z0-9])", low) for k in keep)
+
+
+def _partial_field(text: str, name: str) -> Optional[str]:
+    """A field of a JSON object still arriving: a finished string or boolean value, or None if it is not all there yet."""
+    m = re.search(rf'"{name}"\s*:\s*("(?:[^"\\]|\\.)*"|true|false)', text)
+    return None if m is None else m.group(1).strip('"')
+
+
+def first_sentence_said(text: str) -> Optional[str]:
+    """In a reply still arriving ({"addressed", "action", "lesson", "say"}): the first sentence of "say", once it is complete (a
+    full stop, question or exclamation mark followed by more, or the end of the string), else None."""
+    m = re.search(r'"say"\s*:\s*"((?:[^"\\]|\\.)*)(")?', text)
+    if m is None:
+        return None
+    raw = re.sub(r"\\+$", "", m.group(1))  # (an escape cut in half)
+    try:
+        said = json.loads('"' + raw + '"')
+    except ValueError:
+        return None
+    first = re.match(r"\s*(.+?[.!?])\s+\S", said)
+    if first:
+        return first.group(1)
+    return said.strip() if m.group(2) and said.strip() else None
 
 
 def _spoken(raw) -> Optional[str]:
@@ -350,8 +480,9 @@ class AskTutor:
     respond() anything else the learner said that was not a command: what to do (a command) and what to say back, or
               nothing at all when it was not said to the tutor"""
 
-    def __init__(self, client: Optional[LLMClient] = None, timeout: float = 10.0):
+    def __init__(self, client: Optional[LLMClient] = None, timeout: float = 10.0, fast: Optional[LLMClient] = None):
         self.client, self.off_reason = client, ""
+        self.fast = fast or client  # (for phrase: a line in his own words has to come quickly)
         self.history: list = []  # [(what they said, what was said back)], newest last
         self.failures = 0
         if self.client is not None and hasattr(self.client, "timeout"):
@@ -400,17 +531,95 @@ class AskTutor:
             self._remember(q, line)
         return line
 
-    def respond(self, heard: str, context: Optional[dict] = None) -> Optional[dict]:
+    def hint(self, hint: str, keep: list, facts: dict, recent: Optional[list] = None) -> Optional[str]:
+        """The app's hint, put for this learner (see HINT_SYSTEM), or None: the app's own wording is used then."""
+        if not self.enabled or not hint:
+            return None
+        prompt = json.dumps({"hint": hint, "keep": list(keep), "facts": facts, "you_said_last": list(recent or [])[-4:]})
+        try:
+            raw = self.fast.chat(HINT_SYSTEM, prompt, timeout=HINT_TIMEOUT, quick=True)
+        except Exception as e:
+            self._failed(e)
+            return None
+        self.failures = 0
+        said = _spoken(raw)
+        if not said or not _keeps(said, keep) or len(said.split()) > 50:
+            return None
+        if not re.search(r"\b(?:row|column)\b", hint, re.IGNORECASE) and re.search(r"\b(?:row|column)s?\b", said, re.IGNORECASE):
+            return None  # (it gave away where it is before the hint ladder does)
+        return said
+
+    def variants(self, line: str, keep: list, n: int = 3) -> list:
+        """A few ways Braillo might say a line that comes up again and again (made ahead of time, so saying one later costs no
+        wait): each keeps every word of `keep` and is about as long as the line. [] if the helper is off or the reply is not usable."""
+        if not self.enabled or not line:
+            return []
+        prompt = json.dumps({"line": line, "keep": list(keep), "how_many": n})
+        try:
+            reply = self.fast.chat_json(VARIANTS_SYSTEM, prompt, VARIANTS_SCHEMA, quick=True)
+        except Exception as e:
+            self._failed(e)
+            return []
+        self.failures = 0
+        out = []
+        for raw in reply.get("versions") or []:
+            said = _spoken(raw)
+            if said and _keeps(said, keep) and len(said.split()) <= len(line.split()) * 4 / 3 + 6 and said not in out:
+                out.append(said)
+        return out[:n]
+
+    def phrase(self, line: str, keep: list, context: Optional[dict] = None, recent: Optional[list] = None) -> Optional[str]:
+        """`line` in Braillo's own words for this moment, or None (helper off, slow, or a reply that lost a word of `keep` or ran
+        long): the caller then says `line` as written."""
+        if not self.enabled or not line:
+            return None
+        prompt = json.dumps({"line": line, "keep": list(keep), "app_now": context or {}, "you_said_last": list(recent or [])[-5:]})
+        try:
+            raw = self.fast.chat(PHRASE_SYSTEM, prompt, timeout=PHRASE_TIMEOUT, quick=True)
+        except Exception as e:
+            self._failed(e)
+            return None
+        self.failures = 0
+        said = _spoken(raw)
+        if not said:
+            return None
+        if not _keeps(said, keep):
+            return None  # (lost something the learner needs: say it as written)
+        if len(said.split()) > len(line.split()) * 4 / 3 + 6:
+            return None
+        return said
+
+    def respond(self, heard: str, context: Optional[dict] = None, on_first=None) -> Optional[dict]:
         """What to do about free speech: {"action": one of TALK_ACTIONS, "say": text or ""}, or None if the helper is off or
         failed (the caller then falls back to its own "I didn't catch that"). Speech not meant for the tutor gives action none
-        and nothing to say."""
+        and nothing to say. With `on_first(sentence)`, the reply is streamed: its first sentence is handed over (to be spoken) as
+        soon as it is complete, and "say" then holds only the rest."""
         if not self.enabled:
             return None
         text = " ".join(str(heard or "").split()).strip()
         if not text:
             return None
+        spoken: list = []  # the first sentence, if it was already said while the rest arrived
+
+        def started(so_far: str) -> None:
+            if spoken or on_first is None:
+                return
+            first = first_sentence_said(so_far)
+            if first is None:
+                return
+            action = _partial_field(so_far, "action")
+            if _partial_field(so_far, "addressed") == "false" or action is None or action in SPEAKING_ACTIONS:
+                spoken.append("")  # (nothing to say ahead: not for us, or the action speaks for itself)
+                return
+            line = _spoken(first)
+            spoken.append(line or "")
+            if line:
+                on_first(line)
+
         try:
-            reply = self.client.chat_json(TALK_SYSTEM, self._prompt(text, context), TALK_SCHEMA)
+            streaming = on_first is not None and callable(getattr(self.client, "chat_json_stream", None))
+            reply = (self.client.chat_json_stream(TALK_SYSTEM, self._prompt(text, context), TALK_SCHEMA, started) if streaming
+                     else self.client.chat_json(TALK_SYSTEM, self._prompt(text, context), TALK_SCHEMA))
         except Exception as e:
             self._failed(e)
             return None
@@ -419,11 +628,16 @@ class AskTutor:
         if reply.get("addressed") is False:
             return {"action": "none", "say": "", "lesson": 0}
         lesson = reply.get("lesson") if isinstance(reply.get("lesson"), int) else 0
-        if action == "lesson" and not 1 <= lesson <= 6:
+        if action == "lesson" and not 1 <= lesson <= LESSON_COUNT:
             action = "none"  # (a lesson with no number it could name: nothing to go to)
         say = _spoken(reply.get("say")) or ""
         if action in SPEAKING_ACTIONS and say:  # the lesson or page says its own piece next: only a short "sure, let's go" before it
             say = re.split(r"(?<=[.!?])\s+", say)[0]
             say = say if len(say.split()) <= 8 else ""
         self._remember(text, say or f"({action})")
-        return {"action": action, "say": say, "lesson": lesson}
+        if spoken and spoken[0] and say.startswith(spoken[0]):
+            say = say[len(spoken[0]):].strip()  # (the first sentence has been said already)
+        reply = {"action": action, "say": say, "lesson": lesson}
+        if spoken and spoken[0]:
+            reply["spoke"] = True  # (its first sentence was said already, as it arrived)
+        return reply

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { setMode, sharePage } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
+import { useTutorSession } from '../tutor/useTutorSession.ts'
 import { useUser } from '../auth/useUser.ts'
 import { controlNames, press } from './pageControls.ts'
 import { useVoiceTab } from './useVoiceTab.ts'
@@ -29,10 +30,11 @@ const SCROLL = 0.8 // of the window's height, for "scroll down" / "scroll up"
 const VoiceControl = () => {
   const { pathname } = useLocation()
   const navigate = useNavigate()
-  const { user, signOut } = useUser()
+  const { user, loading, signOut } = useUser()
   const { state, reach } = useTutorState(500)
   const [names, setNames] = useState<string[]>([])
   const voiceTab = useVoiceTab() // (with the website open in two tabs, only the one in use is driven by voice)
+  useTutorSession(voiceTab ? user : undefined, loading, state) // (who is here: told by the tab in use only)
 
   // what is on the page, kept up to date as it changes (a menu opening, a lesson moving on)
   useEffect(() => {

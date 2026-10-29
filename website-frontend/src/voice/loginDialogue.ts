@@ -119,32 +119,26 @@ const VERSIONS = {
   ],
   go_google: [() => "Opening Google now. From here, use your keyboard or screen reader on the Google page."],
   give_up: [() => "I'll stop listening for now. You can use the buttons on the screen instead: press tab to move between them."],
+  // (all the steps, once: scan, the link, Start on the phone, where to hold it. Troubleshooting only when they ask)
   connect_phone: [
-    () =>
-      `Now let's connect your phone. Open its camera, point it at the code on the screen, and tap the link that pops up. Then tap the big Start button, and I'll say hello.`,
-    () =>
-      `Next, your phone. Point its camera at the code on the screen and tap the link that appears. When the page opens, tap the big Start button, and you'll hear me say hello.`,
-    () =>
-      `Let's link your phone. Open the camera, aim it at the code on the screen, and tap the link. On the page that opens, tap the big Start button.`,
-    () =>
-      `Time to connect your phone. Hold its camera up to the code on the screen, then tap the link it shows. Tap the big Start button, and I'll greet you.`,
-    () =>
-      `Now for your phone. Scan the code on the screen with its camera, and tap the link. When the page loads, tap the big Start button.`,
-    () =>
-      `Let's get your phone ready. Point its camera at the code on the screen until a link appears, and tap it. Then tap the big Start button, and I'll say hello.`,
-    () =>
-      `Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. On the new page, tap the big Start button.`,
-    () =>
-      `Okay, now the phone. Use its camera to scan the code on the screen, and tap the link. When the page loads, tap the big Start button.`,
-    () =>
-      `Now we'll connect your phone. Hold its camera up to the code on the screen, and tap the link that appears. Then press the big Start button, and I'll say hello.`,
-    () =>
-      `Let's bring in your phone. Point its camera at the code on the screen, and tap the link. On the page that opens, tap the big Start button, and I'll greet you.`,
+    () => `Now scan the code on the screen with your phone's camera, and tap the link. Then tap the big Start button in the middle of the phone's screen, and hold the phone about thirty centimetres above your sheet.`,
+    () => `Next, your phone. Scan the code on the screen and tap the link that appears. Tap Start, the big button in the middle of its screen, then hold the phone about thirty centimetres above the sheet.`,
+    () => `Point your phone's camera at the code on the screen and tap the link. When the page opens, tap the big Start button in the middle, and hold the phone about thirty centimetres above your sheet.`,
+    () => `Time to connect your phone. Scan the code on the screen, tap the link, then tap the Start button in the middle of the phone's screen. Hold the phone about thirty centimetres above the sheet.`,
+    () => `Now your phone: scan the code on the screen and tap the link. Tap the big Start button in the middle of the phone, then hold it about thirty centimetres above your sheet, camera facing down.`,
+    () => `Let's link your phone. Scan the code on the screen with its camera and tap the link. Then tap Start in the middle of the phone's screen, and hold the phone about thirty centimetres above the sheet.`,
+    () => `Scan the code on the screen with your phone and tap the link that comes up. Tap the big Start button in the middle of its screen, then hold the phone about thirty centimetres over your sheet.`,
+    () => `Next, scan the code on the screen with your phone's camera and open the link. Tap the Start button in the middle of the phone's screen, and hold the phone about thirty centimetres above the sheet.`,
+    () => `Okay, your phone. Point its camera at the code on the screen and tap the link. Tap the big Start button in the middle of the screen, then hold the phone about thirty centimetres above your sheet.`,
+    () => `Now let's connect your phone. Scan the code on the screen and tap the link. Then tap Start, in the middle of the phone's screen, and hold the phone about thirty centimetres above the sheet.`,
   ],
   // (the phone dropped out for good, mid-way: the code is shown again, see usePhoneWatch.ts)
   reconnect_phone: [() => `I've lost your phone. Scan the code on the screen with its camera again, tap Start, and we'll carry on where we were.`],
   // (only when they say it is not working: the way in without scanning)
-  connect_help: [(code: string) => `If it won't scan, open the address on the screen in your phone's browser, and type the code ${spelled(code)}.`],
+  connect_help: [
+    (code: string) =>
+      `Let's sort it out. If the code won't scan, open the address on the screen in your phone's browser, and type the code ${spelled(code)}. The phone needs the internet, on Wi-Fi or mobile data. When the page opens, tap Start, and allow the camera.`,
+  ],
 } as const satisfies Record<string, readonly ((w: string) => string)[]>
 
 const planned: Partial<Record<keyof typeof VERSIONS, number>> = {}

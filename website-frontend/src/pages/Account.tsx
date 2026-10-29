@@ -90,13 +90,15 @@ const Account = () => {
   const { state, reach } = useTutorState(500) // (often enough to show each spoken sentence as it starts)
   const progress = state?.progress ?? null
   const leave = () => void signOut().then(() => navigate('/'))
+  // (said or pressed, the same: Braillo says goodbye, which also tells the tutor nobody is signed in now, then off to the front page)
+  const bye = () => void sayPrompt('account_bye', user?.name, true).catch(() => {}).finally(leave)
   useAccountVoice({
     reach,
     state,
     name: user?.name ?? null,
     act: (ask) => {
       if (ask === 'home') navigate('/modes')
-      else if (ask === 'signout') void sayPrompt('account_bye', user?.name, true).catch(() => {}).finally(leave)
+      else if (ask === 'signout') bye()
       else void setMode(ask).then(() => navigate('/practice')).catch(() => navigate('/modes'))
     },
   })
@@ -188,7 +190,7 @@ const Account = () => {
 
       <div className="account__keys">
         <BigButton onClick={() => navigate('/modes')}>Continue</BigButton>
-        <BigButton variant="secondary" className="btn--line" onClick={leave}>
+        <BigButton variant="secondary" className="btn--line" onClick={bye}>
           Sign out
         </BigButton>
       </div>

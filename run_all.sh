@@ -9,8 +9,8 @@
 # --phone-camera (the "Connect your phone" QR code) and --paper (fall back to
 # the printed sheet's own edges if the 4 ArUco markers can't be read) are
 # always on: both are added automatically below unless already present in the
-# arguments. --phone-camera needs the phone and laptop on the same Wi-Fi;
-# neither has a --no-... flag to turn it off in tutor_server.py.
+# arguments. The phone reaches the laptop through a public tunnel link (any
+# network); --phone-local uses the same-Wi-Fi link instead. Neither has a --no-... flag to turn it off in tutor_server.py.
 #
 # The phone is the camera only: Braillo talks through the laptop's speaker and
 # listens with the laptop's microphone (--sound laptop --mic laptop), because
@@ -57,17 +57,29 @@ fi
 # the caller already passed explicitly.
 ARGS=("$@")
 PHONE_CAMERA=0
+PHONE_LINK=0
 PAPER=0
 SOUND=0
 MIC=0
 for arg in "$@"; do
     [ "$arg" = "--phone-camera" ] && PHONE_CAMERA=1
     [ "$arg" = "--paper" ] && PAPER=1
+    case "$arg" in --phone-tunnel|--phone-local|--phone-trusted|--phone-domain|--phone-domain=*) PHONE_LINK=1 ;; esac
     case "$arg" in --sound|--sound=*) SOUND=1 ;; --mic|--mic=*) MIC=1 ;; esac
 done
 if [ "$PHONE_CAMERA" -eq 0 ]; then
     ARGS+=("--phone-camera")
 fi
+# The QR code is the public tunnel link by default, so the phone connects on any network (public and school Wi-Fi often block
+# phone <-> laptop traffic). Pass --phone-local to use the local Wi-Fi link instead (it needs both on the same, open network).
+if [ "$PHONE_LINK" -eq 0 ]; then
+    ARGS+=("--phone-tunnel")
+fi
+FILTERED=()
+for arg in "${ARGS[@]}"; do
+    [ "$arg" = "--phone-local" ] || FILTERED+=("$arg")
+done
+ARGS=("${FILTERED[@]}")
 if [ "$PAPER" -eq 0 ]; then
     ARGS+=("--paper")
 fi
@@ -79,10 +91,10 @@ if [ "$MIC" -eq 0 ]; then
 fi
 
 echo ""
-echo "  NOTE: --phone-camera requires the phone and laptop on the same Wi-Fi"
-echo "        network. The tutor backend will print a QR code (and a"
-echo "        fallback https://<address>:<port> + code) to scan or open from"
-echo "        the phone; watch the tutor log below once both servers start."
+echo "  NOTE: the phone connects through a public tunnel link, so it works on"
+echo "        any Wi-Fi (use --phone-local for the same-Wi-Fi link). The tutor"
+echo "        backend prints a QR code (and the address + code) to scan or open"
+echo "        from the phone; watch the tutor log below once both servers start."
 
 # ---------------------------------------------------------------------------
 # Temp files — one PID list + per-process logs
@@ -145,15 +157,16 @@ FRONTEND_PID=$!
 echo "$FRONTEND_PID" >> "$PID_FILE"
 
 # ---------------------------------------------------------------------------
-# Wait for both to signal ready (poll logs, 30 s timeout each)
+# Wait for both to signal ready (poll logs: 240 s for the tutor, which first starts the phone's tunnel, trying a fresh one if the
+# first is never published; 30 s for the website)
 # ---------------------------------------------------------------------------
 wait_for() {
-    local log="$1" pattern="$2" name="$3"
+    local log="$1" pattern="$2" name="$3" seconds="${4:-30}"
     local n=0
     while ! grep -q "$pattern" "$log" 2>/dev/null; do
         sleep 0.5
         n=$((n+1))
-        if [ "$n" -ge 60 ]; then
+        if [ "$n" -ge $((seconds * 2)) ]; then
             echo "  WARNING: timed out waiting for $name to start" >&2
             tail -5 "$log" >&2
             return 1
@@ -163,7 +176,7 @@ wait_for() {
 
 echo ""
 echo "  Starting tutor backend ..."
-wait_for "$TUTOR_LOG"    "Braillie tutor server" "tutor backend"
+wait_for "$TUTOR_LOG"    "Braillie tutor server" "tutor backend" 240
 
 echo "  Starting React frontend ..."
 wait_for "$FRONTEND_LOG" "ready in"              "React frontend"

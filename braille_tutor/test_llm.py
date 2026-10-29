@@ -27,7 +27,7 @@ class Scripted:
     def __init__(self, reply=None, delay=0.0, error=None):
         self.reply, self.delay, self.error, self.calls = reply, delay, error, []
 
-    def chat(self, system, user, max_tokens=None, temperature=None):
+    def chat(self, system, user, max_tokens=None, temperature=None, timeout=None, quick=False):
         self.calls.append((system, user, max_tokens, temperature))
         time.sleep(self.delay)
         if self.error:
@@ -493,11 +493,110 @@ class BrailloSessionTests(unittest.TestCase):
             with redirect_stdout(out):
                 ask = tutor.make_ask_tutor(argparse.Namespace(no_llm=False, llm_model="m1"))
             self.assertTrue(ask.enabled)
+            with redirect_stdout(out):
+                ask = tutor.make_ask_tutor(argparse.Namespace(no_llm=False, llm_model=None))
+            self.assertEqual((ask.client.model, ask.fast.model), (llm.TALK_MODEL, os.environ.get("BRAILLIE_LLM_MODEL", llm.DEFAULT_MODEL)),
+                             "his conversation on the capable model, his own words for a line on the fast one")
             self.assertIsNone(tutor.make_ask_tutor(argparse.Namespace(no_llm=True, llm_model=None)))
         finally:
             os.environ.pop("ANTHROPIC_API_KEY", None)
             if old is not None:
                 os.environ["ANTHROPIC_API_KEY"] = old
+
+
+def wait_for(pred, seconds=5.0):
+    end = time.time() + seconds
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+class OwnWordsTests(unittest.TestCase):
+    """Braillo says a line his own way, but never loses what the learner needs to hear or say."""
+    LINE = "Choose an option. Say learn, read, or quiz."
+
+    def test_his_own_words_are_used_when_they_keep_what_matters(self):
+        ask = llm.AskTutor(Scripted("Right then, what'll it be? Say learn, read, or quiz."))
+        self.assertEqual(ask.phrase(self.LINE, ["learn", "read", "quiz"], {"page": "modes"}, ["Hi, Guest!"]),
+                         "Right then, what'll it be? Say learn, read, or quiz.")
+        sent = json.loads(ask.client.calls[0][1])
+        self.assertEqual((sent["line"], sent["keep"], sent["you_said_last"]), (self.LINE, ["learn", "read", "quiz"], ["Hi, Guest!"]))
+
+    def test_a_reply_that_drops_a_word_or_runs_long_is_not_used(self):
+        self.assertIsNone(llm.AskTutor(Scripted("Pick learn or read!")).phrase(self.LINE, ["learn", "read", "quiz"]))
+        long = "Say learn, read, or quiz. " + "And so on and so forth " * 6
+        self.assertIsNone(llm.AskTutor(Scripted(long)).phrase(self.LINE, ["learn", "read", "quiz"]))
+        self.assertIsNone(llm.AskTutor(Scripted(error=TimeoutError("slow"))).phrase(self.LINE, ["learn"]))
+
+
+@unittest.skipIf(WC is None, "backend dependencies missing (pip install pyspellchecker)")
+class HintWordsTests(unittest.TestCase):
+    HINT = "The letter D has three dots: top-left, top-right and middle-right."
+
+    def keep(self):
+        return tutor.hint_keep(self.HINT, {"looking_for": "the letter D"})
+
+    def test_what_a_hint_must_keep(self):
+        self.assertEqual(self.keep(), ["top-left", "top-right", "middle-right", "D"])
+
+    def test_a_worded_hint_is_used_only_if_it_keeps_every_dot_and_gives_nothing_more_away(self):
+        good = "You were on A. D is A plus two more: top-left, top-right and middle-right."
+        self.assertEqual(llm.AskTutor(Scripted(good)).hint(self.HINT, self.keep(), {}), good)
+        self.assertIsNone(llm.AskTutor(Scripted("D has top-left and top-right.")).hint(self.HINT, self.keep(), {}), "lost a dot")
+        leak = "D is in row 1, column 4: top-left, top-right and middle-right."
+        self.assertIsNone(llm.AskTutor(Scripted(leak)).hint(self.HINT, self.keep(), {}), "where it is, before the ladder says so")
+
+
+class OwnWordsSessionTests(unittest.TestCase):
+    def test_menu_lines_are_his_own_but_lesson_feedback_and_claudes_replies_are_exact(self):
+        class Braillo:  # (a fake Claude: two ways of saying a line, made ahead of time; a line with numbers put another way now)
+            enabled = True
+
+            def __init__(self):
+                self.asked_for_ways = 0
+
+            def variants(self, line, keep, n=3):
+                self.asked_for_ways += 1
+                return ["Right then, what next? Say learn, read, or quiz.", "So, what shall we do? Say learn, read, or quiz."]
+
+            def phrase(self, line, keep, context=None, recent=None):
+                return "Nice work, five of six! " + line.split(". ", 1)[1]
+
+        s, voice, _ = make_session(None)
+        s.ask = Braillo()
+        menu = "Choose an option. Say learn, read, or quiz."
+        s.say(menu)
+        self.assertEqual(voice.said[-1], menu, "the first time: as written, no wait (his own ways are made meanwhile)")
+        self.assertTrue(wait_for(lambda: bool(s._ways.get(menu))))
+        s.say(menu)
+        s.say(menu)
+        self.assertEqual(set(voice.said[-2:]), {"Right then, what next? Say learn, read, or quiz.", "So, what shall we do? Say learn, read, or quiz."},
+                         "after that, his own ways, not the same one twice running")
+        self.assertEqual(s.ask.asked_for_ways, 1, "made once")
+        s.say("Okay. You found 5 of 6 letters today. Choose an option. Say learn, read, or quiz.")
+        self.assertTrue(voice.said[-1].startswith("Nice work, five of six!"), "a line with this moment's numbers: put his way now")
+        s.say(menu, natural=False)  # (a line Claude wrote already)
+        self.assertEqual(voice.said[-1], menu)
+        s.say("Okay.")  # (short: as it is)
+        self.assertEqual(voice.said[-1], "Okay.")
+        s.state = "asking"  # (in the middle of a quiz: feedback must be exact and instant)
+        s.say("Correct! That's the letter J. Find the letter G next, please.")
+        self.assertEqual(voice.said[-1], "Correct! That's the letter J. Find the letter G next, please.")
+        self.assertEqual(tutor.keep_words("Say go back to return, or more options to hear the links."), ["go back", "more options"])
+
+    def test_his_ways_of_saying_a_line_each_keep_what_matters(self):
+        class Fast:
+            model = "fast"
+
+            def chat_json(self, system, user, schema, quick=False):
+                return {"versions": ["What next? Say learn, read, or quiz.", "Pick one!", "Say learn, read, or quiz, whichever you like."]}
+
+        ask = llm.AskTutor(Scripted("x"), fast=Fast())
+        self.assertEqual(ask.variants("Choose an option. Say learn, read, or quiz.", ["learn", "read", "quiz"]),
+                         ["What next? Say learn, read, or quiz.", "Say learn, read, or quiz, whichever you like."])
+
 
 
 if __name__ == "__main__":

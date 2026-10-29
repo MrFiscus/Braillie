@@ -75,6 +75,8 @@ def hub(tmpdir=None, phone=None):
     s = tutor.TutorSession(voice, WC, SHEETS["alphabet"].cells, finger=finger, scan=feed.scan, mode="menu", names=SHEETS["alphabet"].names,
                            rng=random.Random(3), tones=False)
     tutor.wire_new_page(s, feed)
+    s.page_ok_fn = lambda: True  # (the sheet is under the camera: a lesson waiting for its sheet starts. Tests of a missing sheet set it.)
+    s.sheet_in_view_fn = None  # (no camera frames: which sheet is there is not made out. Tests of the wrong sheet set it.)
     if phone is not None:
         s.phone_ready_fn = phone
     s.attach()
@@ -256,7 +258,7 @@ class ModeTests(unittest.TestCase):
             s.watch_once(0.0)
             s.set_mode("learn")
             self.assertEqual(s.learning_status()["phase"], "placing")
-            self.assertIn("how much braille do you know?", voice.said[-1])
+            self.assertIn("how familiar are you with braille?", voice.said[-1])
             heard.update(n=1, text="banana")  # (not an answer: asked again, briefly)
             s.watch_once(1.0)
             self.assertEqual(voice.said[-1], learn.RETRY_LEVEL)
@@ -279,7 +281,7 @@ class ModeTests(unittest.TestCase):
             s.set_user("Guest", "guest", "visit1")
             s.set_mode("learn")
             self.assertEqual(s.learning_status()["phase"], "placing")
-            self.assertIn("how much braille do you know?", voice.said[-1])
+            self.assertIn("how familiar are you with braille?", voice.said[-1])
             s.choose_level("alphabet")
             self.assertEqual(s.learning_status()["lesson"]["id"], "l6")
             s.set_mode("menu")
@@ -318,12 +320,230 @@ class ModeTests(unittest.TestCase):
             s.set_mode(mode)
             n = len(voice.said)
             s.on_stop()
+            s.on_stop()  # (asked first; said again, that is a yes)
             wait_for(lambda: s.hub_mode == "menu")
             time.sleep(0.2)
             said = " ".join(voice.said[n:])
             self.assertNotIn("Goodbye", said, mode)
             self.assertNotIn("See you next time", said, mode)
             self.assertNotIn("click the picture", " ".join(voice.said), "a blind learner cannot click a picture")
+
+    def test_leaving_an_activity_part_way_is_one_line_with_how_it_went(self):
+        with mock.patch("learn.Journey._new_learner", return_value=False):
+            for word in ("menu", "stop", "exit"):
+                s, voice, finger, feed = hub()
+                s.set_mode("learn")
+                time.sleep(0.2)
+                finger.pos = cell_pos("alphabet", "a")
+                self.assertTrue(wait_for(lambda: s.learning_status()["target"] != "a"))
+                finger.pos = None
+                time.sleep(0.3)
+                n = len(voice.said)
+                leave = s.on_stop if word == "stop" else s.on_mode_menu
+                leave()
+                leave()  # (the first time it asks; said again, that is a yes)
+                self.assertTrue(wait_for(lambda: s.hub_mode == "menu"))
+                time.sleep(0.2)
+                said = voice.said[n:]
+                self.assertEqual(said[0], tutor.LEAVE_QUESTION)
+                self.assertEqual(len(said), 2, (word, said))
+                self.assertIn("You found 1 of 1 letters today.", said[1])
+                self.assertIn("Say learn, read, or quiz.", said[1])
+
+    def test_signing_out_is_one_goodbye_and_the_front_page_does_not_start_over(self):
+        s, voice, finger, feed = hub()
+        s.website = True
+        heard = {"n": 0, "text": "", "matched": False, "reason": None}
+        s.heard_fn = lambda: heard
+        s.watch_once(0.0)
+        s.set_user("Guest", "guest", "v1")
+        self.assertTrue(wait_for(lambda: any("Guest" in t for t in voice.said)))  # (the greeting first)
+        s.guided = True  # (they had asked to be talked through the site)
+        n = len(voice.said)
+        s.on_sign_out()
+        self.assertIsNone(s.user, "the tutor knows nobody is signed in now")
+        self.assertEqual(s.nav["to"], "signout")
+        s.set_page("landing", ["Start learning"], arrived=True)
+        time.sleep(0.3)
+        said = voice.said[n:]
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("start learning", said[0])
+        self.assertNotIn(tutor.LANDING_WELCOME, said)
+
+    def test_leaving_part_way_is_asked_first_and_no_or_silence_carries_on(self):
+        with mock.patch("learn.Journey._new_learner", return_value=False):
+            s, voice, finger, feed = hub()
+            s.website = True
+            heard = {"n": 0, "text": "", "matched": False, "reason": None}
+            s.heard_fn = lambda: heard
+            s.watch_once(0.0)
+            s.set_mode("learn")
+            self.assertEqual(s.learning_status()["phase"], "teach")
+            s.on_mode_menu()  # (said by accident, mid-lesson)
+            self.assertEqual((voice.said[-1], s.hub_mode), (tutor.LEAVE_QUESTION, "learn"))
+            heard.update(n=1, text="no keep going")
+            s.watch_once(1.0)
+            self.assertEqual(s.hub_mode, "learn")
+            self.assertTrue(wait_for(lambda: "Okay, let's keep going." in voice.said[-2:] and "letter A" in voice.said[-1]),
+                            "and on with what they were asked")
+            s.on_stop()
+            heard.update(n=2, text="yes please")
+            s.watch_once(2.0)
+            self.assertTrue(wait_for(lambda: s.hub_mode == "menu"))
+            s.set_mode("learn")
+            s.on_stop()
+            s._leave_asked["at"] -= tutor.LEAVE_WAIT + 1  # (no answer for a while)
+            heard.update(n=3, text="yes")
+            s.watch_once(3.0)
+            self.assertEqual(s.hub_mode, "learn", "too late: it was taken as said by accident")
+            s.pressed("on_stop")  # (the Finish key on the screen: pressed on purpose, nothing asked)
+            self.assertTrue(wait_for(lambda: s.hub_mode == "menu"))
+            s.set_mode("menu")
+
+    def test_quitting_pauses_everything_asks_and_a_yes_sums_up_then_goes_home(self):
+        """How quitting should feel: whatever Braillo was doing stops, he asks yes or no (and nothing else is said meanwhile), a
+        no carries on, and a yes says how it went and goes back to the menu."""
+        with mock.patch("learn.Journey._new_learner", return_value=False):
+            s, voice, finger, feed = hub()
+            heard = {"n": 0, "text": "", "matched": False, "reason": None}
+            s.heard_fn = lambda: heard
+            s.watch_once(0.0)
+            s.set_mode("learn")
+            finger.pos = cell_pos("alphabet", "a")
+            self.assertTrue(wait_for(lambda: s.learning_status()["target"] == "b"))
+            finger.pos = None
+            voice.commands["stop"]()  # "I wanna quit"
+            self.assertEqual(voice.said[-1], tutor.LEAVE_QUESTION)
+            n = len(voice.said)
+            s.say("A hint that came due meanwhile.")
+            s._learn("on_hint")
+            self.assertEqual(len(voice.said), n, "the lesson is paused while it asks")
+            heard.update(n=1, text="what about the cat")  # (neither yes nor no: asked once more)
+            s.watch_once(1.0)
+            self.assertEqual(voice.said[-1], tutor.LEAVE_AGAIN)
+            heard.update(n=2, text="yeah i'm done")
+            s.watch_once(2.0)
+            self.assertTrue(wait_for(lambda: s.hub_mode == "menu"))
+            self.assertTrue(wait_for(lambda: "You found 1 of 1 letters today." in voice.said[-1]))
+            self.assertTrue(voice.said[-1].startswith("Okay, let's stop there."))
+            self.assertIn("Say learn, read, or quiz", voice.said[-1])
+
+    def test_a_level_said_with_a_command_word_in_it_is_the_answer(self):
+        """From a real run: "let's start with new today" has "start" in it, a command, and the question was asked again."""
+        with mock.patch("learn.Journey._new_learner", lambda self: not self.progress.level):
+            s, voice, finger, feed = hub()
+            heard = {"n": 0, "text": "", "matched": False, "reason": None}
+            s.heard_fn = lambda: heard
+            s.watch_once(0.0)
+            s.set_mode("learn")
+            self.assertEqual(s.learning_status()["phase"], "placing")
+            heard.update(n=1, text="let's start with new today", matched=True)
+            voice.commands["start quiz"]()
+            self.assertEqual((s.progress.level, s.learning_status()["target"]), ("new", "a"))
+            s.set_mode("menu")
+
+    def test_a_late_reply_from_braillo_does_not_start_the_lesson_over(self):
+        """From a real run: "learn" started the lesson (and its familiarity question) while Braillo was still answering for the menu.
+        His late "say learn, read or quiz", with the action learn, started the lesson over and asked the question again."""
+        s, voice, finger, feed = hub()
+        s.set_user("Gina", "guest")
+
+        class Late:
+            enabled = True
+
+            def respond(self, text, context=None, on_first=None):
+                s.set_mode("learn")  # (the command ran while this reply was on its way)
+                on_first("Say learn, read, or quiz, and I will take it from there.")
+                return {"action": "learn", "say": "Say learn, read, or quiz, and I will take it from there."}
+
+        s.ask = Late()
+        self.assertTrue(wait_for(lambda: s._greeted_for is not None))
+        time.sleep(0.1)
+        voice.said.clear()
+        s._talk("okay let's learn then")
+        started = len(voice.said)
+        self.assertEqual(started, 1, voice.said)  # (the lesson's opening: once)
+        self.assertFalse(any("learn, read, or quiz, and I will" in x for x in voice.said))
+        s.set_mode("learn")  # (and asked again, by a button too: still the one lesson, not started over)
+        self.assertEqual(len(voice.said), started)
+        s.set_mode("menu")
+
+    def test_signing_out_is_not_undone_by_the_website_sending_them_straight_back(self):
+        """From a real run: signed out by voice, the website (not yet told) sent the same guest again, who was greeted again."""
+        s, voice, finger, feed = hub()
+        s.website = True
+        s.set_user("Gina", "guest", "visit1")
+        self.assertTrue(wait_for(lambda: s._greeted_for is not None))
+        s.on_sign_out()
+        n = len(voice.said)
+        self.assertIs(s.set_user("Gina", "guest", "visit1"), False)
+        time.sleep(0.2)
+        self.assertIsNone(s.user)
+        self.assertEqual(len(voice.said), n, "no greeting")
+        s.phone_news("I've lost the phone's camera.")
+        self.assertEqual(len(voice.said), n, "the phone is nobody's news now")
+        s.set_user("Ben", "guest", "visit2")  # (someone else can sign in at once)
+        self.assertEqual(s.user["name"], "Ben")
+
+    def test_the_sign_in_page_asking_for_its_welcome_means_that_is_where_they_are(self):
+        """From a real run: the website's report of the sign-in page came late, so a "hi" there was answered as if on the front page
+        ("You're on the front page..."). The sign-in welcome is only asked for by the sign-in page: so that is where they are."""
+        s, voice, finger, feed = hub()
+        s.website = True
+        s.set_page("landing", ["Start learning"])
+        s.speak_prompt("welcome")
+        self.assertEqual(s.page, "login")
+        heard = {"n": 0, "text": "", "matched": False, "reason": None}
+        s.heard_fn = lambda: heard
+        s.watch_once(0.0)
+        heard.update(n=1, text="hi there how are you")
+        self.assertFalse(s._wants_talk(heard), "the sign-in page's own conversation answers that")
+        s.speak_prompt("connect_phone")
+        self.assertEqual(s.page, "connect-phone")
+
+    def test_the_quiz_waits_for_its_own_sheet_and_says_when_another_is_there(self):
+        """From a real run: the quiz started with the words sheet under the camera. Now it waits for the look-alikes sheet."""
+        s, voice, finger, feed = hub()
+        under = {"sheet": "words"}
+        s.sheet_in_view_fn = lambda: under["sheet"]
+        watched = []
+        s.watch_sheet = watched.append
+        s.set_mode("quiz")
+        self.assertEqual(s.state, "await_sheet")
+        self.assertIn("Get the look-alikes sheet ready", voice.said[-1])
+        self.assertTrue(wait_for(lambda: any("That's the words sheet. The quiz needs the look-alikes sheet" in x for x in voice.said)))
+        self.assertEqual(s.state, "await_sheet", "not on the wrong sheet")
+        s.on_start()  # ("I'm ready")
+        self.assertIn("I'm waiting for the look-alikes sheet", voice.said[-1])
+        under["sheet"] = "lookalikes"
+        self.assertTrue(wait_for(lambda: s.state == "asking"))
+        self.assertTrue(any("I can see the sheet" in x for x in voice.said))
+        self.assertIn("lookalikes", watched)
+        self.assertIsNone(watched[-1], "the check stops once it has started")
+        s.set_mode("menu")
+
+    def test_a_page_the_camera_cannot_name_starts_on_their_word_but_a_wrong_one_does_not(self):
+        s, voice, finger, feed = hub()
+        under = {"sheet": "words"}
+        s.sheet_in_view_fn = lambda: under["sheet"]
+        s.set_mode("quiz")
+        s.on_start()  # ("I'm ready", on the words sheet: no)
+        self.assertEqual(s.state, "await_sheet")
+        under["sheet"] = None  # (a page, but which one cannot be made out)
+        s.on_start()
+        self.assertEqual(s.state, "asking")
+        s.set_mode("menu")
+
+    def test_a_lesson_waits_for_its_own_sheet_not_just_any_page(self):
+        s, voice, finger, feed = hub()
+        under = {"sheet": "words"}
+        s.sheet_in_view_fn = lambda: under["sheet"]
+        s.set_mode("learn")
+        self.assertEqual(s.learning_status()["phase"], "await_sheet")
+        self.assertTrue(wait_for(lambda: any("That's the words sheet" in x for x in voice.said)))
+        under["sheet"] = "alphabet"
+        self.assertTrue(wait_for(lambda: s.learning_status()["phase"] == "teach"))
+        s.set_mode("menu")
 
     def test_quiz_uses_the_look_alikes_sheet_and_resting_a_finger_answers(self):
         s, voice, finger, feed = hub()
@@ -385,6 +605,7 @@ class ModeTests(unittest.TestCase):
         linked[0] = True
         commands["quiz"]()
         self.assertEqual(s.hub_mode, "quiz")
+        s.set_mode("menu")  # (the quiz's loop ends with it)
 
     def test_braillo_knows_the_page_the_camera_the_finger_and_what_he_is_waiting_for(self):
         s, voice, finger, feed = hub(phone=lambda: True)
@@ -475,8 +696,29 @@ class ModeTests(unittest.TestCase):
                         "the usual instructions leave it out")
         heard.update(n=1, text="it won't scan")
         s.watch_once(1.0)
-        self.assertEqual(voice.said[-1], "If it won't scan, open the address on the screen in your phone's browser, and type the code "
-                                         "4 0 7 2 6 8.", "no backup link: how to type it in")
+        self.assertTrue(voice.said[-1].startswith("Let's sort it out. If the code won't scan, open the address on the screen in your phone's "
+                                                  "browser, and type the code 4 0 7 2 6 8."), "no backup link: how to type it in")
+
+    def test_the_qr_page_is_quiet_unless_they_ask(self):
+        """From a real run: it talked a lot on the QR page. There, stray speech gets no answer; "how do I do this" gets the steps."""
+        s, voice, finger, feed = hub(phone=lambda: False)
+        s.website = True
+        s.set_user("Gina", "guest")
+        s.ask = type("Talker", (), {"enabled": True, "respond": lambda self, *a, **k: {"action": "none", "say": "Chatty reply."}})()
+        heard = {"n": 0, "text": "", "matched": False, "reason": None}
+        s.heard_fn = lambda: heard
+        s.watch_once(0.0)
+        s.page = "connect-phone"
+        time.sleep(0.2)
+        voice.said.clear()
+        heard.update(n=1, text="okay hold on let me grab my phone")
+        s.watch_once(1.0)
+        heard.update(n=2, text="i think the camera is open now")
+        s.watch_once(2.0)
+        self.assertEqual(voice.said, [], "busy with the phone: no reply")
+        heard.update(n=3, text="how do i do this")
+        s.watch_once(3.0)
+        self.assertEqual(voice.said[-1], tutor.PAGE_HELP["connect-phone"])
 
     def test_the_backup_code_is_shown_when_they_say_it_is_not_working_and_only_then(self):
         import phonelink
@@ -495,7 +737,7 @@ class ModeTests(unittest.TestCase):
         self.assertEqual((shown, voice.said[-1]), ([True], phonelink.BACKUP_LINE))
         heard.update(n=2, text="still not working")
         s.watch_once(3.0)
-        self.assertTrue(voice.said[-1].startswith("If it won't scan, open the address"), "the second time: type it in instead")
+        self.assertTrue(voice.said[-1].startswith("Let's sort it out. If the code won't scan"), "the second time: type it in instead")
 
     def test_google_or_guest_said_on_the_front_page_opens_the_sign_in_page(self):
         s, voice, finger, feed = hub()
@@ -530,6 +772,26 @@ class ModeTests(unittest.TestCase):
         time.sleep(0.2)
         self.assertEqual(len(voice.said), n, "quiet on the front page from now on")
 
+    def test_its_own_name_coming_back_while_it_asks_does_not_answer_the_front_pages_question(self):
+        """From a real run: "Hi, I'm Braillo... say yes, or no" came back through the laptop's microphone as the wake word, and the
+        whole welcome followed over the learner's "no". The open question is answered only by a yes or a no."""
+        s, voice, finger, feed = hub()
+        s.website = True
+        heard = {"n": 0, "text": "", "matched": False, "reason": None}
+        s.heard_fn = lambda: heard
+        s.watch_once(0.0)
+        s.set_page("landing", arrived=True)
+        self.assertTrue(wait_for(lambda: tutor.ARRIVAL_LINES["landing"] in voice.said and not s._speech.locked()))
+        heard.update(n=1, text="hi i'm braillo", matched=True)
+        s.on_braillo()
+        self.assertNotIn(tutor.LANDING_WELCOME, voice.said)
+        heard.update(n=2, text="no", matched=False)
+        s.watch_once(1.0)
+        self.assertEqual((s.guided, voice.said[-1]), (False, tutor.LANDING_NO))
+        heard.update(n=3, text="braillo", matched=True)
+        s.on_braillo()  # (after the no, "if you want me, just say Braillo")
+        self.assertEqual(voice.said[-1], tutor.LANDING_WELCOME)
+
     def test_help_fits_the_page_of_the_way_in(self):
         s, voice, finger, feed = hub()
         s.website = True
@@ -539,9 +801,9 @@ class ModeTests(unittest.TestCase):
         self.assertNotIn("learn, read", voice.said[-1])
         s.set_page("connect-phone")
         s.on_help()
-        self.assertIn("Scan the code", voice.said[-1])
+        self.assertIn("point it at the code on the screen", voice.said[-1])
         s.on_more_help()
-        self.assertIn("Scan the code", voice.said[-1])
+        self.assertIn("point it at the code on the screen", voice.said[-1])
         self.assertNotIn("Learn teaches", voice.said[-1])
 
     def test_any_button_on_the_page_can_be_used_by_saying_its_name(self):
@@ -597,7 +859,7 @@ class ModeTests(unittest.TestCase):
         self.assertEqual((s.nav["n"], s.nav["to"], s.hub_mode), (n + 1, "account", "menu"))  # the quiz stops; the page speaks next
         s.on_sign_out()
         self.assertEqual((s.nav["n"], s.nav["to"]), (n + 2, "signout"))
-        self.assertIn("Signing you out", voice.said[-1])
+        self.assertIn("You're signed out", voice.said[-1])
 
     def test_a_finished_quiz_goes_back_to_the_menu(self):
         s, voice, finger, feed = hub()
@@ -664,7 +926,9 @@ class ModeTests(unittest.TestCase):
             s.set_user("Sam", "guest")
             s.set_mode(mode)
             self.assertEqual(s.hub_mode, mode)
-            s.voice.commands["stop"]()
+            s.voice.commands["stop"]()  # ("do you want to stop?")
+            self.assertIn(tutor.LEAVE_QUESTION, voice.said)
+            s.voice.commands["stop"]()  # (said again: yes)
             self.assertTrue(wait_for(lambda: s.hub_mode == "menu", 5), f"{mode}: stop did not leave it: {voice.said[-3:]}")
             self.assertEqual((s.mode, s.state), ("menu", "menu"))
             self.assertNotIn("Round complete", " ".join(voice.said), mode)
@@ -690,14 +954,15 @@ class ModeTests(unittest.TestCase):
         s.set_mode("menu")
         self.assertTrue(wait_for(lambda: not any(t.name == "dwell" and t.is_alive() for t in threading.enumerate()), 3))
 
-    def test_stop_in_a_mode_gives_the_recap_then_the_menu(self):
+    def test_stop_in_a_mode_gives_how_it_went_and_the_menu_in_one_line(self):
         s, voice, finger, feed = hub()
         s.set_mode("learn")
         finger.pos = cell_pos("alphabet", "a")
         self.assertTrue(wait_for(lambda: s.learning_status()["target"] == "b"))
         voice.commands["stop"]()
+        voice.commands["stop"]()  # (asked first: said again, that is a yes)
         self.assertEqual((s.hub_mode, s.state), ("menu", "menu"))
-        self.assertIn("end of this session", " ".join(voice.said))
+        self.assertIn("You found 1 of 1 letters today.", voice.said[-1])
         self.assertIn("Say learn, read, or quiz", voice.said[-1])
         self.assertIn("Choose an option", voice.said[-1])
 
@@ -705,13 +970,16 @@ class ModeTests(unittest.TestCase):
         s, voice, finger, feed = hub()
         voice.commands["quiz"]()
         self.assertEqual(s.hub_mode, "quiz")
+        voice.commands["menu"]()  # (mid-quiz: asked first)
         voice.commands["menu"]()
         self.assertEqual(s.hub_mode, "menu")
         voice.commands["learn"]()
         self.assertEqual((s.hub_mode, feed.sheet_name), ("learn", "alphabet"))
         voice.commands["read"]()
         self.assertEqual((s.hub_mode, feed.sheet_name), ("read", "words"))
+        voice.commands["menu"]()  # (mid-reading: asked first)
         voice.commands["menu"]()
+        self.assertEqual(s.hub_mode, "menu")
 
     def test_choosing_a_mode_in_a_non_menu_tutor_explains_and_changes_nothing(self):
         voice = FakeVoice()
@@ -834,13 +1102,37 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["hub"]["user"], {"name": "Ana", "kind": "google", "saves": True})
         self.assertTrue(wait_for(lambda: any("Ana" in x["text"] and tutor.MENU_LINE in x["text"] for x in http(self.base + "/api/state")[2]["said"])))
 
+    def test_a_reloaded_website_with_nobody_signed_in_makes_the_tutor_forget_an_old_guest(self):
+        """From a real run: a guest from before a reload stayed in the tutor, so the sign-in page was talked over as if someone was in."""
+        http(self.base + "/api/session", {"kind": "guest", "name": "Gina"})
+        said = len(http(self.base + "/api/state")[2]["said"])
+        code, _, body = http(self.base + "/api/session", {"kind": "none"})
+        self.assertEqual(code, 200)
+        self.assertIsNone(body["hub"]["user"])
+        self.assertEqual(body["hub"]["mode"], "menu")
+        self.assertEqual(http(self.base + "/api/session", {"kind": "none"})[0], 200, "nobody to forget: still fine")
+        time.sleep(0.3)
+        self.assertFalse(any("signed out" in x["text"] for x in http(self.base + "/api/state")[2]["said"][said:]), "forgotten quietly")
+
+    def test_the_level_buttons_endpoint_answers_the_level_question(self):
+        """From the final check: the Learn page's level buttons posted to /api/level, which answered 404, so they did nothing."""
+        with mock.patch("learn.Journey._new_learner", lambda j: not j.progress.level):
+            http(self.base + "/api/session", {"kind": "guest", "name": "Lev", "profile": "lev1"})
+            http(self.base + "/api/mode", {"mode": "learn"})
+            self.assertTrue(wait_for(lambda: (http(self.base + "/api/state")[2]["learning"] or {}).get("phase") == "placing"))
+            self.assertEqual(http(self.base + "/api/level", {"level": "dance"})[0], 400)
+            self.assertEqual(http(self.base + "/api/level", {"level": "new"})[0], 202)
+            self.assertTrue(wait_for(lambda: http(self.base + "/api/state")[2]["learning"]["phase"] != "placing"))
+            http(self.base + "/api/mode", {"mode": "menu"})
+
     def test_the_mode_endpoint_switches_and_returns(self):
         self.assertEqual(http(self.base + "/api/mode", {"mode": "dance"})[0], 400)
         self.assertEqual(http(self.base + "/api/mode", {})[0], 400)
         self.assertEqual(http(self.base + "/api/mode", {"mode": "quiz"})[0], 202)
         self.assertTrue(wait_for(lambda: http(self.base + "/api/state")[2]["hub"]["mode"] == "quiz"))
         s = http(self.base + "/api/state")[2]
-        self.assertEqual((s["config"]["sheet"], s["tutor"]["state"]), ("lookalikes", "asking"))
+        # (the video shows the alphabet sheet: the quiz waits for the look-alikes sheet rather than starting on the wrong one)
+        self.assertEqual((s["config"]["sheet"], s["tutor"]["state"]), ("lookalikes", "await_sheet"))
         self.assertEqual(http(self.base + "/api/mode", {"mode": "menu"})[0], 202)
         self.assertTrue(wait_for(lambda: http(self.base + "/api/state")[2]["hub"]["mode"] == "menu"))
 
@@ -870,12 +1162,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(http(self.base + "/api/prompt", {"name": "go_guest_anon", "who": "ignored"})[0], 202)
 
     def test_your_page_reads_out_your_own_progress_from_the_tutors_record(self):
-        n = len(http(self.base + "/api/state")[2]["said"])
         self.assertEqual(http(self.base + "/api/prompt", {"name": "account", "who": "Sam"})[0], 202)
         self.assertEqual(http(self.base + "/api/prompt", {"name": "account_letters"})[0], 202)
-        self.assertTrue(wait_for(lambda: len(http(self.base + "/api/state")[2]["said"]) >= n + 2))
-        said = [x["text"] for x in http(self.base + "/api/state")[2]["said"][n:]]
-        self.assertTrue(any("Sam" in t and "letters" in t for t in said), said)
+        lines = lambda: [x["text"] for x in http(self.base + "/api/state")[2]["said"]]  # noqa: E731  (the last few lines said)
+        self.assertTrue(wait_for(lambda: any("Sam" in t and "letters" in t for t in lines())), lines())
+        said = lines()
         self.assertFalse(any("{" in t for t in said), said)  # every blank filled in
 
     def test_the_sign_in_conversation_silences_commands_and_the_did_not_catch_that_reply(self):

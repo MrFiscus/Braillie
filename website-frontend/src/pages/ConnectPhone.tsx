@@ -9,7 +9,6 @@ import { useSpokenLine } from '../voice/useSpokenLine.ts'
 import { TUTOR_API, sayPrompt, setMic, shareTheme, switchToBackupLink } from '../tutor/tutorApi.ts'
 import { useVoiceTab } from '../voice/useVoiceTab.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
-import { useTutorSession } from '../tutor/useTutorSession.ts'
 import { useUser } from '../auth/useUser.ts'
 import { backTo } from '../tutor/phoneWatch.ts'
 
@@ -23,7 +22,6 @@ const ConnectPhone = () => {
   const onward = backTo(search) // where to go once the phone is linked
   const { user, loading } = useUser()
   const { state, reach } = useTutorState()
-  useTutorSession(user, state)
   const phone = state?.phone ?? null
   const menuDriven = !!state?.hub
   const knowsUser = !!state?.hub?.user || !menuDriven // (a tutor that is not menu-driven has no one to know)

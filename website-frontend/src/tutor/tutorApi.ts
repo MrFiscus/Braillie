@@ -140,6 +140,9 @@ async function ok(res: Response, what: string): Promise<void> {
 export const setSession = async (who: { kind: 'google' | 'guest'; name: string; profile?: string }) =>
   ok(await post('/api/session', who), 'session')
 
+/** Nobody is signed in on the website: the tutor forgets whoever it had (quietly: no "signed out" line). */
+export const forgetSession = async () => ok(await post('/api/session', { kind: 'none' }), 'session')
+
 /** Choose what to do: learn, read, quiz, or menu to go back to the choice. */
 export const setMode = async (mode: HubMode) => ok(await post('/api/mode', { mode }), 'mode')
 

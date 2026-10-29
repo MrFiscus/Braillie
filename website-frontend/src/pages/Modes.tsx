@@ -8,7 +8,6 @@ import MicButton from '../components/MicButton.tsx'
 import { DOTS } from '../braille/alphabet.ts'
 import { setMic, setMode, type HubMode } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
-import { useTutorSession } from '../tutor/useTutorSession.ts'
 import { useSpeechPosition } from '../voice/useSpeechPosition.ts'
 import { useSpokenLine } from '../voice/useSpokenLine.ts'
 import { useUser } from '../auth/useUser.ts'
@@ -31,7 +30,6 @@ const Modes = () => {
   const navigate = useNavigate()
   const { user, loading } = useUser()
   const { state, reach } = useTutorState(500) // (often enough to show each spoken sentence as it starts)
-  useTutorSession(user, state)
   const heading = useRef<HTMLHeadingElement>(null)
   const hub = state?.hub ?? null
   const next = hub?.next_lesson ?? null

@@ -1138,12 +1138,13 @@ class StartPhoneTunnelTests(unittest.TestCase):
         import argparse
         return argparse.Namespace(phone_camera=True, phone_host="127.0.0.1", phone_port=0, phone_tunnel=tunnel, sound="laptop", mic="laptop")
 
-    def start(self, binary=None, tunnel=True):
+    def start(self, binary=None, tunnel=True, found=lambda url: True):
         from unittest import mock
         import contextlib
         import io
         out = io.StringIO()
-        with mock.patch.object(phonelink, "find_cloudflared", return_value=binary), contextlib.redirect_stdout(out):
+        with mock.patch.object(phonelink, "find_cloudflared", return_value=binary), contextlib.redirect_stdout(out), \
+                mock.patch.object(phonelink, "address_resolves", side_effect=found), mock.patch.object(phonelink.time, "sleep"):
             link, camera, server = phonelink.start_phone(self.args(tunnel))
         self.addCleanup(server.stop)
         link.verbose = False
@@ -1157,6 +1158,28 @@ class StartPhoneTunnelTests(unittest.TestCase):
         code, _, body = request(f"http://127.0.0.1:{link.port}/phone/frame?t={link.code}", jpeg(), headers={"Content-Type": "image/jpeg"})
         self.assertEqual((code, body["ok"]), (200, True))
         self.assertTrue(link.connected)
+
+    def test_a_tunnel_whose_address_is_never_found_is_replaced_before_the_code_is_shown(self):
+        """From a real run: a quick tunnel was never published, so the QR code led nowhere. A fresh one is started instead."""
+        from unittest import mock
+        asked = []
+        found = lambda url: asked.append(url) or len(set(asked)) > 1  # noqa: E731  (the first tunnel is never found)
+        with mock.patch.object(phonelink, "start_tunnel", side_effect=[
+                mock.Mock(url="https://lost-one.trycloudflare.com", stop=mock.Mock(), alive=lambda: True),
+                mock.Mock(url="https://good-one.trycloudflare.com", stop=mock.Mock(), alive=lambda: True)]):
+            link, server, out = self.start(fake_tunnel(GOOD_TUNNEL), found=found)
+        self.assertEqual(link.public_base, "https://good-one.trycloudflare.com")
+        self.assertIn("starting a fresh tunnel", out)
+        self.assertIn("good-one", link.url)
+
+    def test_when_no_tunnel_can_be_found_the_local_link_is_shown_not_a_dead_one(self):
+        from unittest import mock
+        with mock.patch.object(phonelink, "start_tunnel", side_effect=lambda port: mock.Mock(url="https://lost.trycloudflare.com",
+                                                                                            stop=mock.Mock(), alive=lambda: True)):
+            link, server, out = self.start(fake_tunnel(GOOD_TUNNEL), found=lambda url: False)
+        self.assertFalse(link.tunnelled)
+        self.assertNotIn("trycloudflare", link.url)
+        self.assertIn("Using the local network instead", out)
 
     def test_a_wrong_code_still_gets_nothing_through_the_tunnel(self):
         link, _, _ = self.start(fake_tunnel(GOOD_TUNNEL))

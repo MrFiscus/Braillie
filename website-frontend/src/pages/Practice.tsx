@@ -9,7 +9,6 @@ import { describeDots } from '../tutor/describeDots.ts'
 import { TUTOR_API, sendCommand, sendFinger, setLevel, setMic, setMode, type LearningStatus, type Level, type TutorState } from '../tutor/tutorApi.ts'
 import { useTutorState } from '../tutor/useTutorState.ts'
 import { useProgressSync } from '../tutor/useProgressSync.ts'
-import { useTutorSession } from '../tutor/useTutorSession.ts'
 import { useSpeechPosition } from '../voice/useSpeechPosition.ts'
 import { useSpokenLine } from '../voice/useSpokenLine.ts'
 import { useUser } from '../auth/useUser.ts'
@@ -75,10 +74,10 @@ const Target = ({ letter, dots, showDots }: { letter: string; dots: number[]; sh
 
 // Before a new learner's first lesson: how much braille do they know already? (The same as saying it; the lessons start from there.)
 const LEVELS: { level: Level; label: string; start: string }[] = [
-  { level: 'new', label: 'New to braille', start: 'Start from A. Not sure? Pick this.' },
-  { level: 'some', label: 'Some letters', start: 'Start at K' },
-  { level: 'alphabet', label: 'The alphabet', start: 'Start at look-alikes' },
-  { level: 'numbers', label: 'Letters and numbers', start: 'Start at punctuation' },
+  { level: 'new', label: 'Complete beginner', start: 'Start from A. Not sure? Pick this.' },
+  { level: 'some', label: 'Tried it a little', start: 'Start at K' },
+  { level: 'alphabet', label: 'Learned it before', start: 'Start at look-alikes' },
+  { level: 'numbers', label: 'Pretty confident', start: 'Start at punctuation' },
 ]
 const SHEET_WORDS: Record<string, string> = { alphabet: 'alphabet', words: 'words', lookalikes: 'look-alikes', numbers: 'numbers' }
 
@@ -95,7 +94,7 @@ const LearnStage = ({ learning, state }: { learning: LearningStatus; state: Tuto
       <>
         <p className="play__kicker">Before your first lesson</p>
         <p className="play__big play__big--words" id="level-q">
-          How much braille do you know?
+          How familiar are you with braille?
         </p>
         <div className="levels" role="group" aria-labelledby="level-q">
           {LEVELS.map((l) => (
@@ -219,7 +218,6 @@ const Practice = () => {
   const { state, reach } = useTutorState(500)
   const navigate = useNavigate()
   const { user, loading } = useUser()
-  useTutorSession(user, state)
   const sync = useProgressSync(state, user?.kind === 'google')
   const [camera, setCamera] = useState(false)
   const learning = state?.learning ?? null

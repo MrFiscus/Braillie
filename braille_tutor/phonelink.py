@@ -77,6 +77,8 @@ TUNNEL_URL = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com")
 # "server not found"), so a tunnel only counts as ready once it has.
 TUNNEL_REGISTERED = re.compile(r"registered tunnel connection", re.IGNORECASE)
 TUNNEL_SECONDS = 30.0  # how long to wait for the tunnel to say its address
+TUNNEL_FOUND_SECONDS = 25.0  # how long a new tunnel's address may take to be found on the internet before a fresh one is tried
+TUNNEL_ATTEMPTS = 3
 BACKUP_LINE = ("Let's try another way. This Wi-Fi may be blocking the phone, so I've changed the code on the screen to a backup link "
                "that works on any network. Scan the new code with your phone's camera.")
 LOCAL_IP_DOMAIN = "local-ip.sh"  # a public name service: 192-168-1-22.local-ip.sh points at 192.168.1.22, with a real certificate
@@ -1249,12 +1251,25 @@ def start_phone(a, announce: Optional[Callable] = None, voice=None, on_ready: Op
         link.tls = False  # the tunnel's own certificate is what the phone sees; this server is only for the tunnel, on this computer
         server = PhoneServer(link, host="127.0.0.1").start()
         try:
-            server.tunnel = start_tunnel(link.port)
-            link.public_base = server.tunnel.url
+            # A quick tunnel is now and then never published (its name is never found: from a real run). Then a fresh one is started,
+            # before the code is shown, rather than putting up a code that leads nowhere.
+            for attempt in range(1, TUNNEL_ATTEMPTS + 1):
+                server.tunnel = start_tunnel(link.port)
+                link.public_base = server.tunnel.url
+                time.sleep(5)  # (asking before Cloudflare has published the name can make this computer remember "not found")
+                deadline = time.monotonic() + TUNNEL_FOUND_SECONDS
+                while not address_resolves(link.public_base) and time.monotonic() < deadline:
+                    time.sleep(2)
+                if address_resolves(link.public_base):
+                    break
+                if attempt == TUNNEL_ATTEMPTS:
+                    raise TunnelError(f"{TUNNEL_ATTEMPTS} tunnels in a row could not be found on the internet")
+                print(f"[phone] {link.public_base} cannot be found on the internet: starting a fresh tunnel", flush=True)
+                server.tunnel.stop()
         except TunnelError as e:
             print(f"\n[phone] {e}\n[phone] Using the local network instead (the phone will warn the connection is not private).", flush=True)
             server.stop()
-            server, link.tls = None, True
+            server, link.tls, link.public_base = None, True, None  # (the local link: not a tunnel address that leads nowhere)
     if server is None and (getattr(a, "phone_trusted", False) or getattr(a, "phone_domain", None)):
         try:
             if getattr(a, "phone_domain", None):

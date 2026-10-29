@@ -24,7 +24,7 @@ class _Fired:
         voice_io._mic_paused = False
         voice_io._speaking_text = voice_io._echo_text = self.speaking
         voice_io._echo_left.clear()
-        voice_io._echo_left.update(voice_io._words(self.speaking))  # (as speak() does when a line starts)
+        voice_io._echo_left.update(voice_io._echo_words(self.speaking))  # (as speak() does when a line starts)
         voice_io._echo_until = 0.0
         voice_io._pieces = []
         voice_io._interrupted.clear()
@@ -79,9 +79,12 @@ def test_an_interim_command_cuts_it_off_at_once_but_runs_only_when_final() -> No
         voice_io._process_transcript_event("dots one four", 0.99, False)
         voice_io._process_transcript_event("the letter d uh", 0.99, False)
         assert not voice_io._interrupted.is_set()
-    with _Fired(LINE) as fired:  # the learner talking (three words of their own) does
-        voice_io._process_transcript_event("the letter d hang on what was", 0.99, False)
-        assert voice_io._interrupted.is_set() and fired == []
+    with _Fired(LINE) as fired:  # nor does talk that is not a command (other people in the room, say): it is answered afterwards
+        voice_io._process_transcript_event("the letter d did you see the game last night", 0.99, False)
+        assert not voice_io._interrupted.is_set() and fired == []
+    with _Fired(LINE) as fired:  # its name does: they want it
+        voice_io._process_transcript_event("braillo wait", 0.99, False)
+        assert voice_io._interrupted.is_set()
 
 
 def test_the_learner_is_heard_through_the_apps_own_voice() -> None:
@@ -89,9 +92,9 @@ def test_the_learner_is_heard_through_the_apps_own_voice() -> None:
     with _Fired(LINE) as fired:  # a command in the middle of the app's line
         assert voice_io._process_transcript_event("the letter d dots one four and give me a hint", 0.6, True) == "hint"
         assert fired == ["hint"] and voice_io._interrupted.is_set()
-    with _Fired(LINE) as fired:  # plain speech over the app: it stops, and the learner's words are passed on as heard
+    with _Fired(LINE) as fired:  # plain speech over the app: it carries on, and the learner's words are passed on as heard
         assert voice_io._process_transcript_event("the letter d can you explain that please dots one", 0.5, True) is None
-        assert voice_io._interrupted.is_set()
+        assert not voice_io._interrupted.is_set()
         assert voice_io._status["heard"]["text"] == "can you explain that please"
         assert voice_io._status["heard"]["matched"] is False
     with _Fired(LINE) as fired:  # the app misheard by a word or two: kept as heard, marked, and it carries on talking
@@ -117,6 +120,31 @@ def test_a_word_the_line_also_says_is_still_heard_from_the_learner() -> None:
         # ...and the app's own "guest", arriving after, is then the one left over: it still comes out as heard
         voice_io._process_transcript_event("without an account say guest", 0.9, True)
         assert voice_io._status["heard"]["text"] == "guest"
+
+
+def test_its_own_name_coming_back_misspelt_is_not_the_wake_word() -> None:
+    """From a real run: "Hi, I'm Braillo" came back through the laptop's microphone written another way, and was taken for the wake
+    word. Every way of writing the name counts as the line's own; the learner saying it after is still heard."""
+    offer = "Hi, I'm Braillo. Would you like me to talk you through this website by voice? Say yes, or no."
+    with _Fired(offer) as fired:
+        assert voice_io._process_transcript_event("hi i'm brello would you like", 0.9, True) is None
+        assert fired == [] and not voice_io._interrupted.is_set()
+        assert voice_io._process_transcript_event("braillo", 0.9, True) == "braillo"  # (the line has one name, already heard back)
+
+
+def test_quitting_after_the_wake_word_is_quitting_and_a_question_is_still_a_question() -> None:
+    """From a real run: "hey Braillo, quit" asked Braillo a question ("What's your question?") instead of quitting."""
+    classify = lambda t: voice_io._classify_transcript(t, 0.95, True, None)[1]  # noqa: E731
+    assert classify("hey, braillo. quit") == "stop"
+    assert classify("hey braillo i wanna quit") == "stop"
+    assert classify("braillo go home") == "menu"
+    assert classify("braillo how do i learn") == "braillo"
+    assert classify("braillo what does stop mean in braille please tell me") == "braillo"
+    assert classify("one more") is None  # (not "no more": leaving needs a close match)
+    assert classify("hey, braillo. i need a hint") == "hint"
+    assert classify("hey, braillo. let's do read") == "read"
+    assert classify("hey braillo what is a hint") == "braillo"
+    assert classify("hey braillo can we stop") == "stop"
 
 
 def test_echo_tail_after_the_line_ends() -> None:
@@ -191,7 +219,7 @@ def test_with_the_echo_canceller_the_learners_words_are_kept_whole() -> None:
         with _Fired(welcome):
             assert voice_io._process_transcript_event("i would like to carry on as a guest", 0.9, True) is None
             assert voice_io._status["heard"]["text"] == "i would like to carry on as a guest"  # (most of it is the line's words too)
-            assert voice_io._interrupted.is_set()  # they are talking to it: it stops to listen
+            assert not voice_io._interrupted.is_set()  # (heard, and answered once the line is done: not cut off)
         with _Fired(welcome):
             assert voice_io._process_transcript_event("guest", 0.9, True) is None
             assert voice_io._status["heard"]["text"] == "guest"  # the one word the line also says: still theirs
@@ -242,6 +270,44 @@ def test_played_on_the_phone_a_mode_name_in_its_own_line_does_not_cut_it_off() -
             assert voice_io._interrupted.is_set(), "quiet still does"
     finally:
         voice_io._canceller, voice_io.MIC_FROM_PHONE, voice_io.SPEAKER_ON_PHONE = saved
+
+
+def test_its_own_line_leaking_past_the_canceller_misheard_does_not_cut_it_off() -> None:
+    """From a real run: the laptop's canceller let "That's E. Now the word C" through as "that's me now the word c". That is its own
+    voice, not the learner: it must not stop the line. The learner talking over it still does."""
+    line = "That's E. Now the word CAB. Find the letter C."
+    saved = voice_io._canceller, voice_io.MIC_FROM_PHONE, voice_io.SPEAKER_ON_PHONE
+    voice_io._canceller, voice_io.MIC_FROM_PHONE, voice_io.SPEAKER_ON_PHONE = object(), False, False  # (the laptop does both)
+    try:
+        with _Fired(line):
+            voice_io._process_transcript_event("that's me now the word c", 0.95, False)
+            assert not voice_io._interrupted.is_set()
+        with _Fired(line):
+            voice_io._process_transcript_event("be quiet", 0.95, False)
+            assert voice_io._interrupted.is_set(), "the learner, telling it to stop"
+    finally:
+        voice_io._canceller, voice_io.MIC_FROM_PHONE, voice_io.SPEAKER_ON_PHONE = saved
+
+
+def test_a_command_word_it_has_just_said_is_its_own_echo_but_the_learner_saying_it_later_is_not() -> None:
+    """From a real run: "Learn teaches the letters..." came back as "learn", and Braillo took it as the learner choosing Learn.
+    A command word heard within a few seconds of Braillo saying it is his own voice; the same word at another moment is theirs."""
+    import time as _t
+    line = "Learn teaches the letters a few at a time. Read says a word aloud. Quiz names a letter. Say learn, read, or quiz."
+    saved = voice_io._playing, voice_io._canceller
+    voice_io._canceller = object()  # (the laptop's speaker and microphone, with its echo canceller: the usual setup)
+    try:
+        with _Fired(line) as fired:
+            voice_io._playing = {"text": line, "started": _t.time() - 0.8, "seconds": 9.0}  # (just past "Learn teaches")
+            assert voice_io._process_transcript_event("learn", 0.95, True) is None
+            assert "learn" not in fired, "its own 'Learn', heard back"
+        with _Fired(line) as fired:
+            voice_io._callbacks["quiz"] = [lambda: fired.append("quiz")]
+            voice_io._playing = {"text": line, "started": _t.time() - 0.8, "seconds": 9.0}  # ("quiz" is not said until the end)
+            voice_io._process_transcript_event("quiz", 0.95, True)
+            assert "quiz" in fired, "the learner choosing Quiz early"
+    finally:
+        voice_io._playing, voice_io._canceller = saved
 
 
 def main() -> None:

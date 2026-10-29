@@ -34,13 +34,13 @@ import numpy as np
 import reader
 from detect import AMBER, GREEN, RED, _Detector, braille_status, cell_at, dot_distance, draw_cell, draw_detections, draw_hud, draw_page_outline, letter_of, locked_check_line, open_camera, page_source_from_args, page_status
 from drill import drill as _drill
-from llm import AskTutor, Coach, LLMClient, Pending, looks_like_question, strip_ask_wake, ASK_CANCEL
+from llm import TALK_MODEL, AskTutor, Coach, LLMClient, Pending, looks_like_question, strip_ask_wake, ASK_CANCEL
 import accessibility as acc
 import audio_speed
 import phonelink
 from earcons import Earcons
 from fingertip import FingerTracker, best_finder
-from learn import DOTS as LETTER_DOTS, DWELL_SECONDS, LESSONS, LEVELS, RETRY_LEVEL, Dwell, Journey, level_of
+from learn import ASK_LEVEL, ASK_LEVEL_AGAIN, ASKING as ASKING_PHASES, DOTS as LETTER_DOTS, DWELL_SECONDS, LESSONS, LEVELS, RETRY_LEVEL, Dwell, Journey, level_of
 from page import to_image, to_page
 from progress import Progress, progress_path
 from sheets import Symbol, feel_for, get_sheet, letter_symbol
@@ -132,7 +132,7 @@ NAG_MAX = 4
 TALK_MIN_WORDS = 2  # free speech shorter than this is not sent to Braillo to work out (a cough, "um")
 OVER_SPEECH = "heard over speech"  # voice_io's reason for a word or two caught while the tutor was talking
 EXPLORE_DWELL_SECONDS = 0.7  # a finger resting this long on one spot is "feeling" it
-NO_FINGER_SECONDS = 4.0  # in quiz/read: how long with no fingertip before the tutor says it cannot see one
+NO_FINGER_SECONDS = 8.0  # in quiz/read: how long with no fingertip (after it has finished talking) before it says it cannot see one
 NO_FINGER_AGAIN = 12.0  # ...and how long between those reminders
 EXPLORE_STILL_MM = 4.0  # ...where "one spot" means it moved less than this
 EXPLORE_LOST_SECONDS = 2.0  # finger gone this long: say so, once
@@ -233,32 +233,23 @@ PROMPTS = {  # canned things the website may ask the tutor to say (it cannot mak
     "go_google": "Opening Google now. From here, use your keyboard or screen reader on the Google page.",
     "give_up": "I'll stop listening for now. You can use the buttons on the screen instead: press tab to move between "
                "them.",
-    "connect_phone": (
-        "Now let's connect your phone. Open its camera, point it at the code on the screen, and tap the link that "
-        "pops up. Then tap the big Start button, and I'll say hello.",
-        "Next, your phone. Point its camera at the code on the screen and tap the link that appears. When the page "
-        "opens, tap the big Start button, and you'll hear me say hello.",
-        "Let's link your phone. Open the camera, aim it at the code on the screen, and tap the link. On the page that"
-        " opens, tap the big Start button.",
-        "Time to connect your phone. Hold its camera up to the code on the screen, then tap the link it shows. Tap "
-        "the big Start button, and I'll greet you.",
-        "Now for your phone. Scan the code on the screen with its camera, and tap the link. When the page loads, tap "
-        "the big Start button.",
-        "Let's get your phone ready. Point its camera at the code on the screen until a link appears, and tap it. "
-        "Then tap the big Start button, and I'll say hello.",
-        "Your phone is next. Open the camera, point it at the code on the screen, and tap the link that comes up. On "
-        "the new page, tap the big Start button.",
-        "Okay, now the phone. Use its camera to scan the code on the screen, and tap the link. When the page loads, "
-        "tap the big Start button.",
-        "Now we'll connect your phone. Hold its camera up to the code on the screen, and tap the link that appears. "
-        "Then press the big Start button, and I'll say hello.",
-        "Let's bring in your phone. Point its camera at the code on the screen, and tap the link. On the page that "
-        "opens, tap the big Start button, and I'll greet you.",
+    "connect_phone": (  # (all the steps, once: scan, the link, Start on the phone, where to hold it. Troubleshooting only if they ask)
+        "Now scan the code on the screen with your phone's camera, and tap the link. Then tap the big Start button in the middle of the phone's screen, and hold the phone about thirty centimetres above your sheet.",
+        "Next, your phone. Scan the code on the screen and tap the link that appears. Tap Start, the big button in the middle of its screen, then hold the phone about thirty centimetres above the sheet.",
+        "Point your phone's camera at the code on the screen and tap the link. When the page opens, tap the big Start button in the middle, and hold the phone about thirty centimetres above your sheet.",
+        "Time to connect your phone. Scan the code on the screen, tap the link, then tap the Start button in the middle of the phone's screen. Hold the phone about thirty centimetres above the sheet.",
+        "Now your phone: scan the code on the screen and tap the link. Tap the big Start button in the middle of the phone, then hold it about thirty centimetres above your sheet, camera facing down.",
+        "Let's link your phone. Scan the code on the screen with its camera and tap the link. Then tap Start in the middle of the phone's screen, and hold the phone about thirty centimetres above the sheet.",
+        "Scan the code on the screen with your phone and tap the link that comes up. Tap the big Start button in the middle of its screen, then hold the phone about thirty centimetres over your sheet.",
+        "Next, scan the code on the screen with your phone's camera and open the link. Tap the Start button in the middle of the phone's screen, and hold the phone about thirty centimetres above the sheet.",
+        "Okay, your phone. Point its camera at the code on the screen and tap the link. Tap the big Start button in the middle of the screen, then hold the phone about thirty centimetres above your sheet.",
+        "Now let's connect your phone. Scan the code on the screen and tap the link. Then tap Start, in the middle of the phone's screen, and hold the phone about thirty centimetres above the sheet.",
     ),
     # (the phone dropped out for good, mid-way: the website shows the code again, see usePhoneWatch.ts)
     "reconnect_phone": "I've lost your phone. Scan the code on the screen with its camera again, tap Start, and we'll carry on where we were.",
     # (only when they say it is not working: the way in without scanning, which most people never need to hear)
-    "connect_help": "If it won't scan, open the address on the screen in your phone's browser, and type the code {code}.",
+    "connect_help": ("Let's sort it out. If the code won't scan, open the address on the screen in your phone's browser, and type the "
+                     "code {code}. The phone needs the internet, on Wi-Fi or mobile data. When the page opens, tap Start, and allow the camera."),
 }
 DIALOGUE_SECONDS = 30.0  # the sign-in page keeps the conversation open by pinging; if it stops (tab closed) the tutor goes back to normal
 # Your page (the profile). Only the tutor says these, never the browser's own voice: {progress} and {letters} are filled in from the
@@ -275,7 +266,7 @@ PROMPTS.update({
     "account_help": "On this page, say letters to hear your alphabet, continue to go home, learn, read or quiz to start one of them, "
                     "or sign out. Say repeat to hear your page again.",
     "account_retry": "Sorry, I did not catch that. Say continue, letters, or sign out.",
-    "account_bye": "Signing you out. See you soon, {name}.",
+    "account_bye": "You're signed out. See you soon, {name}! If someone else wants a turn, they can say start learning.",
 })
 
 
@@ -321,19 +312,83 @@ LANDING_WELCOME = ("Welcome to Braillie. Here you learn braille by touch, with m
                    "practice sheets, and press each dot through from the back with a pen, so the dots stand up. If you can't do that "
                    "yourself, ask someone to print and poke them for you. When you're ready, say start learning to begin.")
 LANDING_NO = "Okay, I'll stay quiet. If you want me, just say Braillo."
+_WAKE_START = re.compile(r"^(?:hey |hi |ok |okay )?(?:braillo|braillie|brailo|brillo|brady|bradley|brownie|brio)\b[\s,.]*")
+LEAVE_QUESTION = "Do you want to stop and go back to the menu? Say yes, or no to keep going."
+LEAVE_WAIT = 20.0  # seconds to answer it (the speech service can take a few to reconnect): after that they simply carry on (it was probably said by accident)
+LEAVE_AGAIN = "Sorry, do you want to stop? Say yes to stop, or no to keep going."
+
+
+def _yes_or_no(text: str) -> Optional[bool]:
+    """The answer to "do you want to stop?": True, False, or None (neither)."""
+    t = " ".join(re.sub(r"[^a-z' ]", " ", text.lower()).split())
+    t = _WAKE_START.sub("", t).strip()  # ("hey Braillo, yes": the answer is the yes)
+    if _NO.match(t) or _KEEP_GOING.search(t):
+        return False
+    if _YES.match(t) or (len(t.split()) <= 6 and re.search(
+            r"\b(?:yes|yeah|yep|yup|sure|definitely|please do|i'?m done|stop|quit|exit|leave|i do)\b", t)):
+        return True
+    return None
+
+
+_KEEP_GOING = re.compile(r"\b(?:keep going|carry on|continue|not yet|stay|no thanks)\b")
+# Which page asks for each of the website's prompts: hearing one asked for says where the learner is, for certain.
+PROMPT_PAGES = {**{n: "login" for n in ("welcome", "welcome_back", "retry_choice", "retry_back", "ask_name", "confirm_name", "again_name",
+                                        "retry_name", "go_guest", "go_guest_anon", "go_google", "give_up")},
+                **{n: "connect-phone" for n in ("connect_phone", "reconnect_phone", "connect_help")},
+                **{n: "account" for n in ("account", "account_help", "account_letters", "account_retry")}}
+SIGNED_OUT_RACE = 15.0  # seconds after signing out in which the website's late "this is who is here" for that same person is ignored
+SIGNED_OUT_QUIET = 30.0  # seconds after signing out in which the front page does not speak (the goodbye already said what to do)
+FIXED_LINES = {LANDING_WELCOME, ARRIVAL_LINES["landing"], LANDING_NO, ASK_LEVEL, RETRY_LEVEL, ASK_LEVEL_AGAIN}  # said exactly as written (see TutorSession._own_words)
 _YES = re.compile(r"^(?:yes|yeah|yep|yup|sure|please|okay|ok|yes please|go on|go ahead|of course|i would|i do|please do)\b")
 _NO = re.compile(r"^(?:no|nope|nah|no thanks|no thank you|not now|i'?m fine|that'?s okay)\b")
+# "How do I do this?", "what do I do?": on the connect-phone page, the steps (it keeps quiet there otherwise)
+_HOW_TO_CONNECT = re.compile(r"\bhow (?:do|does|can|should) (?:i|we|it|you)\b|\bwhat (?:do|should) (?:i|we) do\b|\bwhat now\b|"
+                             r"\bdon'?t know (?:how|what)\b|\bconfused\b|\bexplain\b")
 # "It's not working", "I can't scan it", "nothing happens": on the connect-phone page, the way in without scanning (see _cant_connect)
 _CANT_CONNECT = re.compile(r"\b(?:can'?t|cannot|can not|won'?t|doesn'?t|does not|isn'?t|is not|didn'?t|not)\s+(?:\w+\s+){0,2}?"
                            r"(?:scan\w*|connect\w*|work\w*|open\w*|load\w*|find\w*|see\w*)\b|\bnothing (?:is )?happen\w*\b|"
                            r"\b(?:having |got )?(?:trouble|problems?)\b|\bstuck\b")
+# Words a line asks the learner to say ("say learn, read, or quiz", "say go back to return"), and names they must hear as they
+# are: these survive when Braillo says a line in his own words (see keep_words, TutorSession._own_words).
+_SAY_WHAT = re.compile(r"\bsay\s+([^.?!]+)", re.IGNORECASE)
+_SAY_STOP = {"if", "to", "when", "for", "then", "so", "and", "again", "whenever", "once", "as", "instead", "here", "now"}
+_NAMES = re.compile(r"\b(?:alphabet|words|look-alikes|numbers(?: and signs)?) sheet\b|\b(?:one|two|three|four) bumps?\b|"
+                    r"\b\d(?: \d)+\b|\blesson (?:one|two|three|four|five|six|seven|eight|\d)\b", re.IGNORECASE)
+
+
+def hint_keep(hint: str, facts: dict) -> list:
+    """What a hint must still say when put another way: its dot positions and numbers, row and column, and what is looked for."""
+    keep = re.findall(r"\b(?:top|middle|bottom)-(?:left|right)\b", hint) + re.findall(r"\b(?:row|column) \d+\b", hint)
+    looking = re.sub(r"^the (?:letter|number) ", "", str(facts.get("looking_for", "")))
+    if looking:
+        keep.append(looking)
+    return list(dict.fromkeys(keep))
+
+
+def keep_words(text: str) -> list:
+    """What must still be in a line said another way: each thing it asks the learner to say, and sheet names, codes, lessons."""
+    keep = []
+    for m in _SAY_WHAT.finditer(text):
+        for part in re.split(r",|\bor\b", m.group(1)):
+            words = []
+            for w in part.split():
+                w = w.strip(" '\"")
+                if not w or w.casefold() in _SAY_STOP:
+                    break
+                words.append(w)
+            if words and len(words) <= 3:
+                keep.append(" ".join(words))
+    keep += [m.group(0) for m in _NAMES.finditer(text)]
+    return list(dict.fromkeys(keep))
+
+
 _SIGN_IN_WORDS = re.compile(r"\b(?:go+g+(?:le|el|ol|al)s?|guest|sign ?in|log ?in)\b")
 _CHANGE_LEVEL = re.compile(r"\b(?:change|set|reset|pick|choose|switch|redo)\b.*\blevel\b|\bmy level\b")
 # "Help" on the pages of the way in, where the activities' own help does not apply yet (nothing can be learned before signing in).
 PAGE_HELP = {
     "login": "Say Google to sign in, or guest to carry on without an account.",
-    "connect-phone": ("Scan the code on the screen with your phone's camera, open the link, and tap Start. If it won't scan, type the "
-                      "address on the screen into the phone's browser."),
+    "connect-phone": ("Open your phone's camera and point it at the code on the screen. Tap the link that appears, then tap the big "
+                      "Start button on your phone, and allow the camera. If it won't work, just tell me."),
     "account": "Say letters to hear your alphabet, continue to go home, or sign out.",
 }
 HELP_CONTROLS = 4  # "help" on a page names this many of its controls (its main ones: the website lists those first)
@@ -479,6 +534,10 @@ def greeting(name: str) -> str:
 
 IDENTIFY_SECONDS = 30.0  # after "next page": how long to keep trying to work out which sheet is on the desk
 IDENTIFY_EVERY_SECONDS = 1.0
+SHEET_SETTLE = 1.5  # seconds the sheet an activity waits for must stay in view before it starts
+SHEET_UNSURE = 15.0  # a page in view that cannot be told apart this long: they are told they can say "I'm ready"
+SHEET_REMIND = 25.0  # while waiting for a sheet: how often to say which one
+SHEET_SEEN_FOR = 4.0  # seconds a sheet made out under the camera counts as still there (see CameraFeed.sheet_in_view)
 IDENTIFY_UNCHANGED_SECONDS = 8.0  # after "next page", if nothing at all changes in view for this long, carry on with the same sheet
 SCENE_CHANGE = 6.0  # mean brightness difference (0-255) of a small copy of the picture that counts as "something moved in view"
 SHEET_SPOKEN = {"alphabet": "the alphabet sheet", "words": "the words sheet", "numbers": "the numbers and signs sheet",
@@ -578,6 +637,9 @@ def wire_new_page(session: "TutorSession", feed: "CameraFeed") -> None:
     session.page_ok_fn = lambda: page_seen_now(feed)  # (see page_seen_now: really seen, not just remembered)
     session.current_sheet = lambda: feed.sheet_name
     session.identifies_sheets = bool(feed.known_sheets)
+    if feed.known_sheets and feed.reader is not None:  # (it can make out which sheet is under the camera: activities wait for theirs)
+        session.watch_sheet = feed.watch_sheet
+        session.sheet_in_view_fn = feed.sheet_in_view
     # Grading uses the same centres the video draws. On known demo sheets those centres stay on the
     # printed layout (photos): live refine under a finger used to drag boxes on words / lookalikes.
     session.grade_cells = lambda: _cells_for_grading(session.cells, feed.stable)
@@ -657,6 +719,9 @@ class _JourneyHost:
     def identifies_sheets(self) -> bool:
         return bool(getattr(self.s, "identifies_sheets", False))
 
+    def hint_words(self, hint: str, facts: dict) -> Optional[str]:
+        return self.s._hint_words(hint, facts)
+
     def staying(self) -> bool:
         """Is stopping a lesson only going back to the menu (the menu-driven app), not leaving?"""
         return bool(self.s.hub)
@@ -667,8 +732,20 @@ class _JourneyHost:
         return sym.key if sym else None
 
     def request_sheet(self, name: str) -> None:
-        if self.s.new_page is not None:
+        if self.s.sheet_in_view_fn is not None and self.s.select_sheet is not None:
+            self.s.select_sheet(name)  # read for the sheet the lesson needs; the camera's own check says whether it is really there
+        elif self.s.new_page is not None:
             self.s.new_page()  # forget the old page and work out which sheet is on the desk now (the tutor announces it)
+
+    def checks_sheets(self) -> bool:
+        """Can the camera make out which sheet is under it? (Then a lesson waits for its own, not just for a page.)"""
+        return self.s.sheet_in_view_fn is not None
+
+    def sheet_under_camera(self) -> Optional[str]:
+        return self.s._sheet_under()
+
+    def watch_sheet(self, name: Optional[str]) -> None:
+        self.s.watch_sheet(name)
 
     def explore_reset(self) -> None:
         self.s._ex = self.s._new_explore_state()
@@ -746,6 +823,16 @@ class TutorSession:
         self._watcher: Optional[threading.Thread] = None
         self.journey: Optional[Journey] = None
         self._lessons_for: Optional[str] = None  # who has had lessons already this visit (see set_mode)
+        self._signed_out_at = -1e9  # when they last signed out (see _signed_out)
+        self._signed_out_key: Optional[str] = None  # and who that was
+        self._ways: dict = {}  # line -> Braillo's own ways of saying it, made ahead of time (see _ready_words)
+        self._leave_asked: Optional[dict] = None  # "do you want to stop?" asked and not yet answered (see _leave_or_ask)
+        # Set by the apps when the camera can make out which sheet is under it: an activity then waits for its own (see _await_sheet)
+        self.watch_sheet: Callable = lambda name: None
+        self.sheet_in_view_fn: Optional[Callable] = None
+        self._await: Optional[dict] = None  # read or quiz waiting for its sheet: {"sheet", "since", "seen_since", "told"}
+        self.words_read = 0  # in read mode, this time (for "you read 4 words" on leaving)
+        self._pressing = threading.local()  # (set while a key on the screen runs its command: see pressed)
         if mode == "learn":  # the guided lessons (learn.py)
             self.journey = self._new_journey()
         # the menu: who is using it, and which of learn / read / quiz they chose (see set_user, set_mode)
@@ -772,6 +859,8 @@ class TutorSession:
                 getting_around = handler in (self.on_back, self.on_scroll_down, self.on_scroll_up, self.on_top)
                 if self.dialogue_active() and not getting_around:  # answering the sign-in page (a name must not start a lesson)
                     return
+                if self._level_in_command(handler):  # "let's start with new": an answer to the level question, not "start"
+                    return
                 if self.website and not self.dialogue_active():  # a button's own name on the open page wins over a command
                     heard_now = self.heard_fn() if self.heard_fn is not None else None
                     control = self._control_for(str((heard_now or {}).get("text") or ""))
@@ -779,6 +868,8 @@ class TutorSession:
                         return self._press(control)
                 if handler in self._starts_something() and self._not_ready_to_start():
                     return
+                if self._leave_asked is not None and handler not in (self.on_mode_menu, self.on_stop, self.on_sign_out, self.on_hush):
+                    self._leave_asked = None  # (another command instead of an answer: they carry on, and it runs)
                 if self._ask_armed and handler is not self.on_braillo:
                     self._ask_armed = False  # another command: drop the pending question
                 self._nags.clear()  # the learner is here and talking: reminders may start over
@@ -794,6 +885,22 @@ class TutorSession:
         defer = getattr(self._voice_module(), "set_defer_long_utterances", None)
         if callable(defer):  # Braillo can judge a long sentence: a command word buried in one is not run blindly
             defer(self.ask is not None and self.ask.enabled)
+
+    def _level_in_command(self, handler) -> bool:
+        """While "how much braille do you know?" is asked, what was said is read as the answer first, even if a command word is in
+        it ("let's START with new today"): True if it was, and the lessons start there. Leaving, and asking Braillo, still work."""
+        j = self.journey
+        if j is None or j.phase != "placing" or handler in (self.on_mode_menu, self.on_stop, self.on_sign_out, self.on_braillo,
+                                                            self.on_hush, self.on_help, self.on_more_help):
+            return False
+        heard = self.heard_fn() if self.heard_fn is not None else None
+        level = level_of(str((heard or {}).get("text") or ""))
+        if not level:
+            return False
+        if heard and heard.get("n") is not None and self.hearing.seen is not None:
+            self.hearing.seen = max(self.hearing.seen, int(heard["n"]))
+        self._learn("on_level", level)
+        return True
 
     def _starts_something(self) -> tuple:
         """The commands that start an activity or go somewhere (the rest only talk, or change how the tutor talks)."""
@@ -830,7 +937,55 @@ class TutorSession:
     def _voice_module(self):
         return getattr(self.voice, "voice", self.voice)  # (a wrapped voice keeps the real module as .voice)
 
-    def say(self, text: str) -> None:
+    def _own_words(self, text: str) -> str:
+        """The line as Braillo would say it right now (Claude, given the moment and his last few lines, keeping every word the
+        learner needs), or as written: when Claude is off or slow, for a short line, and mid-activity, where what is said is
+        teaching or feedback that must be exact and instant (a letter's dots, "that's the one", the word under the finger)."""
+        phrase = getattr(self.ask, "phrase", None)
+        if not callable(phrase) or not getattr(self.ask, "enabled", False) or len(text.split()) < 7 or text in FIXED_LINES:
+            return text
+        j = self.journey
+        busy = (j is not None and j.phase in ASKING_PHASES) or self.state in ("asking", "reading", "exploring")
+        if busy and not (self.hub and self.hub_mode == "menu"):
+            return text
+        if not any(ch.isdigit() for ch in text):
+            # A line that comes up again and again (the menu, the level question, a reminder): said in one of his own ways that
+            # were made ahead of time, so there is no wait. The first time, it is said as written while those ways are made.
+            return self._ready_words(text)
+        try:  # (a line with this moment's numbers in it, "you found 5 of 6": put in his own words now, a short wait)
+            context = self.talk_context()
+        except Exception:
+            context = {}
+        return phrase(text, keep_words(text), context, list(self._recent)[-5:]) or text
+
+    def _ready_words(self, text: str) -> str:
+        """One of the ways Braillo says `text` that were made ahead of time (not one he said just now), or `text` itself while they
+        are being made (in the background, once)."""
+        ways = self._ways.get(text)
+        if not ways:
+            if text not in self._ways and callable(getattr(self.ask, "variants", None)):
+                self._ways[text] = []  # (being made)
+
+                def make() -> None:
+                    found = self.ask.variants(text, keep_words(text))
+                    if found:
+                        self._ways[text] = found
+                    else:
+                        self._ways.pop(text, None)  # (try again another time)
+                threading.Thread(target=make, daemon=True, name="own-words").start()
+            return text
+        fresh = [w for w in ways if w not in self._recent]
+        return self.rng.choice(fresh or ways)
+
+    def say(self, text: str, natural: bool = True, asking_to_leave: bool = False) -> None:
+        """Speak a line. `natural`: Braillo may say it in his own words (see _own_words); lines already from Claude, and lines a
+        page shows word for word as captions, are said as they are. While "do you want to stop?" waits for its answer, everything
+        else is held back (the activity is paused): only the question itself (`asking_to_leave`) is said."""
+        if self._leave_asked is not None and not asking_to_leave:
+            print(f"[quit] held back while asking: {text!r}", flush=True)
+            return
+        if natural:
+            text = self._own_words(text)
         # say() is called from almost every command handler while self.lock is held (set_mode, on_stop,
         # _check_symbol...), so a voice.speak() call that never returns -- a hung network request, or a
         # stuck audio-device write, neither of which is guaranteed to have its own timeout -- would freeze
@@ -930,6 +1085,8 @@ class TutorSession:
         """One look at what is going on, speaking up if needed (called about twice a second by the watcher; testable on its own)."""
         if self._speech.locked():  # it is talking already: what it would say may be out of date by the time it finishes
             return None
+        if self._leave_asked is not None:  # "do you want to stop?": only its answer matters now (the activity is paused)
+            return self._watch_leave()
         if self._ask_armed and self.heard_fn is not None:
             heard = self.heard_fn()
             if heard and int(heard.get("n", 0)) > self._ask_heard_n:
@@ -966,6 +1123,10 @@ class TutorSession:
                 else:  # (no backup to show, or it is up already and still no luck: typing the address in)
                     self.speak_prompt("connect_help")
                 return None
+            if self._scanning() and self._new_heard(heard) and _HOW_TO_CONNECT.search(str(heard.get("text") or "").lower()):
+                self.hearing.seen = int(heard["n"])  # "how do I do this?" on the QR page: the steps, asked for
+                self.say(PAGE_HELP["connect-phone"])
+                return None
             if self._wants_to_sign_in(heard):  # "Google" on the front page: the sign-in page (which then asks for itself)
                 self.hearing.seen = int(heard["n"])
                 self._go("login")
@@ -999,6 +1160,10 @@ class TutorSession:
                 self.hearing.seen = int(heard["n"])
                 self.on_found_it()
                 return None
+            if self._scanning():  # (the QR page: quiet while they scan. Only "it's not working" or a command gets an answer, above)
+                if self._new_heard(heard):
+                    self.hearing.seen = int(heard["n"])
+                return None
             if self._wants_talk(heard):
                 self.hearing.seen = int(heard["n"])  # dealt with here: Hearing must not also say "I didn't catch that"
                 return self._talk(str(heard.get("text") or ""))
@@ -1006,6 +1171,10 @@ class TutorSession:
         if msg:
             return msg if self.nag(msg, now) else None
         return None
+
+    def _scanning(self) -> bool:
+        """On the connect-phone page with no phone in yet: they are busy with the phone, so Braillo keeps quiet unless asked."""
+        return bool(self.website and self.page == "connect-phone" and not (self.phone_ready_fn is not None and self.phone_ready_fn()))
 
     def _cant_connect(self, heard: Optional[dict]) -> bool:
         """On the connect-phone page, before the phone is in: they say it is not working (the QR code will not scan, say)."""
@@ -1079,8 +1248,9 @@ class TutorSession:
         """Something new was said that matched no command, and Braillo is on to work out what was meant."""
         if not heard or heard.get("matched") or self.ask is None or not self.ask.enabled or self.dialogue_active() or self.muted:
             return False
-        if self.hub and self.website and self.user is None:  # before signing in, free speech is not acted on (a quiz on the sign-in page)
-            return False
+        if self.hub and self.website and self.user is None and (self.page != "landing" or self._just_signed_out()):
+            return False  # before signing in, free speech is only answered on the front page (where questions about braille come up),
+            # and not just after signing out (its own goodbye coming back through the microphone was answered, from a real run)
         if heard.get("reason") == OVER_SPEECH:  # a word or two caught while it was talking: only an answer the page expects counts
             return False
         n = int(heard.get("n", 0))
@@ -1114,6 +1284,8 @@ class TutorSession:
             return ARRIVAL_LINES[page]
         if listen:  # (the Listen key: they asked for it)
             return LANDING_WELCOME
+        if self._just_signed_out():
+            return None  # (just signed out: the goodbye said what to do next; the welcome again would sound like a script)
         if self.guided is None:
             self._offer_n = self._heard_n()
             return ARRIVAL_LINES["landing"]  # "would you like me to talk you through it?"
@@ -1256,22 +1428,55 @@ class TutorSession:
         return "them to say what they would like to do"
 
     def _talk(self, text: str) -> Optional[str]:
+        if self._scanning():
+            return None  # (the QR page: quiet while they scan, see watch_once)
+        return self._talk_now(text)
+
+    def _talk_now(self, text: str) -> Optional[str]:
         """Let Braillo work out what free speech meant: run the command it names and/or say its reply. Falls back to the plain
         "I didn't catch that" when Braillo cannot answer just now."""
-        reply = self.ask.respond(text, self.talk_context())
+        reply = self._respond(text)
         if reply is None:
             msg = acc.NOT_UNDERSTOOD if self._listening_state() and self.settings.hearing_feedback else None
             return msg if msg and self.nag(msg) else None
         return self._act_on(reply)
 
+    def _respond(self, text: str) -> Optional[dict]:
+        """Braillo's reply to what was said, streamed: its first sentence is spoken as soon as it has arrived, the rest after it."""
+        now_is = lambda: (self._epoch, self.hub_mode, self._leave_asked is not None, self.page, self.guided, self.hearing.seen)  # noqa: E731
+        asked_at = now_is()
+        moved_on = lambda: now_is() != asked_at  # noqa: E731  (also: something they said after it was dealt with meanwhile)
+        first_said = lambda line: None if moved_on() else self.say(line, natural=False)  # noqa: E731
+        try:
+            reply = self.ask.respond(text, self.talk_context(), on_first=first_said)
+        except TypeError:  # (a helper without streaming)
+            reply = self.ask.respond(text, self.talk_context())
+        if reply is not None and moved_on():
+            # (from a real run: "learn" started the lesson while Braillo was still answering for the menu; his late "say learn, read or
+            # quiz", and its "learn", then started the lesson over. A reply to a moment that has passed is dropped.)
+            print(f"[braillo] reply dropped, the moment passed: {reply.get('say', '')!r}", flush=True)
+            return {"action": "none", "say": "", "stale": True}
+        return reply
+
+    def _hint_words(self, hint: str, facts: dict) -> Optional[str]:
+        """A hint put for this learner by Claude (what they touched, what they mix up, their level), keeping every dot position,
+        row and column; None to give it as the app wrote it."""
+        worded = getattr(self.ask, "hint", None)
+        if not callable(worded) or not getattr(self.ask, "enabled", False):
+            return None
+        return worded(hint, hint_keep(hint, facts), facts, list(self._recent))
+
     def _act_on(self, reply: dict) -> Optional[str]:
         """Do what Braillo made of what was said: say his line, and run the command it names (if it may run now)."""
         self._nags.clear()  # they are talking to us
         action, line = reply["action"], reply["say"]
-        if line:
-            self.say(line)
-            if action in ("repeat", "hint", "help"):
-                return line  # those only talk, and Braillo has just answered: running one too would say it all twice
+        if action in ("menu", "stop", "sign out") and self._in_the_middle():
+            line = ""  # (leaving part-way is asked about first: that question is all that is said)
+        if line or reply.get("spoke"):  # (with "spoke", its first sentence was said already, as it arrived)
+            if line:
+                self.say(line, natural=False)
+            if action in ("repeat", "help"):
+                return line or None  # those only talk, and Braillo has just answered: running one too would say it all twice
         if action == "lesson":  # "let's do K to O": the lesson by its number
             if not self._not_ready_to_start():
                 self.on_lesson(reply.get("lesson", 1) - 1)
@@ -1297,6 +1502,8 @@ class TutorSession:
         rest = re.sub(r"^\W*(?:be quiet|stop talking|hold on|hang on|quiet|hush|shh|shush|wait|pause|enough|stop)\b\W*", "", text,
                       flags=re.IGNORECASE)
         if len(rest.split()) >= 3 and self.ask is not None and self.ask.enabled:
+            if heard and self.hearing.seen is not None:
+                self.hearing.seen = max(self.hearing.seen, int(heard.get("n", 0)))  # (dealt with here: its answer is not out of date)
             self._talk(rest)
 
     def start_watching(self) -> None:
@@ -1324,7 +1531,12 @@ class TutorSession:
             self._answer_ask(question)
             return
         if self.website and self.page == "landing" and not self.guided:  # (on the front page, "Braillo" alone: talk me through it)
-            self.guided, self._offer_n = True, None
+            if self._offer_n is not None:
+                # (from a real run: the question "Hi, I'm Braillo... say yes, or no" came back through the laptop's microphone, its
+                # "Braillo" was taken for the wake word, and the whole welcome followed over the learner's "no". The question is open:
+                # the yes or no answers it.)
+                return
+            self.guided = True
             return self.say(LANDING_WELCOME)
         self._ask_heard_n = int((heard or {}).get("n", 0))
         self._ask_armed = True
@@ -1339,18 +1551,27 @@ class TutorSession:
         if self.ask is None or not self.ask.enabled:
             self.say("I cannot answer questions right now. Add an Anthropic API key to the .env file to turn Braillo on.")
             return
+        heard = self.heard_fn() if self.heard_fn is not None else None
+        if heard and self.hearing.seen is not None:
+            self.hearing.seen = max(self.hearing.seen, int(heard.get("n", 0)))  # (dealt with here: its answer is not out of date)
         if self.website and self.hub and callable(getattr(self.ask, "respond", None)):
             # On the website, "Braillo, let's begin" should begin, not explain how to: what was said may be something to do as well
             # as something to answer. (Only a plain question with nothing to do gets the longer answer below.)
-            reply = self.ask.respond(q, self.talk_context())
+            reply = self._respond(q)
+            if reply is not None and reply.get("stale"):
+                return  # (the moment passed while it was thinking: no answer at all, rather than a late one)
             if reply is not None and (reply["action"] != "none" or reply["say"]):
                 self._act_on(reply)
                 return
+        before = (self._epoch, self.page, self.hearing.seen, self._leave_asked is not None)
         answer = self.ask.answer(q, context=self.talk_context())
-        if not answer:
-            self.say("Sorry, I could not get an answer just then. Try again in a moment.")
+        if before != (self._epoch, self.page, self.hearing.seen, self._leave_asked is not None):
+            print(f"[braillo] answer dropped, the moment passed: {answer!r}", flush=True)
             return
-        self.say(answer)
+        if not answer:
+            self.say("Sorry, I could not get an answer just then. Try again in a moment.", natural=False)
+            return
+        self.say(answer, natural=False)
 
     def on_help(self) -> None:
         """"Help": in a sentence or so, the few things that matter right now (on a page of the website, its main buttons). Short on
@@ -1428,18 +1649,22 @@ class TutorSession:
                 if epoch != self._epoch or self.journey is None:
                     return
                 try:
-                    self.journey.tick()
+                    if self._leave_asked is None:  # (paused while "do you want to stop?" waits for its answer)
+                        self.journey.tick()
                 except Exception:  # keep teaching: one bad moment must not silence the tutor
                     traceback.print_exc()
             time.sleep(0.1)
 
     # ---- the menu: who is here, and what they chose -----------------------------------------------
-    def set_user(self, name, kind: str, profile: Optional[str] = None) -> None:
+    def set_user(self, name, kind: str, profile: Optional[str] = None) -> Optional[bool]:
         """Who is using the tutor. A "google" learner's progress is kept (in a file named for their account, and by the website in their
-        account); a "guest" gets fresh, unsaved progress: nothing they do is written anywhere. (A guest's `profile` is the website visit's
-        id: the same guest after a page reload keeps their lesson, and the next guest, another visit, starts afresh.)"""
+        account); a "guest" gets fresh, unsaved progress: nothing they do is written anywhere. (A guest's `profile` is the visit's id: every
+        guest is a new visit and starts afresh; the website keeps no guest across a reload.)"""
         name = clean_name(name)
         key = f"{kind}:{profile or name}"
+        if key == self._signed_out_key and time.monotonic() - self._signed_out_at < SIGNED_OUT_RACE:
+            # (from a real run: signed out by voice, the website, not yet told, sent the same guest straight back, who was greeted again)
+            return False
         with self.lock:
             if self.user and self.user.get("key") == key and self.user["name"] == name:
                 return
@@ -1489,6 +1714,12 @@ class TutorSession:
                                                          "of": len(LESSONS), "letters": [l.upper() for l in nxt.letters]}}
 
     def speak_prompt(self, name: str, who=None) -> None:
+        if name == "account_bye":  # (signing out from their page)
+            self._leave_quietly()
+            self._signed_out()
+        here = PROMPT_PAGES.get(name)
+        if here is not None and here != self.page:
+            self.page = here  # (only that page asks for this line: so that is where they are, whatever the website said last)
         text = next_prompt(name) if name in PROMPTS else None
         if text:
             code = self.phone_code_fn() if self.phone_code_fn is not None else ""
@@ -1496,7 +1727,7 @@ class TutorSession:
             if "{progress}" in text or "{letters}" in text:  # (your page: the numbers come from the tutor's own record of you)
                 p = self.progress
                 text = text.replace("{progress}", progress_line(p.summary())).replace("{letters}", letters_line(p.summary(), p.learned(), p.practised()))
-            self.say(text.replace("{name}", clean_name(who)).replace("{code}", spelled))
+            self.say(text.replace("{name}", clean_name(who)).replace("{code}", spelled), natural=False)
 
     def dialogue(self, open_: bool) -> None:
         """The sign-in page is talking with the user (or has finished). While it is: no "I did not catch that", and no voice command runs."""
@@ -1574,12 +1805,40 @@ class TutorSession:
         self._leave_quietly()
         self._go("account")
 
+    def _signed_out(self) -> None:
+        """They signed out (the website does the rest): nobody is here now, and the front page they land on stays quiet a moment."""
+        self._signed_out_key = (self.user or {}).get("key")
+        self.user, self._greeted_for, self._lessons_for, self._backup_shown = None, None, None, False
+        self._signed_out_at = time.monotonic()
+
+    def _just_signed_out(self) -> bool:
+        return time.monotonic() - self._signed_out_at < SIGNED_OUT_QUIET
+
+    def phone_news(self, text: str) -> None:
+        """"I've lost the phone's camera" / "the camera's back": only for someone signed in (after signing out it is no one's news)."""
+        if self.hub and self.website and self.user is None:
+            return
+        self.say(text)
+
+    def forget_user(self) -> None:
+        """The website has nobody signed in (it was reloaded, and a guest is never kept): forget whoever was here, quietly. Unlike signing
+        out, nothing is said and the front page is not kept quiet."""
+        if self.user is None:
+            return
+        self._leave_quietly()
+        with self.lock:
+            self.user, self._greeted_for, self._lessons_for, self._backup_shown = None, None, None, False
+            self.progress_file, self.progress = None, Progress()
+            if self.journey is not None:
+                self.journey.progress = self.progress
+
     def on_sign_out(self) -> None:
         if not self.hub:
             return
         self._leave_quietly()
-        self.say("Signing you out. See you soon.")
-        self._go("signout")
+        self._signed_out()
+        self._go("signout")  # (first: the website signs out at once, not after the goodbye, so it does not send them straight back)
+        self.say("You're signed out. See you soon! If someone else wants a turn, they can say start learning.")
 
     def on_mode_learn(self) -> None:
         self.on_mode("learn")
@@ -1592,8 +1851,69 @@ class TutorSession:
     def on_mode_quiz(self) -> None:
         self.on_mode("quiz")
 
+    def _in_the_middle(self) -> bool:
+        """An activity is under way (a letter asked for, a word being read, exploring): leaving it should be asked about first, in
+        case it was said by accident. Between activities (a lesson just finished, the menu) there is nothing to lose."""
+        if not self.hub or self.hub_mode == "menu":
+            return False
+        j = self.journey
+        if j is not None:
+            return j.phase in ASKING_PHASES + ("explore", "placing")
+        return self.state in ("asking", "reading", "exploring")
+
+    def pressed(self, handler_name: str) -> None:
+        """A command from a key on the screen (the website's Finish, say): pressed on purpose, so nothing is asked about it."""
+        self._pressing.on = True
+        try:
+            getattr(self, handler_name)()
+        finally:
+            self._pressing.on = False
+
+    def _leave_or_ask(self, leave) -> bool:
+        """Leaving an activity part-way: the first time, ask (yes leaves, no carries on, silence carries on); said again while
+        asked, or between activities, leave at once. True if it asked."""
+        if self._leave_asked is not None or not self._in_the_middle() or getattr(self._pressing, "on", False):
+            self._leave_asked = None
+            return False
+        self._leave_asked = {"leave": leave, "n": self._heard_n(), "at": time.monotonic(), "again": False}
+        self.cut_speech()  # (whatever it was saying stops: they asked to leave)
+        self.say(LEAVE_QUESTION, natural=False, asking_to_leave=True)
+        return True
+
+    def _watch_leave(self) -> None:
+        """While "do you want to stop?" is asked: yes leaves (with how it went), no carries on where they were, anything else asks
+        once more, and silence carries on."""
+        asked = self._leave_asked
+        if asked is None:
+            return None
+        if time.monotonic() - asked["at"] > LEAVE_WAIT:  # (no answer: it was probably said by accident)
+            self._keep_going()
+            return None
+        heard = self.heard_fn() if self.heard_fn is not None else None
+        if heard and int(heard.get("n", 0)) > asked["n"] and not heard.get("matched"):
+            asked["n"] = self.hearing.seen = int(heard["n"])
+            answer = _yes_or_no(str(heard.get("text") or ""))
+            if answer is True:
+                threading.Thread(target=asked["leave"], daemon=True, name="leave").start()  # (still asked: it leaves at once)
+            elif answer is False:
+                self._keep_going()
+            elif heard.get("reason") != OVER_SPEECH and not asked["again"]:
+                asked["again"], asked["at"] = True, time.monotonic()
+                self.say(LEAVE_AGAIN, natural=False, asking_to_leave=True)
+        return None
+
+    def _keep_going(self) -> None:
+        """No to "do you want to stop?" (or no answer): carry on with what they were doing, from where they were."""
+        self._leave_asked = None
+        if self.journey is not None:
+            self.journey.last_activity = self.journey.clock()  # (the pause does not count towards a hint or a reminder)
+        self.say("Okay, let's keep going.")
+        threading.Thread(target=self.on_repeat, daemon=True, name="carry-on").start()  # (what they were asked, again)
+
     def on_mode_menu(self) -> None:
         """"Home" / "menu": back to choosing what to do (before signing in, the website's front page)."""
+        if self._leave_or_ask(self.on_mode_menu):
+            return
         if self.hub and self.website:
             if self.user is None:
                 return self._go("home")
@@ -1616,12 +1936,20 @@ class TutorSession:
         if mode != "menu" and mode not in HUB_MODES:
             raise ValueError(f"unknown mode {mode!r}; choose menu, {', '.join(HUB_MODES)}")
         with self.lock:
+            if mode != "menu" and mode == self.hub_mode and lesson is None and (self.journey is not None or mode != "learn"):
+                return  # (already doing it: asked twice, by voice and a button, say. Starting over would ask everything again.)
+            how = self._how_it_went() if mode == "menu" else ""
             self._epoch += 1  # the previous mode's loops see this and end
             self.journey, self._ex, self.items, self.index, self.state = None, None, [], 0, "idle"
+            self._await = None
+            self.watch_sheet(None)
+            if mode != "menu":
+                self.words_read = 0
             self.finished.clear()
             if mode == "menu":
                 self.mode, self.hub_mode, self.state = "menu", "menu", "menu"
-                return self.say(f"Okay. {MENU_LINE_SHORT}")
+                # one line, not a summary and then the menu: how it went (if anything was done), and the choice
+                return self.say(" ".join(p for p in ("Okay, let's stop there." if how else "Okay.", how, MENU_LINE_SHORT) if p))
             cfg = HUB_MODES[mode]
             self.mode, self.hub_mode = cfg["mode"], mode
             if self.select_sheet is not None:
@@ -1635,6 +1963,8 @@ class TutorSession:
                 return self._learn("go_to_lesson", lesson) if lesson is not None else self._learn("on_start")
             self.contracted = False  # the printed sheets are plain letters and words
             self._start_dwell_loop()
+            if self.sheet_in_view_fn is not None:  # (the camera can tell which sheet is there: wait for the right one, then start)
+                return self._await_sheet(mode, cfg["sheet"])
             if mode == "read":
                 self.state = "reading"
                 return self.say(f"Read mode. Put the words sheet, the one with {feel_for('words')}, in front of the camera. Rest a finger on "
@@ -1644,6 +1974,84 @@ class TutorSession:
             self.say(f"Quiz time. Put the look-alikes sheet, the one with {feel_for('lookalikes')}, in front of the camera. I will name a "
                      "letter: find it and rest your finger on it. Say menu to stop.")
             self.on_start()
+
+    def _how_it_went(self) -> str:
+        """Leaving an activity for the menu: a few words on how it went (the progress is already saved as it goes)."""
+        if self.hub_mode == "menu":
+            return ""
+        if self.journey is not None:
+            self.save_progress()
+            return self.journey.brief_recap()
+        if self.hub_mode == "quiz" and self.asked:
+            return f"You got {self.correct} of {self.asked} right in the quiz."
+        if self.hub_mode == "read" and self.words_read:
+            return f"You read {self.words_read} word{'s' if self.words_read != 1 else ''}."
+        return ""
+
+    # ---- read and quiz wait for their sheet ---------------------------------------------------------
+    def _await_sheet(self, mode: str, sheet: str) -> None:
+        """Read or quiz chosen: name the sheet, and start only once the camera can see it (time to fetch it and lay it down)."""
+        self.state = "await_sheet"
+        self._await = {"mode": mode, "sheet": sheet, "since": time.monotonic(), "seen_since": None, "told": None}
+        self.watch_sheet(sheet)
+        what = "Read mode" if mode == "read" else "Quiz time"
+        self.say(f"{what}. Get {SHEET_SPOKEN.get(sheet, sheet)} ready, the one with {feel_for(sheet)}. Lay it flat under the "
+                 "camera, and I'll start as soon as I can see it.")
+
+    def _page_in_view(self) -> bool:
+        return bool(self.page_ok_fn()) if self.page_ok_fn is not None else True
+
+    def _sheet_under(self) -> Optional[str]:
+        """Which sheet is under the camera, as far as can be told: None if not made out (or no page in view)."""
+        if self.sheet_in_view_fn is not None:
+            return self.sheet_in_view_fn()
+        ok = self.page_ok_fn() if self.page_ok_fn is not None else True
+        return self.current_sheet() if ok else None
+
+    def _tick_await(self, now: float, epoch: int) -> None:
+        w = self._await
+        if w is None or self._leave_asked is not None:
+            return
+        seen = self._sheet_under()
+        if seen == w["sheet"]:
+            if w["seen_since"] is None:
+                w["seen_since"] = now
+            if now - w["seen_since"] >= SHEET_SETTLE:
+                self._sheet_arrived(epoch)
+            return
+        w["seen_since"] = None
+        if seen is None and self._page_in_view():  # a page, but which one cannot be made out (light, glare): they can say so
+            w.setdefault("unsure_since", now)
+            if not w.get("unsure_told") and now - w["unsure_since"] >= SHEET_UNSURE and not self.is_speaking():
+                w["unsure_told"], w["since"] = True, now
+                self.say(f"I can see a sheet, but I can't tell which one yet. If it's {SHEET_SPOKEN.get(w['sheet'], w['sheet'])}, "
+                         "say I'm ready.")
+            return
+        w.pop("unsure_since", None)
+        if seen is not None and seen != w["told"] and not self.is_speaking():  # the wrong sheet: say which it is, and which is needed
+            w["told"], w["since"] = seen, now
+            self.say(f"That's {SHEET_SPOKEN.get(seen, seen)}. {'Reading' if w['mode'] == 'read' else 'The quiz'} needs "
+                     f"{SHEET_SPOKEN.get(w['sheet'], w['sheet'])}, the one with {feel_for(w['sheet'])}.")
+        elif now - w["since"] >= SHEET_REMIND and not self.is_speaking():
+            w["since"] = now
+            self.nag(f"I'm waiting for {SHEET_SPOKEN.get(w['sheet'], w['sheet'])}, the one with {feel_for(w['sheet'])}. Lay it flat "
+                     "under the camera.")
+
+    def _sheet_arrived(self, epoch: int) -> None:
+        """The sheet read or quiz waited for is in view: start."""
+        with self.lock:
+            w = self._await
+            if w is None or epoch != self._epoch:
+                return
+            self._await = None
+            self.watch_sheet(None)
+            if w["mode"] == "read":
+                self.state = "reading"
+                return self.say("Got it, I can see the words sheet. Rest a finger on a word and I will read it aloud. Say menu to choose "
+                                "something else.")
+            self.questions, self.state = 8, "idle"
+            self.say("Got it, I can see the sheet. I will name a letter: find it and rest your finger on it.")
+        self.on_start()
 
     def _start_dwell_loop(self) -> None:
         threading.Thread(target=self._dwell_loop, args=(self._epoch,), daemon=True, name="dwell").start()
@@ -1657,6 +2065,16 @@ class TutorSession:
             now = time.monotonic()
             grade = None
             nag = False
+            if self._leave_asked is not None:  # (paused while "do you want to stop?" waits for its answer)
+                time.sleep(0.1)
+                continue
+            if self._await is not None:
+                try:
+                    self._tick_await(now, epoch)
+                except Exception:
+                    traceback.print_exc()
+                time.sleep(0.1)
+                continue
             with self.lock:
                 if epoch != self._epoch:
                     return
@@ -1669,7 +2087,7 @@ class TutorSession:
                             grade = ("symbol", pos)
                         elif self.mode == "read" and self.state == "reading":
                             grade = ("word", pos)
-                    if waiting and self.finger() is None:
+                    if waiting and self.finger() is None and not self.is_speaking():  # (the clock starts once it stops talking)
                         if lost_since is None:
                             lost_since = now
                         elif now - lost_since >= NO_FINGER_SECONDS and now - last_nag >= NO_FINGER_AGAIN:
@@ -1696,6 +2114,14 @@ class TutorSession:
     def on_start(self) -> None:
         if self.journey is not None:
             return self._learn("on_start")
+        w = self._await
+        if w is not None:  # ("I'm ready"): on, if the sheet is there (or a page is, that it cannot put a name to); else which one
+            seen = self._sheet_under()
+            if seen == w["sheet"] or (seen is None and self._page_in_view()):
+                return self._sheet_arrived(self._epoch)
+            w["since"] = time.monotonic()
+            return self.say(f"I'm waiting for {SHEET_SPOKEN.get(w['sheet'], w['sheet'])}, the one with {feel_for(w['sheet'])}. Lay "
+                            "it flat under the camera, and I'll start as soon as I can see it.")
         with self.lock:
             self._merge_slips_into_history()
             self.asked = self.correct = self.index = 0
@@ -1753,12 +2179,14 @@ class TutorSession:
             spoken = self._symbol(cell).spoken
             aid = self.coach.aid(spoken) if (self.coach and self.hints == 3) else None  # third hint: a memory aid, if it arrived
             if self.hints == 1:
-                self.say(f"{spoken[0].upper() + spoken[1:]} has {len(dots)} dot{'s' * (len(dots) != 1)}: {', '.join(map(str, dots))}.")
+                text = f"{spoken[0].upper() + spoken[1:]} has {len(dots)} dot{'s' * (len(dots) != 1)}: {', '.join(map(str, dots))}."
             elif aid:
-                self.say(aid)
+                text = aid
             else:
                 copies = sum(1 for c in self.cells if getattr(self._symbol(c), "key", None) == item)
-                self.say(f"{'One of them is' if copies > 1 else 'It is'} in row {cell['row'] + 1}, column {cell['col'] + 1}.")
+                text = f"{'One of them is' if copies > 1 else 'It is'} in row {cell['row'] + 1}, column {cell['col'] + 1}."
+            facts = {"looking_for": spoken, "its_dots": ", ".join(map(str, dots)), "hint_number": self.hints, "activity": "quiz"}
+            self.say(self._hint_words(text, facts) or text, natural=False)
 
     def on_found_it(self) -> None:
         if self.journey is not None:
@@ -1792,10 +2220,12 @@ class TutorSession:
             self._advance()
 
     def on_stop(self) -> None:
+        if self._leave_or_ask(self.on_stop):
+            return
         if self.journey is not None:
+            if self.hub:  # (back to the menu, in one line: see set_mode)
+                return self.set_mode("menu")
             self._learn("on_stop")
-            if self.hub:
-                self.set_mode("menu")
             return
         with self.lock:
             if self.hub and self.hub_mode == "menu":
@@ -2080,7 +2510,8 @@ class TutorSession:
             self._ask()
 
     def _finish(self, stop: bool = False) -> None:
-        if self.asked:
+        early_to_menu = stop and self.hub and self.hub_mode != "menu"  # (stopped part-way: the menu line says the score, see set_mode)
+        if self.asked and not early_to_menu:
             order = [k for k, _ in sorted(self.slips.items(), key=lambda kv: -kv[1])]
             missed = [k.upper() if self.mode == "word-quiz" else self._symbol(self._target_cell(k)).short for k in order]
             accuracy = self.correct / self.asked
@@ -2163,6 +2594,7 @@ class TutorSession:
             return self.say("I don't see a word there.")
         result = self.wc.correct_word_read_mode(raw, redetect=lambda: self._word_at(pos))
         if result.source in ("exact", "redetect"):
+            self.words_read += 1
             self._last_said = f"The word is {result.word}."
             self.say(self._last_said)
         else:  # the backend never guesses; say what was read, letter by letter -- "unknown" for any cell that isn't a plain letter
@@ -2222,6 +2654,9 @@ class CameraFeed:
         self.announce: Callable = lambda text: None
         self.identify_until, self._identifying, self._last_identify = 0.0, False, 0.0
         self._changed, self._thumb0, self._identify_from, self._lost_frames = False, None, 0.0, 0
+        # An activity waiting for its sheet: which known sheet is under the camera is checked now and then (see sheet_in_view)
+        self.watch_for: Optional[str] = None
+        self._in_view: tuple = (None, 0.0)  # (the sheet last made out, when)
 
     def _remember_sheet(self, cells: Optional[list]) -> None:
         """Pin every cell's name to the printed sheet (the photos / first layout). Live frames only refine where the boxes sit."""
@@ -2244,6 +2679,11 @@ class CameraFeed:
             self._absorb_reading()
         if self.identify_until:
             self._maybe_identify(frame)
+        elif self.watch_for and self.known_sheets and self.reader is not None and self.H is not None:
+            now = time.monotonic()
+            if not self._identifying and now - self._last_identify >= IDENTIFY_EVERY_SECONDS:
+                self._identifying, self._last_identify = True, now
+                threading.Thread(target=self._check_sheet, args=(frame.copy(), self.H), daemon=True, name="check-sheet").start()
         if self.detector is not None:
             self.detector.submit(frame, None)
 
@@ -2297,6 +2737,30 @@ class CameraFeed:
             self._identifying = False
         if name is not None:
             self.use_sheet(name)
+
+    def _check_sheet(self, frame: np.ndarray, H: np.ndarray) -> None:
+        from sheetread import identify_sheet
+        try:
+            name, scores = identify_sheet(frame, H, {n: sh.cells for n, sh in self.known_sheets.items()})
+            if name != self._in_view[0]:  # (in the log, to see how well it tells them apart)
+                print(f"[sheet] under the camera: {name or 'cannot tell'} "
+                      f"({', '.join(f'{n} {v:.0%}' for n, v in sorted(scores.items(), key=lambda kv: -kv[1]))})", flush=True)
+            self._in_view = (name, time.monotonic())
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self._identifying = False
+
+    def watch_sheet(self, name: Optional[str]) -> None:
+        """Look out for which sheet is under the camera (None: stop). A new look starts afresh: what an earlier one saw is old news."""
+        if name != self.watch_for:
+            self._in_view = (None, 0.0)
+        self.watch_for = name
+
+    def sheet_in_view(self) -> Optional[str]:
+        """Which known sheet is under the camera now (made out in the last few seconds), or None: not made out (yet), or no page in view."""
+        name, at = self._in_view
+        return name if self.H is not None and time.monotonic() - at < SHEET_SEEN_FOR else None
 
     def select_sheet(self, name: str) -> None:
         """Read `name` from now on, because the learner chose an activity that uses it (nothing to recognise: they were told to put it
@@ -2560,11 +3024,11 @@ def make_ask_tutor(a=None) -> Optional[AskTutor]:
     if a is not None and getattr(a, "no_llm", False):
         return None
     model = getattr(a, "llm_model", None) if a is not None else None
-    client = LLMClient.from_env(model)
+    client = LLMClient.from_env(model or os.environ.get("BRAILLIE_TALK_MODEL") or TALK_MODEL)  # (his conversation: the smart one)
     if client is None:
         print("Braillo Q&A off: add ANTHROPIC_API_KEY=... to the .env file, then say braillo and ask a question.", flush=True)
         return None
-    ask = AskTutor(client)
+    ask = AskTutor(client, fast=LLMClient.from_env())  # (his own words for a line: the fast one, see llm.TALK_MODEL)
     print(f"Braillo Q&A on ({client.model}). Say braillo, then ask anything.", flush=True)
     return ask
 

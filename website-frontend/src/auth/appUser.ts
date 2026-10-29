@@ -8,7 +8,8 @@ export interface AppUser {
   // guest from the next (each starts afresh, and is asked again how much braille they know), never saved anywhere
 }
 
-export const GUEST_KEY = 'braillie.guest'
+/** Where an older version kept the guest (this tab's sessionStorage). Guests are no longer kept anywhere: it is only cleared away. */
+export const OLD_GUEST_KEY = 'braillie.guest'
 
 /** The name to greet someone by: their first name, tidied. */
 export function firstName(full: string | null | undefined): string {
@@ -31,8 +32,6 @@ export function userFromAccount(u: SupabaseUserLike): AppUser {
 }
 
 interface StorageLike {
-  getItem(key: string): string | null
-  setItem(key: string, value: string): void
   removeItem(key: string): void
 }
 
@@ -44,34 +43,15 @@ const visitId = (): string => {
   }
 }
 
-/** A guest, remembered for this browser tab only (sessionStorage), so a page refresh does not ask again. Never anything but the name
- * and the visit's id. */
-export function loadGuest(storage: StorageLike | null): AppUser | null {
-  try {
-    const raw = storage?.getItem(GUEST_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw)
-    const name = firstName(typeof parsed?.name === 'string' ? parsed.name : '')
-    const id = typeof parsed?.id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(parsed.id) ? parsed.id : undefined
-    return name ? { kind: 'guest', name, ...(id ? { id } : {}) } : null
-  } catch {
-    return null
-  }
+/** A new guest: a first name and an id for this visit. Kept in memory only, never stored: a reload or a new tab is the sign-in page again. */
+export function newGuest(name: string): AppUser {
+  return { kind: 'guest', name: firstName(name) || 'friend', id: visitId() }
 }
 
-export function saveGuest(storage: StorageLike | null, name: string): AppUser {
-  const user: AppUser = { kind: 'guest', name: firstName(name) || 'friend', id: visitId() } // (a new guest each time: a new visit)
+/** Clear a guest an older version left in storage, so it cannot come back. */
+export function forgetOldGuest(storage: StorageLike | null): void {
   try {
-    storage?.setItem(GUEST_KEY, JSON.stringify({ name: user.name, id: user.id }))
-  } catch {
-    // storage may be blocked: the guest still continues, they are just asked again after a refresh
-  }
-  return user
-}
-
-export function clearGuest(storage: StorageLike | null): void {
-  try {
-    storage?.removeItem(GUEST_KEY)
+    storage?.removeItem(OLD_GUEST_KEY)
   } catch {
     // nothing to clear
   }

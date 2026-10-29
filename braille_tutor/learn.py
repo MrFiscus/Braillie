@@ -37,8 +37,10 @@ DWELL_SECONDS = 3.0  # resting a finger this long on a cell is "this is my answe
 STILL_MM = 12.0  # resting drift allowed (~half a denser words-sheet cell); tip jitter used to reset the 3 s timer forever at 4 mm
 LEAVE_MM = 18.0  # after an answer, the finger must move about one cell away before the next rest can count
 DWELL_GAP_SECONDS = 0.5  # a one-frame tracking dropout must not restart the 3 s rest
-HINT_AFTER = (12.0, 15.0, 20.0)  # seconds of no answer before each hint the tutor offers by itself (12 s, then 15 s more, then 20 s more)
+HINT_AFTER = (20.0, 25.0, 30.0)  # seconds of searching (finger on the page, no answer) before each hint offered unasked: time to work it out
 MAX_TRIES = 3  # wrong touches before the tutor shows where the letter is and moves on
+SHEET_UNSURE = 15.0  # a page in view that the camera cannot name this long: they are told they can say "I'm ready"
+SHEET_SETTLE = 1.5  # seconds the sheet a lesson waits for must stay in view before the lesson starts
 REMIND_EVERY = 25.0  # while waiting for the learner to say what to do next
 LOST_AFTER = 6.0  # the finger has been out of sight this long: say so once...
 LOST_BACKOFF = (6.0, 15.0, 30.0, 60.0)  # ...then less and less often (someone with both hands on the sheet does not need reminding every few seconds)
@@ -216,29 +218,39 @@ def compare_pair(a: str, b: str) -> str:
 # their start are still there ("lesson one" goes back), and practice mixes in letters from them, so what they said is checked as
 # they go: a letter they miss comes back in the next warm-up.
 LEVELS = {"new": "l1", "some": "l3", "alphabet": "l6", "numbers": "l8"}  # what they said -> the lesson to start at
-ASK_LEVEL = ("Before we start: how much braille do you know? Say new if you're just beginning, some if you know a few letters, "
-             "alphabet if you know all of A to Z, or numbers if you know those too. Not sure? Just say new, and we'll start at the "
-             "beginning.")
-RETRY_LEVEL = "Sorry, I didn't catch that. Say new, some, alphabet, or numbers. Not sure? Say new."
-# What Braillo says back, so they hear what he understood (new learners hear how braille works instead, see on_level)
-LEVEL_REPLIES = {"some": "Nice, you've made a start. We'll pick up at {where}, and I'll slip in a few of the first letters to check them.",
-                 "alphabet": "Great, you know the alphabet. We'll start at {where}, and I'll check a few earlier letters along the way.",
-                 "numbers": "Brilliant, you know your numbers too. We'll start at {where}, and I'll check some letters and numbers along "
+ASK_LEVEL = ("Before we start, how familiar are you with braille? Are you a complete beginner, have you tried it a little, have you "
+             "learned it before, or are you pretty confident with it? Not sure? Just say beginner.")
+RETRY_LEVEL = ("Sorry, I didn't catch that. Are you a complete beginner, have you tried it a little, have you learned it before, or "
+               "are you pretty confident? Not sure? Just say beginner.")
+# What Braillo says back, so they hear what he understood (beginners hear how braille works instead, see on_level)
+LEVEL_REPLIES = {"some": "Nice, you've had a go before. We'll pick up at {where}, and I'll slip in a few of the first letters to "
+                         "check them.",
+                 "alphabet": "Great, you've learned it before. We'll start at {where}, and I'll check a few earlier letters along the way.",
+                 "numbers": "Brilliant, you're confident with it. We'll start at {where}, and I'll check some letters and numbers along "
                             "the way."}
-ASK_LEVEL_AGAIN = "Sure. How much braille do you know? Say new, some, alphabet, or numbers."  # ("change my level", later on)
-_NOT_KNOWN = re.compile(r"\b(?:no|not|don'?t know|do not know|never learn(?:ed|t)|without)\s+(?:any\s+|the\s+)?(?:numbers?|alphabet|letters?)\b")
+ASK_LEVEL_AGAIN = ("Sure. How familiar are you with braille: a complete beginner, tried it a little, learned it before, or pretty "
+                   "confident?")  # ("change my level", later on)
+_NOT_KNOWN = re.compile(r"\b(?:no|not|don'?t know|do not know|never learn(?:ed|t)|without)\s+(?:any\s+|the\s+)?(?:numbers?|alphabet|letters?)\b"
+                        r"|\bnot (?:very |that |so |too |really )?(?:confident|good|fluent)\b")
 
 
 def level_of(text: str) -> Optional[str]:
-    """How much braille someone says they know ("I know the alphabet", "a few letters", "I'm new"): a key of LEVELS, or None."""
-    t = _NOT_KNOWN.sub(" ", " ".join(re.sub(r"[^a-z' ]", " ", text.lower()).split()))
-    if re.search(r"\b(numbers?|advanced|expert|everything|fluent|a lot|lots)\b", t):
+    """How familiar someone says they are with braille ("complete beginner", "tried it a little", "learned it before", "pretty
+    confident"; or the older "new", "some", "alphabet", "numbers"): a key of LEVELS, or None."""
+    said = " ".join(re.sub(r"[^a-z' ]", " ", text.lower()).split())
+    if re.search(r"\b(never|first time|complete beginner|absolute beginner|total beginner)\b", said):
+        return "new"  # ("never tried it": the "tried" in it does not make it some)
+    t = _NOT_KNOWN.sub(" ", said)
+    if re.search(r"\bnot (?:very |that |so |too |really )?(?:confident|good|fluent)\b", said) and not re.search(r"\bnumbers?\b", t):
+        return "some"  # ("I'm not very confident": they have had a go)
+    if re.search(r"\b(numbers?|advanced|expert|everything|fluent|a lot|lots|confident|pretty good|really good|i read braille|"
+                 r"i can read braille)\b", t):
         return "numbers"
-    if re.search(r"\b(alphabet|a to z|(all|the|every|my) letters?|intermediate)\b", t):
-        return "alphabet"
-    if re.search(r"\b(some|few|little|bit|basics?|not much)\b", t):
+    if re.search(r"\b(some|few|little|bit|basics?|not much|tried|dabbled|rusty|had a go|a go)\b", t):
         return "some"
-    if re.search(r"\b(new|nothing|none|no|nope|beginner|never|not sure|don'?t know|zero|beginning|scratch)\b", t):
+    if re.search(r"\b(alphabet|a to z|(all|the|every|my) letters?|intermediate|learned|learnt|studied|know (it|braille)|before)\b", t):
+        return "alphabet"
+    if re.search(r"\b(new|nothing|none|no|nope|beginner|never|not sure|don'?t know|zero|beginning|scratch|first time|start(ing)? out)\b", t):
         return "new"
     return None
 
@@ -307,6 +319,9 @@ class Journey:
         self.queue: list = []
         self.target: Optional[str] = None
         self.tries = self.hints = 0
+        self.last_touched: Optional[str] = None  # the wrong symbol touched last while looking for this one (for the hint)
+        self._last_tick = 0.0  # (when tick last ran: see the hint clock in tick)
+        self._sheet_told: Optional[str] = None  # the sheet they were last told to use (see _lesson_intro)
         self.asked_at = self.last_activity = self.last_lost = 0.0
         self.lost_notices = 0
         self.off_page_since = -1e9
@@ -315,6 +330,10 @@ class Journey:
         self.in_a_row, self.session_started, self.taught = 0, False, []
         self.review_confusions: dict = {}
         self._await_since = 0.0
+        self._seen_since: Optional[float] = None  # when the sheet a lesson waits for came into view (see _tick_sheet)
+        self._told_seen: Optional[str] = None  # the wrong sheet last said to be under the camera while waiting
+        self._unsure_since: Optional[float] = None  # a page in view that cannot be named, since (see _tick_sheet)
+        self._unsure_told = False
         self._pending_review: Optional[list] = None  # a practice session waiting for the right sheet to be put down
         self._lead = ""  # words to say at the start of the next line (praise, "okay, skipping it"), so they flow on as one line
         self.word: Optional[str] = None  # the word being spelled at the end of the lesson (see _start_word)
@@ -349,12 +368,14 @@ class Journey:
     # ---- public commands (voice) --------------------------------------------------------------
     def on_start(self) -> None:
         """"Start": begin, or continue where we were."""
-        if self.phase in ASKING or self.phase == "placing":
+        if self.phase == "placing":  # ("start", with no level in it: asked again, briefly)
+            return self._speak(ASK_LEVEL_AGAIN)
+        if self.phase in ASKING:
             return self.on_repeat()
         if self.phase in ("recap", "explore", "idle", "done"):
             return self._begin_or_continue()
-        if self.phase == "await_sheet":
-            return self._remind_sheet()
+        if self.phase == "await_sheet":  # ("I'm ready"): on, if the sheet is in view (or a page it cannot name); else what it waits for
+            return self._sheet_ready() if self._sheet_in_view(self.lesson.sheet) or self._unnamed_page() else self._remind_sheet()
 
     def on_repeat(self) -> None:
         if self.phase in ASKING and self.target:
@@ -377,6 +398,8 @@ class Journey:
             self.host.say("Say start to begin a lesson.")
 
     def on_found_it(self) -> None:
+        if self.phase == "await_sheet":  # ("got it": the sheet, they mean)
+            return self.on_start()
         if self.phase in ASKING and self.target:
             pos = self.host.finger()
             if pos is None:
@@ -465,6 +488,14 @@ class Journey:
         pool = [l for l in self.progress.practised() if l in DOTS]  # (the review is on the alphabet sheet: letters)
         self._start_review(self.progress.pick_practice(pool, REVIEW_LENGTH, self.rng))
 
+    def brief_recap(self) -> str:
+        """A few words on how it went, for leaving a lesson early ("You found 5 of 6 letters today."), or "" if nothing was asked."""
+        rs = self.session_results
+        if not rs:
+            return ""
+        got = sum(1 for _, ok, _h, _t in rs if ok)
+        return f"You found {got} of {len(rs)}{_letters([r[0] for r in rs])} today."
+
     def on_stop(self) -> None:
         self._save()
         self._say_session_recap()
@@ -505,7 +536,15 @@ class Journey:
             answer = self.dwell.update(pos, now)
             if answer is not None:
                 return self._judge(answer)
-        # the learner is not answering: help arrives by itself, a little more specific each time
+        # the learner is not answering: help arrives by itself, a little more specific each time, but only while they are searching
+        # (finger on the page): with the finger off the page there is nothing to help with yet
+        if pos is None:
+            gap = now - self._last_tick
+            if 0.0 < gap < 1.0:
+                self.last_activity += gap  # (the clock for hints stops while the finger is off the page)
+            self._last_tick = now
+            return
+        self._last_tick = now
         level = self.hints
         if level < len(HINT_AFTER) and now - self.last_activity >= HINT_AFTER[level] * self.hint_scale:
             self.last_activity = now
@@ -556,12 +595,49 @@ class Journey:
         self._mixed_now = set()  # the mix-ups in this lesson (the end of the lesson mentions only these)
         self.word, self._word_done = None, False
         self.taught = [l for prev in self.lessons[: self.lessons.index(lesson)] for l in prev.letters if l in SYMBOL_DOTS]
+        if self._sheet_in_view(lesson.sheet):
+            return self._lesson_intro()  # (the right sheet is under the camera already: they have it)
+        # The lesson waits for its sheet: it starts by itself once the camera can see it, so they have time to find it and lay it down.
+        self.phase, self._await_since, self._seen_since, self._told_seen = "await_sheet", self.clock(), None, None
+        self._unsure_since, self._unsure_told = None, False
+        self._sheet_told = lesson.sheet
         if self.host.sheet_name() != lesson.sheet:
-            self.phase, self._await_since = "await_sheet", self.clock()
             self.host.request_sheet(lesson.sheet)
-            self._speak(f"{lesson.title} next. It uses the {sheet_words(lesson.sheet)} sheet, the one with {feel_for(lesson.sheet)}: "
-                        "put it in front of the camera and hold it steady.")
-            return
+        self._watch(lesson.sheet)
+        self._speak(f"{lesson.title} next. Get the {sheet_words(lesson.sheet)} sheet ready, the one with {feel_for(lesson.sheet)}. "
+                    "Take your time: lay it flat under the camera, and I'll start as soon as I can see it.")
+
+    def _sheet_in_view(self, sheet: str) -> bool:
+        """Is this sheet under the camera now? When the camera can make out which sheet it is, that one (another one there is said,
+        once); otherwise the one it is reading for, with the page in view."""
+        checks = getattr(self.host, "checks_sheets", None)
+        if checks is not None and checks():
+            seen = self.host.sheet_under_camera()
+            if seen is not None and seen != sheet and seen != self._told_seen and self.phase == "await_sheet":
+                self._told_seen = seen
+                self.sheet_seen(seen)  # "That's the words sheet. This lesson needs..."
+            return seen == sheet
+        visible = getattr(self.host, "page_visible", None)
+        return self.host.sheet_name() == sheet and bool(self.host.cells()) and (visible is None or visible())
+
+    def _unnamed_page(self) -> bool:
+        """A page is in view, but the camera cannot tell which sheet it is (light, glare): their word is taken for it."""
+        checks = getattr(self.host, "checks_sheets", None)
+        visible = getattr(self.host, "page_visible", None)
+        return bool(checks is not None and checks() and self.host.sheet_under_camera() is None and (visible is None or visible()))
+
+    def _watch(self, sheet: Optional[str]) -> None:
+        watch = getattr(self.host, "watch_sheet", None)
+        if watch is not None:
+            watch(sheet)
+
+    def _sheet_ready(self) -> None:
+        """The sheet the lesson waited for is in view: on with it."""
+        self._seen_since = None
+        self._watch(None)
+        if self._pending_review is not None:
+            return self._start_review(self._pending_review)
+        self._hold("Got it, I can see the sheet.")
         self._lesson_intro()
 
     def _remind_sheet(self, nag: bool = False) -> None:
@@ -587,10 +663,22 @@ class Journey:
         self._speak(f"That's the {sheet_words(sheet)} sheet. {want}" if sheet else f"I can't tell which sheet that is yet. {want}")
 
     def _tick_sheet(self, now: float) -> None:
-        if self.host.sheet_name() == self.lesson.sheet and self.host.cells():
-            if self._pending_review is not None:
-                return self._start_review(self._pending_review)
-            return self._lesson_intro()
+        if self._sheet_in_view(self.lesson.sheet):
+            if self._seen_since is None:
+                self._seen_since = now
+            if now - self._seen_since < SHEET_SETTLE:
+                return  # (seen for a moment while it is being put down: wait until it stays in view)
+            return self._sheet_ready()
+        self._seen_since = None
+        if self._unnamed_page():
+            if self._unsure_since is None:
+                self._unsure_since = now
+            if not self._unsure_told and now - self._unsure_since >= SHEET_UNSURE:
+                self._unsure_told, self._await_since = True, now
+                self._speak(f"I can see a sheet, but I can't tell which one yet. If it's the {sheet_words(self.lesson.sheet)} sheet, "
+                            "say I'm ready.")
+            return
+        self._unsure_since = None
         if now - self._await_since >= REMIND_EVERY:
             self._remind_sheet(nag=True)
 
@@ -598,6 +686,9 @@ class Journey:
         """Start the lesson. First, if letters from earlier went wrong (here or in the quiz), a short warm-up teaches them again, each
         with how it differs from the letter it was mixed up with; then the new letters."""
         lesson = self.lesson
+        if not warmed and self._sheet_told != lesson.sheet:  # (which sheet, said whenever it is a new one for them)
+            self._sheet_told = lesson.sheet
+            self._hold(f"You'll need the {sheet_words(lesson.sheet)} sheet for this, the one with {feel_for(lesson.sheet)}.")
         if not warmed:
             weak = [l for l in self.progress.needs_reteaching([l for l in self.taught if l not in lesson.letters], WARMUP_MAX)
                     if self.host_has(l)]
@@ -619,6 +710,7 @@ class Journey:
             return self._phase_done()
         self.target = self.queue.pop(0)
         self.tries = self.hints = 0
+        self.last_touched = None
         self.dwell.reset()
         self._ask()
 
@@ -679,6 +771,7 @@ class Journey:
         self.tries += 1
         self.last_activity = now
         if touched:
+            self.last_touched = touched
             self.progress.record_confusion(touched, self.target)
             self._mixed_now.add((touched, self.target))
             self.review_confusions[(touched, self.target)] = self.review_confusions.get((touched, self.target), 0) + 1
@@ -756,7 +849,25 @@ class Journey:
             text = f"It is in row {cell['row'] + 1}, column {cell['col'] + 1}. {dot_words(t)}"
         else:
             text = f"{cap(name(t))} has {has_dots(t)} Feel along each row."
+        worded = getattr(self.host, "hint_words", None)  # (Claude puts it for this learner, keeping every dot: see hint_facts)
+        if callable(worded):
+            text = worded(text, self.hint_facts()) or text
         self.host.say(("Here's a hint. " if auto and self.hints == 1 else "") + text)
+
+    def hint_facts(self) -> dict:
+        """What a hint can be put in terms of, for this learner now: what they are looking for, what they touched instead (and how
+        the two differ, worked out here so it is exact), what they keep mixing it up with, and how much braille they know."""
+        t = self.target
+        facts = {"looking_for": name(t), "its_dots": has_dots(t), "hint_number": self.hints,
+                 "level": self.progress.level or "not said", "lesson": self.lesson.title if self.lesson else ""}
+        if self.last_touched and self.last_touched != t and self.last_touched in SYMBOL_DOTS:
+            facts["just_touched"] = name(self.last_touched)
+            facts["how_it_differs_from_what_they_touched"] = unlike(self.last_touched, t)
+        mixed = [m for m in self.progress.confused_with(t) if m in SYMBOL_DOTS and m != self.last_touched][:1]
+        if mixed:
+            facts["often_mixed_up_with"] = name(mixed[0])
+            facts["how_it_differs_from_that"] = unlike(mixed[0], t)
+        return facts
 
     # ---- bookkeeping --------------------------------------------------------------------------
     def _record(self, letter: str, correct: bool, clean: bool) -> None:
@@ -897,6 +1008,7 @@ class Journey:
             self.phase, self._await_since, self._pending_review = "await_sheet", self.clock(), letters
             self.lesson = next(l for l in self.lessons if l.sheet == "alphabet")
             self.host.request_sheet("alphabet")
+            self._watch("alphabet")
             self._speak(f"Practice uses the alphabet sheet, the one with {feel_for('alphabet')}. Put it in front of the camera and hold "
                         "it steady.")
             return
